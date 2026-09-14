@@ -13,9 +13,59 @@ const { findApiPortMismatch } = require('../dist/config/apiUrl');
 // differs. The function takes its platform, environment and home directory as
 // arguments so both branches are covered from either host.
 
-test('Linux and macOS keep the container-conventional /data/db default', () => {
-  assert.equal(getDefaultDatabaseDir('linux', {}, () => '/home/dev'), '/data/db');
-  assert.equal(getDefaultDatabaseDir('darwin', {}, () => '/Users/dev'), '/data/db');
+// Whether /data/db is really there. Injected so both branches are covered from
+// either host, and so the answer does not depend on the machine running this.
+const present = () => true;
+const absent = () => false;
+
+test('Linux and macOS keep /data/db when it is actually there', () => {
+  // A mounted volume, or an install that already has its data there.
+  assert.equal(getDefaultDatabaseDir('linux', {}, () => '/home/dev', present), '/data/db');
+  assert.equal(getDefaultDatabaseDir('darwin', {}, () => '/Users/dev', present), '/data/db');
+});
+
+test('a desktop with no /data/db gets a directory its user owns', () => {
+  /*
+   * The failure this pins: a fresh clone on a Mac died on the very first query
+   * with "Cannot create the database directory /data/db: ENOENT". Nothing in
+   * this repository creates /data/db, and no ordinary user may create a
+   * directory at the root of the filesystem - the same failure Windows had,
+   * fixed there and left here.
+   */
+  assert.equal(
+    getDefaultDatabaseDir('darwin', {}, () => '/Users/tyler', absent),
+    '/Users/tyler/Library/Application Support/free_tailor/db'
+  );
+  assert.equal(
+    getDefaultDatabaseDir('linux', {}, () => '/home/dev', absent),
+    '/home/dev/.local/share/free_tailor/db'
+  );
+});
+
+test('Linux honours XDG_DATA_HOME when it is set', () => {
+  assert.equal(
+    getDefaultDatabaseDir('linux', { XDG_DATA_HOME: '/home/dev/.share' }, () => '/home/dev', absent),
+    '/home/dev/.share/free_tailor/db'
+  );
+  // Blank is not a setting.
+  assert.equal(
+    getDefaultDatabaseDir('linux', { XDG_DATA_HOME: '   ' }, () => '/home/dev', absent),
+    '/home/dev/.local/share/free_tailor/db'
+  );
+  // macOS has its own convention and ignores XDG.
+  assert.equal(
+    getDefaultDatabaseDir('darwin', { XDG_DATA_HOME: '/home/dev/.share' }, () => '/Users/dev', absent),
+    '/Users/dev/Library/Application Support/free_tailor/db'
+  );
+});
+
+test('the default directory is never the filesystem root', () => {
+  // The shape of the bug, rather than one path: any default that a normal user
+  // cannot create is the same failure again.
+  for (const platform of ['darwin', 'linux']) {
+    const dir = getDefaultDatabaseDir(platform, {}, () => '/home/dev', absent);
+    assert.ok(dir.startsWith('/home/dev'), `${platform} defaulted outside the home directory: ${dir}`);
+  }
 });
 
 test('Windows defaults into the per-user application data directory', () => {

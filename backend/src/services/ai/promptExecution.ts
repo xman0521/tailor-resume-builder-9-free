@@ -52,6 +52,25 @@ export const DEFAULT_PROVIDER: AIProvider = 'claude-cli';
 /** Fallback wall-clock budget when a caller names none. */
 const DEFAULT_TIMEOUT_MS = 300_000;
 
+/**
+ * How long a call to a free chat browser may take, when the caller names no
+ * budget of its own.
+ *
+ * Its own knob because a browser provider is not an API: it answers at reading
+ * speed, and a long tailoring prompt on a loaded page genuinely takes minutes.
+ * `AI_CLI_TIMEOUT_MS` and friends existed for the CLI and reached nothing here,
+ * so the only way to give a slow browser more time was to edit the source.
+ */
+export function webTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(env.AI_WEB_TIMEOUT_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+}
+
+/** The budget for this provider, before any caller override. */
+export function defaultTimeoutMsFor(provider: AIProvider): number {
+  return isBrowserChatSiteId(provider) ? webTimeoutMs() : DEFAULT_TIMEOUT_MS;
+}
+
 export type PromptExecutionConfig = {
   provider: AIProvider;
   modelName?: string;
@@ -245,7 +264,7 @@ async function runAssembled(
   // call, and the caller that set the budget - and the operator watching a page
   // that has not come back - has no idea it could take twice as long. Failing
   // over buys a second chance with the time that is left, not more time.
-  const deadline = createDeadline(input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const deadline = createDeadline(input.timeoutMs ?? defaultTimeoutMsFor(provider));
 
   const buildRequest = (attemptProvider: AIProvider): { request: CompletionRequest; modelName: string } => {
     const adapter = getAdapter(attemptProvider);

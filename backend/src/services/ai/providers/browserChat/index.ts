@@ -65,6 +65,33 @@ const DEFAULT_MODEL_LABEL = 'chat';
 const QUEUE_WAIT_MS = 10 * 60_000;
 
 /**
+ * The least time a turn gets at the composer, however long the queue took.
+ *
+ * WHY THIS EXISTS. One deadline covers the whole call, and waiting for a free
+ * browser is part of it - deliberately, so a call cannot exceed the budget its
+ * caller set. That was right while calls ran one at a time. Run a batch as wide
+ * as the browsers registered, though, and the tail of the queue reaches the
+ * composer with seconds left: the prompt goes in, the model starts answering,
+ * and the deadline passes mid-sentence. Every one of those failures reads
+ * "still writing when the deadline passed", which blames the model for time the
+ * queue spent.
+ *
+ * So a turn that finally gets a browser is guaranteed this much to answer in.
+ * The overrun is bounded and one-shot: the failover loop below still refuses to
+ * try ANOTHER browser once the deadline has passed, so the worst case is the
+ * caller's budget plus one answer window, not a call that runs forever.
+ */
+export function minAnswerMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(env.AI_WEB_MIN_ANSWER_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 180_000;
+}
+
+/** What to give the model, once a browser is actually in hand. */
+export function answerBudgetMs(remainingMs: number): number {
+  return Math.max(remainingMs, minAnswerMs());
+}
+
+/**
  * How long a browser that could not be reached is set aside.
  *
  * Short, because the likeliest reason to be here is that the operator is
@@ -539,7 +566,13 @@ export function createBrowserChatAdapter(
         try {
           const session = options.sessionFor?.(lease.endpoint) ?? options.session ?? sessionFor(lease.endpoint);
           const tab = await session.tabFor(site());
-          const text = await tab.ask(body, request.deadline.remainingMs(), request.signal);
+          // Measured from here, not from when the call was created: the queue
+          // wait is already spent and must not be charged to the answer.
+          const text = await tab.ask(
+            body,
+            answerBudgetMs(request.deadline.remainingMs()),
+            request.signal
+          );
           pool.markReachable(lease.endpoint);
           return finish(text);
         } catch (error) {

@@ -197,7 +197,11 @@ test('the batch asks for exactly five, because that is what five browsers can ta
   // calls into a queue nobody can see, each waiting out its own budget.
   const { config } = await setUp('saturate-capacity');
   const { resolveBatchCapacity } = loadFresh('../dist/services/ai/batchCapacity');
-  const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {});
+  // Width is counted from browsers that are RUNNING, and the fixtures here are
+  // stub endpoints rather than real Chromes, so the probe is supplied.
+  const allRunning = (endpoints) =>
+    Promise.resolve(new Map([['claude-web', endpoints.length], ['chatgpt-web', 0]]));
+  const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {}, allRunning);
   assert.equal(capacity.limit, BROWSERS);
   assert.match(capacity.reason, /5 claude-web/);
   assert.ok(config, 'settings were written');

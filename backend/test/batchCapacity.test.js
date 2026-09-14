@@ -24,6 +24,26 @@ function loadCapacity() {
   return require('../dist/services/ai/batchCapacity');
 }
 
+/**
+ * Stands in for the liveness probe.
+ *
+ * Width is counted from browsers that are RUNNING, and the real reader opens
+ * sockets to localhost - so without this the answers below would depend on
+ * which debug browsers the developer had open. `allRunning` restores what these
+ * tests were written to assert: every registered browser is up.
+ */
+const allRunning = (endpoints) => {
+  const counts = new Map([['claude-web', 0], ['chatgpt-web', 0]]);
+  for (const entry of endpoints) counts.set(entry.siteId, (counts.get(entry.siteId) ?? 0) + 1);
+  return Promise.resolve(counts);
+};
+
+/** Nothing is up, however much is registered. */
+const noneRunning = () => Promise.resolve(new Map([['claude-web', 0], ['chatgpt-web', 0]]));
+
+/** The probe could not answer at all - not the same as "nothing is up". */
+const probeUnavailable = () => Promise.resolve(null);
+
 test('an operator override wins over everything worked out', async () => {
   const { resolveBatchCapacity } = loadCapacity();
   const capacity = await resolveBatchCapacity(
@@ -60,11 +80,62 @@ test('a free provider runs at exactly its browser count', async () => {
     ],
   });
 
-  const claude = await resolveBatchCapacity({ provider: 'claude-web' }, {});
+  const claude = await resolveBatchCapacity({ provider: 'claude-web' }, {}, allRunning);
   assert.equal(claude.limit, 2, 'two browsers, two calls at a time');
 
-  const chatgpt = await resolveBatchCapacity({ provider: 'chatgpt-web' }, {});
+  const chatgpt = await resolveBatchCapacity({ provider: 'chatgpt-web' }, {}, allRunning);
   assert.equal(chatgpt.limit, 1, 'one browser, one call at a time');
+});
+
+test('a browser that is registered but not started does not widen the batch', async () => {
+  /*
+   * The failure this pins. Sixteen registered and two running produced a batch
+   * sixteen wide, and since one deadline covers both the wait for a browser and
+   * the answer, the tail of that queue reached the composer with seconds left
+   * and died as "still writing when the deadline passed".
+   */
+  const { resolveBatchCapacity } = loadCapacity();
+  const { updateAppSettings } = require('../dist/config/aiModelConfig');
+  await updateAppSettings({
+    browserChatEndpoints: Array.from({ length: 16 }, (_, index) => ({
+      siteId: 'chatgpt-web',
+      port: 9222 + index,
+    })),
+  });
+
+  const twoUp = () => Promise.resolve(new Map([['claude-web', 0], ['chatgpt-web', 2]]));
+  const capacity = await resolveBatchCapacity({ provider: 'chatgpt-web' }, {}, twoUp);
+  assert.equal(capacity.limit, 2, 'width should follow what is running, not what is saved');
+  assert.match(capacity.reason, /2 of 16/, `the reason should explain the gap: "${capacity.reason}"`);
+});
+
+test('nothing running still runs, one at a time', async () => {
+  const { resolveBatchCapacity } = loadCapacity();
+  const { updateAppSettings } = require('../dist/config/aiModelConfig');
+  await updateAppSettings({
+    browserChatEndpoints: [
+      { siteId: 'claude-web', port: 9222 },
+      { siteId: 'chatgpt-web', port: 9223 },
+    ],
+  });
+  const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {}, noneRunning);
+  assert.equal(capacity.limit, 1, 'the first call reports "no browser" far better than a refusal');
+});
+
+test('a probe that cannot answer falls back to the registered count', async () => {
+  // Not knowing is not the same as knowing nothing is up, and only the second
+  // is grounds for narrowing a batch to one.
+  const { resolveBatchCapacity } = loadCapacity();
+  const { updateAppSettings } = require('../dist/config/aiModelConfig');
+  await updateAppSettings({
+    browserChatEndpoints: [
+      { siteId: 'claude-web', port: 9222 },
+      { siteId: 'claude-web', port: 9223 },
+      { siteId: 'claude-web', port: 9224 },
+    ],
+  });
+  const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {}, probeUnavailable);
+  assert.equal(capacity.limit, 3);
 });
 
 test('a hybrid run gets both accounts added together', async () => {
@@ -81,7 +152,7 @@ test('a hybrid run gets both accounts added together', async () => {
     ],
   });
 
-  const hybrid = await resolveBatchCapacity({ provider: 'claude-web', route: 'hybrid' }, {});
+  const hybrid = await resolveBatchCapacity({ provider: 'claude-web', route: 'hybrid' }, {}, allRunning);
   assert.equal(hybrid.limit, 3);
   assert.match(hybrid.reason, /claude-web/);
   assert.match(hybrid.reason, /chatgpt-web/);
@@ -94,7 +165,7 @@ test('no browsers registered still runs, one at a time', async () => {
   const { resolveBatchCapacity } = loadCapacity();
   const { updateAppSettings } = require('../dist/config/aiModelConfig');
   await updateAppSettings({ browserChatEndpoints: [] });
-  const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {});
+  const capacity = await resolveBatchCapacity({ provider: 'claude-web' }, {}, allRunning);
   assert.equal(capacity.limit, 1);
 });
 
@@ -109,7 +180,7 @@ test('the fan-out is capped however many browsers are registered', async () => {
       port: 9300 + index,
     })),
   });
-  const capacity = await resolveBatchCapacity({ provider: 'claude-web', route: 'hybrid' }, {});
+  const capacity = await resolveBatchCapacity({ provider: 'claude-web', route: 'hybrid' }, {}, allRunning);
   assert.ok(capacity.limit <= 16, `${capacity.limit} is above the ceiling`);
 });
 

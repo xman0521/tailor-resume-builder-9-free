@@ -156,9 +156,13 @@ Nothing under `backend/static` is written to at runtime. Edits made in the admin
   `NODE_MODULE_VERSION` row under Troubleshooting)
 - **Windows 10/11, Ubuntu, or macOS.** Every command in this guide is the same
   on all three; where a default differs it is called out below.
-- A writable database directory. Left unset, `DB_DIR` defaults to `/data/db` on
-  Linux and macOS and to `%LOCALAPPDATA%\free_tailor\db` on Windows. The
-  backend prints the resolved path at startup.
+- A writable database directory. Left unset, `DB_DIR` defaults to a directory
+  this user owns: `~/Library/Application Support/free_tailor/db` on macOS,
+  `~/.local/share/free_tailor/db` on Linux (or `$XDG_DATA_HOME`), and
+  `%LOCALAPPDATA%\free_tailor\db` on Windows. On Linux and macOS `/data/db` is
+  used instead when it already exists and is writable, so a mounted volume or an
+  existing install keeps working. The backend prints the resolved path at
+  startup.
 - **Claude Code**, only if you want to run on a subscription seat. That
   provider is locked until you install it, sign it in, and name it in
   `AI_UNLOCKED_PROVIDERS`; the free browser-chat providers need none of this.
@@ -435,7 +439,7 @@ File and folder names are templated per profile.
 | Variable | Description |
 |----------|-------------|
 | `HOST` / `PORT` | Backend bind address and port (default `0.0.0.0:3001`) |
-| `DB_DIR` | SQLite database directory. Default `/data/db` on Linux and macOS, `%LOCALAPPDATA%\free_tailor\db` on Windows |
+| `DB_DIR` | SQLite database directory. Default `~/Library/Application Support/free_tailor/db` on macOS, `~/.local/share/free_tailor/db` on Linux (or `$XDG_DATA_HOME`), `%LOCALAPPDATA%\free_tailor\db` on Windows. `/data/db` is preferred on Linux and macOS when it already exists and is writable |
 | `FRONTEND_URL` | Extra allowed CORS origins, comma separated (same-host origins are always allowed) |
 | `FRONTEND_HOST` / `FRONTEND_PORT` | Frontend bind address and port (default `0.0.0.0:3000`) |
 | `NEXT_PUBLIC_API_URL` | Frontend API base; the hostname is replaced at runtime. Leave unset to derive it from `PORT` - set it only to reach a different machine |
@@ -463,7 +467,7 @@ See `.env.example` for the full `AI_CLI_*` list.
 | `Cannot reach the backend at ...` naming a port you did not expect | `NEXT_PUBLIC_API_URL` and `PORT` disagree. They must name the same port when both point at this machine. Delete `NEXT_PUBLIC_API_URL` from `.env` to derive it from `PORT`, or set the two to match. The backend and the frontend build both print an `[env]` line when they disagree. |
 | `Cannot reach the backend at http://localhost:3001/api ...` in the UI | The frontend is running but nothing answered on the API port. The backend prints its own reason where it was started - the `backend` half of `npm run dev`, or its own terminal. Most often it exited at boot over the database directory or a native-module mismatch, both rows below. The two halves are independent: a crashed backend no longer takes the frontend down with it, so the page stays up to tell you. |
 | `Could not find a declaration file for module 'better-sqlite3'` | Backend dev dependencies are not installed. Run `npm install --prefix backend` (not `--omit=dev`). |
-| `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. On Ubuntu the usual cause is `/data/db` not existing; create it, or set `DB_DIR=./data/db`. On Windows a `DB_DIR=/data/db` copied from an older `.env` means `C:\data\db` and needs an administrator - unset it to get `%LOCALAPPDATA%\free_tailor\db`, or point it at a folder you own. |
+| `Cannot create the database directory`, `SQLITE_CANTOPEN`, or a permission error on startup | `DB_DIR` points somewhere this user cannot write. Unset it to get the per-user default for your platform. A `DB_DIR=/data/db` copied from an older `.env` is the usual cause: on Linux and macOS nothing creates that directory (`sudo mkdir -p /data/db && sudo chown "$USER" /data/db`), and on Windows it means `C:\data\db` and needs an administrator. `DB_DIR=./data/db` works everywhere. |
 | `NODE_MODULE_VERSION 127 ... requires NODE_MODULE_VERSION 137` | `better-sqlite3` is a native module compiled for a different Node version than the one now running (127 is Node 22, 137 is Node 24). Run `npm rebuild better-sqlite3 --prefix backend`, or switch back to the Node version you installed with. |
 | A browser provider says `Could not reach a debug browser` | Nothing is listening on the debug port. Run `npm run browser:debug` and leave the windows it opens open. The app never starts one for you. If you started Chrome yourself, check it used a `--user-data-dir` of its own: Chrome ignores `--remote-debugging-port` when that profile is already running, so the flag looks accepted and no port ever opens. |
 | The first call of a run works and the next one fails with `The chat page did not finish accepting the prompt` | That tab is too busy to take the prompt. The two calls are not the same size: analysing a job posting sends only the posting, while tailoring sends your whole profile, the analysis and the keyword lists - some 27,000 characters - and the site re-renders its editor over all of it. Close the other conversations in that window, reload the tab, and leave the window visible rather than minimised. (Earlier versions reported this as `Input.insertText timed out. Increase the 'protocolTimeout' setting`, which was this app's own limit being too small and is now sized for a real prompt.) |

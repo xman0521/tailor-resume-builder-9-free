@@ -4,6 +4,7 @@ import {
   type BrowserChatEndpoint,
 } from '../../config/aiModelConfig';
 import { isBrowserChatSiteId, type BrowserChatSiteId } from '../../config/providerCatalog';
+import { countLiveBrowsers } from './browserLiveness';
 import { planRoute, type FreeChatRoute } from './freeChatRouting';
 import type { AIProvider } from '../../types/template';
 
@@ -93,9 +94,19 @@ export type BatchCapacity = {
  * frees up - and the only thing the batch has to get right is offering enough
  * work to keep all of them fed.
  */
+/**
+ * Reads how many browsers are up. Injectable for the same reason `env` is:
+ * the real one opens sockets to localhost, so a test that did not supply its
+ * own would be asserting against whatever the developer happens to be running.
+ */
+export type LiveBrowserReader = (
+  endpoints: BrowserChatEndpoint[]
+) => Promise<Map<BrowserChatSiteId, number> | null>;
+
 export async function resolveBatchCapacity(
   choice: { provider: AIProvider; route?: FreeChatRoute },
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  readLive: LiveBrowserReader = countLiveBrowsers
 ): Promise<BatchCapacity> {
   const override = configuredOverride(env);
   if (override !== null) {
@@ -118,7 +129,25 @@ export async function resolveBatchCapacity(
         ? planRoute('hybrid')
         : [choice.provider as BrowserChatSiteId];
 
-    const counted = sites.map((site) => ({ site, browsers: countBrowsers(endpoints, site) }));
+    /*
+     * Counted from browsers that are RUNNING, not merely registered.
+     *
+     * A registration is a settings row; it does not open Chrome. Sixteen rows
+     * and two running browsers used to produce a batch sixteen wide and a queue
+     * fourteen deep, and since one deadline covers both the queue wait and the
+     * answer, the tail of that queue reached the composer with nothing left and
+     * failed as "still writing when the deadline passed" - blaming the model for
+     * time the queue had spent.
+     *
+     * When the probe cannot answer at all, the registered count is used, the way
+     * it always was: not knowing is not the same as knowing nothing is up.
+     */
+    const live = await readLive(endpoints);
+    const counted = sites.map((site) => ({
+      site,
+      browsers: live?.get(site) ?? countBrowsers(endpoints, site),
+      registered: countBrowsers(endpoints, site),
+    }));
     const total = counted.reduce((sum, entry) => sum + entry.browsers, 0);
 
     // One, not zero, when nothing is registered. A batch that refuses to run
@@ -126,10 +155,16 @@ export async function resolveBatchCapacity(
     // the real one is "there is no browser" - which the first call says far
     // better, and says once rather than per item.
     const limit = Math.min(MAX_BATCH_CONCURRENCY, Math.max(1, total));
+    // Says "2 of 16" rather than "2" when some are registered but down, so the
+    // log line explains a narrow batch instead of just reporting one.
     const described = counted
-      .map((entry) => `${entry.browsers} ${entry.site}`)
+      .map((entry) =>
+        entry.browsers === entry.registered
+          ? `${entry.browsers} ${entry.site}`
+          : `${entry.browsers} of ${entry.registered} ${entry.site}`
+      )
       .join(' + ');
-    return { limit, reason: `${described} browser${total === 1 ? '' : 's'}` };
+    return { limit, reason: `${described} browser${total === 1 ? '' : 's'} running` };
   }
 
   return {
