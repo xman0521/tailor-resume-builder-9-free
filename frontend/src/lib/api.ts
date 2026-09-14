@@ -589,6 +589,15 @@ export interface PublicAppSettings {
 export type AIModelSettings = PublicAppSettings;
 
 export interface AdminAppSettings extends PublicAppSettings {
+  /**
+   * What may be CHOSEN as a default, which is longer than `aiModels`.
+   *
+   * `aiModels` holds the stored rows the Models editor edits. Hybrid is not a
+   * row - the server synthesizes it whenever both free chat providers have a
+   * runnable model - so a picker built from `aiModels` cannot offer it, which
+   * is exactly what the "Default AI model" dropdown was doing.
+   */
+  pickableModels: AIModelRecord[];
   outputBaseDir: string;
   outputPathTemplate: string;
   outputPathPreview: string;
@@ -842,8 +851,14 @@ function normalizePublicAppSettings(value: unknown): PublicAppSettings {
 function normalizeAdminAppSettings(value: unknown): AdminAppSettings {
   const source = (typeof value === 'object' && value !== null ? value : {}) as Partial<AdminAppSettings>;
 
+  const models = normalizeModelRecords(source.aiModels);
   return {
     ...normalizePublicAppSettings(source),
+    // Falls back to the editable rows rather than to nothing, so a server that
+    // predates this field leaves the dropdown populated instead of empty.
+    pickableModels: Array.isArray(source.pickableModels)
+      ? normalizeModelRecords(source.pickableModels)
+      : models,
     outputBaseDir: typeof source.outputBaseDir === 'string' ? source.outputBaseDir : '',
     outputPathTemplate: typeof source.outputPathTemplate === 'string' ? source.outputPathTemplate : '',
     outputPathPreview: typeof source.outputPathPreview === 'string' ? source.outputPathPreview : '',

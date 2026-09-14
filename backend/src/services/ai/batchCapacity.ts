@@ -1,4 +1,5 @@
 import {
+  BROWSER_CHAT_MAX_ENDPOINTS,
   getBrowserChatEndpoints,
   type BrowserChatEndpoint,
 } from '../../config/aiModelConfig';
@@ -50,12 +51,19 @@ const DEFAULT_BATCH_CONCURRENCY = 4;
 /**
  * A ceiling on the whole thing, whatever the arithmetic says.
  *
- * Each in-flight item is a model call AND, later, a Chrome tab rendering a PDF.
- * An operator who registers twenty browsers should get twenty model calls, not
- * twenty simultaneous renders in one Chrome; the render fan-out is bounded
- * separately, but the outer number still needs a stop.
+ * Raised from 16 to match `BROWSER_CHAT_MAX_ENDPOINTS`, so registering more
+ * browsers now actually buys more parallelism instead of stopping at sixteen.
+ *
+ * This used to carry a second job it could not do. Each in-flight item is a
+ * model call AND, later, a document render - a tab in the shared Chrome for a
+ * resume, a whole Chrome of its own for a cover letter - and the comment here
+ * claimed the render fan-out was "bounded separately" when nothing bounded it
+ * at all. So this number was quietly holding the line for both, and lifting it
+ * without fixing that would have turned fifty browsers into fifty simultaneous
+ * renders. `generators/renderConcurrency` is now that separate bound, and this
+ * one is free to be about model calls alone.
  */
-const MAX_BATCH_CONCURRENCY = 16;
+const MAX_BATCH_CONCURRENCY = BROWSER_CHAT_MAX_ENDPOINTS;
 
 /** Mirrors `AI_CLI_CONCURRENCY` in claudeCli/options, bounds included. */
 export function cliConcurrency(env: NodeJS.ProcessEnv = process.env): number {

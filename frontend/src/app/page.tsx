@@ -410,6 +410,21 @@ export default function Home() {
     };
   };
 
+  /**
+   * Generates every profile x job combination from a sheet import.
+   *
+   * Two batch calls, not two nested loops. The loops this replaces awaited one
+   * analysis and then one build at a time, so exactly one request was ever in
+   * flight and exactly one chat browser was ever busy - registering sixteen of
+   * them bought nothing. `/analyze-multi-job` and `/generate-multi-job` both run
+   * a worker pool at the chosen provider's real width (under a hybrid route,
+   * Claude's browsers plus ChatGPT's), pulling the next item the moment any
+   * browser frees up.
+   *
+   * The cost is the progress bar. There is no streaming channel from the
+   * server, so per-resume progress came from knowing when each await returned,
+   * and that knowledge is what was traded away. Progress is now per PHASE.
+   */
   const handleImportJobsFromSheets = async (
     importedJobs: ImportedSheetJob[],
     meta: { skippedRows: number }
@@ -428,120 +443,108 @@ export default function Home() {
 
     const failures: string[] = [];
     const failedCompanies = new Set<string>();
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
     const totalBuilds = selectedProfiles.length * normalizedJobs.length;
-    let completedBuilds = 0;
     let failedBuilds = 0;
-    let hasSetJobAnalysis = false;
 
     try {
+      setGenerationStep(`Analyzing ${normalizedJobs.length} job(s)`);
       updateGenerationProgress(
         totalBuilds,
         0,
-        'Preparing imported jobs',
+        'Analyzing job description',
         undefined,
         undefined,
         undefined,
         undefined,
         normalizedJobs.length
       );
-      for (const [jobIndex, job] of normalizedJobs.entries()) {
-        const trimmedJobDescription = job.jobDescription.trim();
-        const normalizedCompanyName = job.companyName.trim();
-        const importedJobTitle = job.jobTitle.trim();
 
-        setGenerationStep(`Analyzing job ${jobIndex + 1}/${normalizedJobs.length}: ${normalizedCompanyName}`);
+      const analysisResponse = await resumeApi.analyzeMultiJob({
+        ...aiRequestOverrides,
+        jobs: normalizedJobs.map((job) => ({
+          companyName: job.companyName.trim(),
+          jobDescription: job.jobDescription.trim(),
+          sourceRowNumber: job.sourceRowNumber,
+        })),
+      });
+
+      // A job whose analysis failed has no title and no keywords, so every
+      // profile paired with it is already lost. Counted here rather than left
+      // to the build call, which is never told about it.
+      for (const failure of analysisResponse.failures) {
+        failedCompanies.add(failure.companyName);
+        failedBuilds += selectedProfiles.length;
+        failures.push(`${failure.companyName}: ${failure.error}`);
+      }
+
+      if (analysisResponse.analyses.length > 0) {
+        setJobAnalysis(analysisResponse.analyses[0].analysis);
+      }
+
+      // Matched on the row number the import carried, falling back to the
+      // company name: the response is not promised in request order, and two
+      // rows may name the same company.
+      const titleByJob = new Map<string | number, string>(
+        normalizedJobs.map((job) => [
+          job.sourceRowNumber ?? job.companyName.trim(),
+          job.jobTitle.trim(),
+        ])
+      );
+
+      const buildableJobs = analysisResponse.analyses.map((entry) => {
+        const importedTitle = titleByJob.get(entry.sourceRowNumber ?? entry.companyName) ?? '';
+        return {
+          companyName: entry.companyName,
+          role: importedTitle || getAnalysisJobTitle(entry.analysis) || fallbackRole,
+          jobDescription: entry.jobDescription,
+          jobAnalysis: entry.analysis,
+          sourceRowNumber: entry.sourceRowNumber,
+        };
+      });
+
+      if (buildableJobs.length > 0) {
+        const buildCount = buildableJobs.length * selectedProfiles.length;
+        setGenerationStep(`Building ${buildCount} resume(s)`);
         updateGenerationProgress(
           totalBuilds,
-          completedBuilds,
-          'Analyzing job description',
+          totalBuilds - buildCount,
+          'Building resumes',
           undefined,
-          normalizedCompanyName,
-          importedJobTitle,
-          jobIndex + 1,
+          undefined,
+          undefined,
+          undefined,
           normalizedJobs.length
         );
 
-        try {
-          const analysis = await resumeApi.analyze(trimmedJobDescription, aiRequestOverrides);
-          if (!hasSetJobAnalysis) {
-            setJobAnalysis(analysis);
-            hasSetJobAnalysis = true;
-          }
+        const result = await resumeApi.generateMultiJob({
+          ...aiRequestOverrides,
+          ...getDefaultGenerationOptions(),
+          // Deliberately no templateId: the server then resolves each profile's
+          // own preferred template, which is what the per-profile loop did.
+          jobs: buildableJobs,
+          profileIds: selectedProfiles.map((profile) => profile.id),
+        });
 
-          const resolvedRole = shouldShowRoleInput
-            ? (job.jobTitle.trim() || fallbackRole || getAnalysisJobTitle(analysis) || '')
-            : (job.jobTitle.trim() || getAnalysisJobTitle(analysis) || '');
-
-          for (const profile of selectedProfiles) {
-            setGenerationStep(`Generating ${completedBuilds + 1}/${totalBuilds}: ${profile.name} x ${normalizedCompanyName}`);
-            updateGenerationProgress(
-              totalBuilds,
-              completedBuilds,
-              'Building resumes',
-              profile.name,
-              normalizedCompanyName,
-              resolvedRole,
-              jobIndex + 1,
-              normalizedJobs.length
-            );
-
-            try {
-              const result = await resumeApi.generate({
-                ...aiRequestOverrides,
-                profileId: profile.id,
-                templateId: profile.preferredTemplate || 'default',
-                jobDescription: trimmedJobDescription,
-                jobAnalysis: analysis,
-                companyName: normalizedCompanyName,
-                role: resolvedRole,
-                sourceRowNumber: job.sourceRowNumber,
-                ...getDefaultGenerationOptions(),
-              });
-              collectUnconfirmedFromGenerateResult(unconfirmedHardMap, unconfirmedSoftMap, result);
-            } catch (err) {
-              failedCompanies.add(normalizedCompanyName);
-              failedBuilds += 1;
-              failures.push(
-                `${normalizedCompanyName} / ${profile.name}: ${err instanceof Error ? err.message : 'Generation failed'}`
-              );
-            } finally {
-              completedBuilds += 1;
-              updateGenerationProgress(
-                totalBuilds,
-                completedBuilds,
-                'Building resumes',
-                profile.name,
-                normalizedCompanyName,
-                resolvedRole,
-                jobIndex + 1,
-                normalizedJobs.length
-              );
-            }
-          }
-        } catch (err) {
-          failedCompanies.add(normalizedCompanyName);
-          failedBuilds += selectedProfiles.length;
-          failures.push(
-            `Row ${job.sourceRowNumber} / ${normalizedCompanyName}: ${err instanceof Error ? err.message : 'Analysis failed'}`
-          );
-          completedBuilds += selectedProfiles.length;
-          updateGenerationProgress(
-            totalBuilds,
-            completedBuilds,
-            'Analyzing job description',
-            undefined,
-            normalizedCompanyName,
-            importedJobTitle,
-            jobIndex + 1,
-            normalizedJobs.length
-          );
+        failedBuilds += result.failed;
+        for (const failure of result.failures) {
+          failedCompanies.add(failure.companyName);
+          failures.push(`${failure.companyName} / ${failure.profileName}: ${failure.error}`);
         }
+
+        setUnconfirmedHardSkills(toUnconfirmedItems(result.unconfirmedHardSkills ?? []));
+        setUnconfirmedSoftSkills(toUnconfirmedItems(result.unconfirmedSoftSkills ?? []));
       }
 
-      setUnconfirmedHardSkills(toUnconfirmedItems(Array.from(unconfirmedHardMap.values())));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(Array.from(unconfirmedSoftMap.values())));
+      updateGenerationProgress(
+        totalBuilds,
+        totalBuilds,
+        'Building resumes',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        normalizedJobs.length
+      );
 
       const generatedCount = totalBuilds - failedBuilds;
       const skippedNote = meta.skippedRows
@@ -557,6 +560,11 @@ export default function Home() {
           `Some builds failed (${failedBuilds}/${totalBuilds}). Failed companies: ${failedCompanySummary || 'Unknown'}. ${failures.slice(0, 3).join(' | ')}${failures.length > 3 ? ' | ...' : ''}`
         );
       }
+    } catch (err) {
+      // One failed batch call is the whole run: without the per-item loop there
+      // is nothing partial to report, so say so plainly rather than leaving the
+      // success line to claim a number nothing produced.
+      setError(err instanceof Error ? err.message : 'Generation failed');
     } finally {
       setIsGenerating(false);
       setGenerationStep('');

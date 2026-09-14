@@ -510,7 +510,10 @@ export default function AdminSettingsPage() {
   }
 
   const providerEnabled = form.providersEnabled;
-  const availableDefaultModels = settings.aiModels.filter(
+  // From the PICKABLE list, not the editable rows: hybrid is choosable but is
+  // not a stored model, so filtering `aiModels` dropped it from the only
+  // control that sets the app default.
+  const availableDefaultModels = settings.pickableModels.filter(
     (model) => model.enabled && providerEnabled[model.provider] && !isProviderLocked(settings, model.provider)
   );
   const outputPathPreview = buildPathPreview(form.outputPathTemplate);

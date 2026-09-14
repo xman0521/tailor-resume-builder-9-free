@@ -6,6 +6,7 @@ import HTMLtoDOCX from 'html-to-docx';
 import { Profile } from '../types/profile';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getCoverLetterOutputFilename } from '../utils/generatedPath';
+import { withRenderPermit } from './renderConcurrency';
 
 const COVER_LETTER_GREETINGS = ['Hello Hiring Team,', 'Hi Hiring Team,', 'Hello Team,', 'Hi Team,'];
 
@@ -83,6 +84,10 @@ export async function saveCoverLetter(
 
   const html = buildCoverLetterHTML(content.trim(), profile.name);
 
+  // The heaviest render in the app: a whole Chrome per cover letter, not a tab
+  // in a shared one. It takes a permit from the same pool the resume renders
+  // do, because it is the same machine being asked for the memory.
+  return await withRenderPermit(async () => {
   const browser = await launchBrowser();
 
   try {
@@ -104,6 +109,7 @@ export async function saveCoverLetter(
   } finally {
     await browser.close();
   }
+  });
 }
 
 /**

@@ -192,7 +192,24 @@ export type PublicAppSettingsWithDerived = PublicAppSettings & {
 };
 
 export type AdminAppSettings = Omit<PublicAppSettingsWithDerived, 'aiModels'> & {
+  /**
+   * The stored rows, for the Models editor to edit.
+   *
+   * Deliberately not the same list as `pickableModels`: an editor needs rows
+   * that exist and can be changed or deleted.
+   */
   aiModels: AIModelRecord[];
+  /**
+   * What may be CHOSEN, which is a longer list than what may be edited.
+   *
+   * Hybrid is pickable but is not a row - it is synthesized whenever both free
+   * chat providers have a runnable model - so a picker built from `aiModels`
+   * silently leaves it out. That is what happened to the "Default AI model"
+   * dropdown: the app default could be set to hybrid through the API and was
+   * honoured by `resolveDefaultModelId`, but the only control for it could not
+   * offer the option.
+   */
+  pickableModels: AIModelRecord[];
   outputBaseDir: string;
   outputPathTemplate: string;
   outputPathPreview: string;
@@ -371,8 +388,17 @@ function defaultBrowserChatEndpoints(): BrowserChatEndpoint[] {
   ];
 }
 
-/** Most browsers one site may have. A guard against a paste, not a policy. */
-export const BROWSER_CHAT_MAX_ENDPOINTS = 16;
+/**
+ * Most browsers that may be registered, counted across every site rather than
+ * per site - the check below measures the whole list, and the comment that used
+ * to sit here said "one site may have", which read as twice the real allowance.
+ *
+ * A guard against a paste, not a policy. Nothing in the pool assumes a bound,
+ * so the practical ceiling is the machine: each registered browser is a
+ * separate Chrome instance with its own profile and its own logged-in account,
+ * and they all run at once.
+ */
+export const BROWSER_CHAT_MAX_ENDPOINTS = 50;
 
 const DEFAULT_MODEL_RECORDS = createDefaultModelRecords();
 
@@ -1004,6 +1030,7 @@ function toAdminSettings(settings: AppSettings): AdminAppSettings {
   return {
     ...toPublicSettingsWithDerived(settings),
     aiModels: settings.aiModels.map((model) => ({ ...model })),
+    pickableModels: getPickableModels(settings).map((model) => ({ ...model })),
     outputBaseDir: settings.outputBaseDir,
     outputPathTemplate: settings.outputPathTemplate,
     outputPathPreview: buildOutputPathPreview(settings.outputPathTemplate),

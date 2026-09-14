@@ -1,6 +1,10 @@
 import { EFFORT_LEVELS, isEffortLevel, type EffortLevel } from '../services/ai/types';
 import { DEFAULT_CLI_EFFORT } from '../services/ai/providers/claudeCli/options';
-import { resolveRequestedAIModel, resolveStoredAIModelPreference } from './aiModelConfig';
+import {
+  getAppSettings,
+  resolveRequestedAIModel,
+  resolveStoredAIModelPreference,
+} from './aiModelConfig';
 import { isHybridModelId } from './providerCatalog';
 import type { FreeChatRoute } from '../services/ai/freeChatRouting';
 import type { AIProvider } from '../types/template';
@@ -164,11 +168,24 @@ export async function resolveAiChoice(
     ? await resolveRequestedAIModel(overridePreferences.modelId)
     : await resolveStoredAIModelPreference(profilePreferences.modelId);
 
-  // Read from the id that was ASKED FOR, not from the record that came back.
-  // Hybrid resolves to one of the two free accounts, so by the time the record
-  // exists it is indistinguishable from having picked that account outright -
-  // and that difference is the whole of what hybrid means.
-  const hybrid = isHybridModelId(preferences.modelId);
+  /*
+   * Read from the id that was ASKED FOR, not from the record that came back.
+   * Hybrid resolves to one of the two free accounts, so by the time the record
+   * exists it is indistinguishable from having picked that account outright -
+   * and that difference is the whole of what hybrid means.
+   *
+   * "Asked for" includes asking for nothing. Neither a run override nor a
+   * profile preference naming a model means the APP DEFAULT decides, and that
+   * default can itself be hybrid - `resolveRequestedAIModel` already handles
+   * it. Reading only the preference here meant an admin who set the default to
+   * hybrid got a record from one site and no route on the choice: every call
+   * went to whichever site the router happened to rank first, the other
+   * account's browsers sat idle, and the batch width was computed from one
+   * site instead of both. The setting looked applied and did nothing.
+   */
+  const requestedModelId =
+    preferences.modelId?.trim() || (await getAppSettings()).defaultModelId;
+  const hybrid = isHybridModelId(requestedModelId);
 
   return {
     provider: model.provider,

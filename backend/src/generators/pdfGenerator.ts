@@ -13,6 +13,7 @@ import { isConceptSkill } from '../services/utils/hardSkillSelection';
 import { TailoredContent, Template } from '../types/template';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getGeneratedFilePath, getResumeOutputFilename } from '../utils/generatedPath';
+import { withRenderPermit } from './renderConcurrency';
 import {
   HARD_SKILL_CATEGORIES,
   HardSkillCategory,
@@ -1625,8 +1626,14 @@ export async function generateResumePDF(
   // Add CSS if separate
   const fullHtml = timePdfStageSync('HTML assembly', () => assembleResumeDocument(template, html));
 
-  // Generate PDF with Puppeteer
+  // Generate PDF with Puppeteer.
+  //
+  // Under a rendering permit, held across the whole render rather than just the
+  // export call: the batch runs as wide as there are chat browsers registered,
+  // and without this every one of those items would open a tab here at the same
+  // moment. See renderConcurrency.
   const pageBox = resolveTemplatePageBox(template);
+  return await withRenderPermit(async () => {
   const browser = await timePdfStage('browser ready', () => getSharedPdfBrowser());
   let page: Awaited<ReturnType<Browser['newPage']>> | null = null;
 
@@ -1669,6 +1676,7 @@ export async function generateResumePDF(
       await timePdfStage('page close', () => pageToClose.close());
     }
   }
+  });
 }
 
 export async function generatePreviewHTML(
