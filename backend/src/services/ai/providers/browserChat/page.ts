@@ -1,4 +1,4 @@
-import type { Page } from 'puppeteer';
+import type { ElementHandle, Page } from 'puppeteer';
 import type { ChatMessage } from './conversation';
 
 /**
@@ -125,26 +125,104 @@ export interface ChatPage {
   messages(selector: string, idAttribute: string | null): Promise<ChatMessage[] | null>;
 }
 
+/**
+ * Whether waking a tab should raise its window, the way it always used to.
+ *
+ * An escape hatch, off by default: if some Chrome build ignores the lifecycle
+ * call, AI_WEB_ACTIVATE_TABS=1 restores the behaviour that is known to work at
+ * the cost of the operator's focus.
+ */
+function forceBringToFront(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.AI_WEB_ACTIVATE_TABS ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
+/**
+ * Makes a tab answer DOM reads again, WITHOUT taking the operator's screen.
+ *
+ * The problem is real and this used to be `bringToFront`: Chrome freezes background
+ * tabs and a frozen renderer never answers `Runtime.callFunctionOn`, so the
+ * first DOM read blocks until puppeteer's protocol timeout. Measured: a turn
+ * that takes 1.7s in a foreground tab had not returned after 45s with another
+ * tab in front of it.
+ *
+ * `bringToFront` fixed that by raising the window, and the fix was worse than
+ * anyone had measured. On a 500-resume batch it raises a Chrome window per
+ * call - hundreds of times - and on Windows that drags the operator's desktop
+ * back from whatever they were doing, mid-sentence.
+ *
+ * `Page.setWebLifecycleState` is the API for exactly this question: it moves
+ * the page to 'active' and un-freezes the renderer, and it does not touch
+ * window ordering or focus. Falls back to raising the window if the call is
+ * unavailable, so a Chrome that does not support it is slow-but-working rather
+ * than hanging.
+ */
+async function wake(page: Page): Promise<void> {
+  if (forceBringToFront()) {
+    await page.bringToFront();
+    return;
+  }
+
+  let session: Awaited<ReturnType<Page['createCDPSession']>> | null = null;
+  try {
+    session = await page.createCDPSession();
+    await session.send('Page.setWebLifecycleState', { state: 'active' });
+    return;
+  } catch {
+    // Unsupported or the session went away. The window is the blunt answer and
+    // still the correct one - a hung turn is worse than a raised window.
+    await page.bringToFront();
+  } finally {
+    await session?.detach().catch(() => {});
+  }
+}
+
+/**
+ * Clicks a control without needing its tab to be the one on screen.
+ *
+ * WHY NOT `handle.click()`. Puppeteer's own click resolves the element's
+ * clickable point through the renderer's hit-testing, and in a tab the browser
+ * is not showing that never returns - measured, and the reason this file used
+ * to raise the window before every turn. That raise is what pulled the
+ * operator's desktop back hundreds of times in a long batch.
+ *
+ * Measured on a backgrounded tab, same page, same control:
+ *
+ *   page.$ / evaluate / focus / text insertion    a few ms each
+ *   handle.click()                                 never returns
+ *   mouse dispatch at a coordinate                 13ms
+ *
+ * So the tab was never the problem; one API was. Coordinates come from the
+ * element itself after scrolling it into view, and the events are real input
+ * events rather than ${TICK}element.click()${TICK} - a site that checks ${TICK}isTrusted${TICK} would
+ * ignore a synthetic one.
+ */
+async function clickInPlace(page: Page, target: ElementHandle): Promise<void> {
+  const box = await target.evaluate((node: unknown) => {
+    const element = node as {
+      scrollIntoView(options: unknown): void;
+      getBoundingClientRect(): { x: number; y: number; width: number; height: number };
+    };
+    element.scrollIntoView({ block: 'center', inline: 'center' });
+    const rect = element.getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, width: rect.width, height: rect.height };
+  });
+
+  // No box is not something to click at (0,0) and hope: that is a control the
+  // site is keeping in the tree for a state it is not in, and the caller's cue
+  // to try the next candidate.
+  if (box.width === 0 || box.height === 0) {
+    throw new Error('the control has no box to click');
+  }
+
+  await page.mouse.click(box.x, box.y);
+}
+
 export function wrapPuppeteerPage(page: Page): ChatPage {
   return {
     currentUrl: () => page.url(),
-    /**
-     * Bring the tab to the front before driving it.
-     *
-     * Not cosmetic - without it the driver HANGS. Chrome freezes background
-     * tabs, and a frozen renderer never answers `Runtime.callFunctionOn`, so
-     * the first DOM read blocks until puppeteer's protocol timeout rather than
-     * returning. Measured: the same turn that takes 1.7s in a foreground tab
-     * had not returned after 45s once a second tab was opened in front of it -
-     * and a second tab is exactly what this app opens when it preflights the
-     * OTHER browser provider at startup.
-     *
-     * The cost is real and worth naming: this steals focus in the operator's
-     * browser for the length of a turn. That is why the debug browser is
-     * documented as a separate window for this purpose rather than the one
-     * they browse in.
-     */
-    activate: () => page.bringToFront(),
+/** Wake the tab so it answers DOM reads. See `wake`. */
+    activate: () => wake(page),
     goto: async (url, timeoutMs) => {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
     },
@@ -206,13 +284,10 @@ export function wrapPuppeteerPage(page: Page): ChatPage {
         }
       }
 
-      // Bounded. `handle.click()` takes no timeout of its own, so it is capped
-      // only by the connection-wide protocol timeout - and in a tab the browser
-      // is not showing it does not return at all. Measured in a hidden tab:
-      // every read came back in milliseconds and the click threw after 30s.
-      // Left unbounded, the first click of a turn eats the whole budget.
+      // Still bounded: no click path takes a timeout of its own, so without
+      // this the first click of a turn could eat the whole budget.
       await Promise.race([
-        target.click(),
+        clickInPlace(page, target),
         new Promise<never>((_, reject) =>
           setTimeout(
             () => reject(new Error(`clicking ${selector} did not return within ${timeoutMs}ms`)),

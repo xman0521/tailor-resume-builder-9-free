@@ -315,6 +315,22 @@ const SHARED_LAUNCH_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
   '--disable-dev-shm-usage',
+  /*
+   * Keep a tab nobody is looking at running at full speed.
+   *
+   * Chrome throttles timers in a background tab, which stalls a chat page that
+   * streams its answer on a timer: the turn sits waiting for chunks that never
+   * arrive. That is the real mechanism behind "a backgrounded tab hangs" - a
+   * DOM read against one answers in milliseconds, measured; it is the page's
+   * own timers that stop.
+   *
+   * `launchDebugBrowsers` already passed these and this launcher did not, so
+   * the behaviour depended on which code path started Chrome. Having them here
+   * is what lets a turn wake a tab without raising its window.
+   */
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--disable-background-timer-throttling',
 ];
 
 /**

@@ -748,11 +748,11 @@ export class ChatTab {
 
     // Before anything is read: a background tab is frozen, and every DOM read
     // against a frozen renderer blocks instead of returning.
-    // Asked before the operator's window is taken over. `activate()` brings the
-    // chat tab to the front, and doing that for a caller who has already gone
-    // is a visible interruption in exchange for an answer nobody will read.
+    // Asked before the tab is woken, because doing that for a caller who has
+    // already gone is work in exchange for an answer nobody will read.
     this.stopIfCancelled(signal);
 
+    // Wakes the renderer. No longer raises the window - see `activate()`.
     await this.page.activate();
 
     // Cleared BEFORE anything reads the page, not after. `startFreshConversation`

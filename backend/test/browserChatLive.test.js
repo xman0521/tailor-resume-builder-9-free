@@ -250,13 +250,24 @@ test('an unreachable debug browser reports how to start one', async () => {
   assert.match(probe.hint || '', /user-data-dir/);
 });
 
-test('a chat tab in the background is brought forward, not waited on forever', async () => {
-  // The bug this pins, found end to end rather than by reading: Chrome FREEZES
-  // background tabs, and a frozen renderer never answers a DevTools evaluate.
-  // The first DOM read then blocks - not slowly, indefinitely - so a turn that
-  // takes 1.7s in a foreground tab had not returned after 45s once a second tab
-  // was opened in front of it. And this app opens exactly that second tab: it
-  // preflights the OTHER browser provider at startup.
+test('a chat tab in the background is driven in place, without being raised', async () => {
+  /*
+   * The bug this pins, found end to end rather than by reading: a turn that
+   * takes ~1s with its tab in front did not return at all once a second tab was
+   * opened over it. And this app opens exactly that second tab - it preflights
+   * the OTHER browser provider at startup.
+   *
+   * The cause was one API, not the tab. Measured on the backgrounded tab:
+   * reads, evaluates, focus and text insertion all answered in single-digit
+   * milliseconds; only puppeteer's own click never returned, because it
+   * resolves a clickable point through hit-testing the frontmost tab.
+   *
+   * It was fixed by raising the window before every turn, which worked and cost
+   * the operator their screen - hundreds of window raises in a long batch, each
+   * one yanking the desktop back mid-sentence. Dispatching the click at a
+   * coordinate instead answers in 13ms with the tab still in the background, so
+   * this test now asserts the turn completes AND that nothing was raised.
+   */
   const browser = await launchBrowser();
   try {
     const chat = await browser.newPage();
@@ -273,6 +284,20 @@ test('a chat tab in the background is brought forward, not waited on forever', a
 
     assert.match(answer, /ANSWER-END$/);
     assert.ok(elapsedMs < 15_000, `a backgrounded tab must not stall the turn, took ${Math.round(elapsedMs)}ms`);
+
+    // The tab opened last is still the one in front: the chat tab was driven
+    // while hidden. Asserted on the chat page rather than on "nothing is
+    // visible" - the front tab is legitimately visible, and it is not this one.
+    assert.equal(
+      await chat.evaluate(() => document.visibilityState === 'visible'),
+      false,
+      'the turn raised the chat tab instead of driving it in place'
+    );
+    assert.equal(
+      await other.evaluate(() => document.visibilityState === 'visible'),
+      true,
+      'the tab that was in front should have stayed there'
+    );
   } finally {
     await browser.close();
   }
