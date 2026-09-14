@@ -1,0 +1,45 @@
+.env
+.DS_Store
+._*
+generated/
+# The README suggests DB_DIR=./data/db as the writable local default.
+data/db/
+backend/data/
+service-account-key.json
+backend/service-account-key.json
+node_modules
+backend/node_modules
+backend/dist
+backend/uploads
+frontend/node_modules
+frontend/.agents
+frontend/.next
+frontend/.codex
+
+# Client-specific resume templates. These are personal data, not app code:
+# each one is named after the person it was built for, and the app reads them
+# from disk at runtime. They stay on this machine; the repo ships only the
+# generic starter templates.
+backend/static/templates/38606723-9742-4b34-88b8-0a9abec5d063.json
+backend/static/templates/4244d8a9-ca68-45aa-90ed-94b5147119b5.json
+backend/static/templates/5964089f-9c93-44ab-8600-22bca6b0f37b.json
+backend/static/templates/701cf5ee-ef2e-461e-ac33-a4a98b29672b.json
+backend/static/templates/750ce261-8304-47af-bd7b-1eab10722910.json
+backend/static/templates/80cdb0e1-7456-4b75-8342-7da7964037aa.json
+backend/static/templates/b6bfa346-60eb-43a2-9a08-c60c013971c6.json
+backend/static/templates/cc617541-907b-4d28-8c41-51494fbe4484.json
+backend/static/templates/dd15eb59-7910-4ffe-a3f4-170a82159a75.json
+backend/static/templates/dragon-justin.json
+backend/static/templates/e6c78f8c-1bf3-427c-9248-89a7870cf06d.json
+backend/static/templates/f20635fb-5136-4aa6-a4ee-53f453df3095.json
+backend/static/templates/m-65300e0d.json
+backend/static/templates/one-column-michael.json
+backend/static/templates/one-column-pdf.json
+backend/static/templates/one-column-professional.json
+backend/static/templates/one-column-serif.json
+backend/static/templates/template_*.json
+backend/static/templates/two-column-andrew.json
+backend/static/templates/two-column-executive.json
+backend/static/templates/two-column-john.json
+backend/static/templates/two-column-kevin-dragon.json
+backend/static/templates/m/default.json
