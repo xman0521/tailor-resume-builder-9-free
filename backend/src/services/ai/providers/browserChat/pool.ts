@@ -132,6 +132,11 @@ export class TabPool {
     return [...this.endpoints];
   }
 
+  /** The endpoints this pool is currently refusing to hand out. */
+  sidelined(now: number = this.now()): string[] {
+    return this.endpoints.filter((endpoint) => (this.downUntil.get(endpoint) ?? 0) > now);
+  }
+
   /**
    * Points the pool at a new set of browsers.
    *
@@ -434,6 +439,23 @@ export function getTabPoolStats(): Record<
     };
   }
   return stats;
+}
+
+/**
+ * Every browser any pool has recently found unusable.
+ *
+ * Read by the batch when it decides how wide to run. A browser that is running
+ * but cannot answer - signed out, showing markup this app does not recognise -
+ * used to count toward capacity exactly like a working one, so the batch
+ * offered it work and lost a resume each time. This is the pool telling the
+ * batch what it already learned the hard way.
+ */
+export function getSidelinedEndpoints(now: number = Date.now()): Set<string> {
+  const sidelined = new Set<string>();
+  for (const pool of pools.values()) {
+    for (const endpoint of pool.sidelined(now)) sidelined.add(endpoint);
+  }
+  return sidelined;
 }
 
 export function resetTabPoolsForTests(): void {

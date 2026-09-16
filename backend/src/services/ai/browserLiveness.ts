@@ -1,4 +1,5 @@
 import { probeDebugBrowser } from '../debugBrowser';
+import { getSidelinedEndpoints } from './providers/browserChat/pool';
 import {
   BROWSER_CHAT_SITE_IDS,
   type BrowserChatSiteId,
@@ -60,13 +61,30 @@ export async function countLiveBrowsers(
 ): Promise<LiveCounts | null> {
   if (endpoints.length === 0) return new Map();
 
-  const key = keyOf(endpoints);
+  // The sidelined set is part of the question, not just the endpoint list: a
+  // browser that drops out mid-run must narrow the NEXT batch, not the one
+  // after the cache happens to expire.
+  const key = `${keyOf(endpoints)}|${[...getSidelinedEndpoints(now())].sort().join(',')}`;
   if (cached && cached.key === key && now() - cached.at < CACHE_MS) {
     return new Map(cached.counts);
   }
 
+  /*
+   * What the pool has already learned, which the probe cannot see.
+   *
+   * A signed-out tab answers the debug port perfectly well - Chrome is running,
+   * the tab is open - so the probe calls it live. Only a real turn discovers
+   * that none of the site's markup is there, and when it does, the pool
+   * sidelines that endpoint. Counting it here is what stops the batch handing
+   * work to a browser that has just proven it cannot do any.
+   */
+  const sidelined = getSidelinedEndpoints(now());
+
   const probes = await Promise.all(
     endpoints.map(async (entry) => {
+      if (sidelined.has(`http://127.0.0.1:${entry.port}`)) {
+        return { siteId: entry.siteId, running: false };
+      }
       try {
         const status = await probeDebugBrowser(entry.port);
         return { siteId: entry.siteId, running: status.running };

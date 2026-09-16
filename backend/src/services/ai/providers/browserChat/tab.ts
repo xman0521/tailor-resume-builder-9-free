@@ -49,6 +49,22 @@ export class ChatTurnError extends Error {
    */
   sent = true;
 
+  /**
+   * Whether this says something about the BROWSER rather than the answer.
+   *
+   * Only a timeout needs it, and only one kind of timeout. "Still writing when
+   * the deadline passed" is a working browser and a budget that was too small -
+   * retrying elsewhere would be wrong, and taking it out of rotation wronger.
+   * "Not one assistant selector matched anything at all" is the opposite: the
+   * page is not the page this app knows, which in practice means a signed-out
+   * tab, and that browser will answer nothing until somebody signs it in.
+   *
+   * Left off `kind` because it is not a different kind to the caller: the call
+   * still timed out, still reports as a timeout, and is still retryable. What
+   * changes is whether the browser keeps taking work.
+   */
+  browserSuspect = false;
+
   constructor(kind: ChatTurnErrorKind, message: string, retryable = false) {
     super(message);
     this.name = 'ChatTurnError';
@@ -959,7 +975,11 @@ export class ChatTab {
       if (outcome.done) return outcome.done;
     }
 
-    throw new ChatTurnError('timeout', this.timeoutReason(everRendered));
+    const timedOut = new ChatTurnError('timeout', this.timeoutReason(everRendered));
+    // Nothing ever rendered AND no selector ever matched: this browser is not
+    // showing the site. See `browserSuspect`.
+    timedOut.browserSuspect = !everRendered && !this.assistantSelector;
+    throw timedOut;
   }
 
   /**

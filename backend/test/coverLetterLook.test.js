@@ -8,13 +8,14 @@ const { saveCoverLetter, pickCoverLetterStyle } = require('../dist/generators/co
 
 /**
  * The catalogue, reached the only way it is exposed: by pinning each name.
- * Ten typefaces times five reading rhythms, which is how fifty distinct looks
- * are built without fifty hand-written blocks to keep in step.
+ * Ten typefaces times five page FORMS - not five reading rhythms, which is what
+ * this was and why every letter still looked the same. See the note on the
+ * shape test below.
  */
 const FAMILIES = ['georgia', 'times', 'palatino', 'cambria', 'garamond',
   'helvetica', 'arial', 'segoe', 'verdana', 'trebuchet'];
-const RHYTHMS = ['compact', 'plain', 'open', 'airy', 'formal'];
-const CATALOGUE = FAMILIES.flatMap((family) => RHYTHMS.map((rhythm) => `${family}-${rhythm}`));
+const FORMS = ['block', 'indented', 'memo', 'formal', 'narrow'];
+const CATALOGUE = FAMILIES.flatMap((family) => FORMS.map((form) => `${family}-${form}`));
 const allStyles = () => CATALOGUE.map((name) => pickCoverLetterStyle('x', { COVER_LETTER_STYLE: name }));
 
 /**
@@ -51,14 +52,66 @@ test('no two looks are the same once the label is ignored', () => {
   const seen = new Map();
   for (const style of allStyles()) {
     const key = JSON.stringify([
-      style.fontFamily, style.fontSize, style.lineHeight,
-      style.color, style.paragraphGap, style.signOff, style.signature,
+      style.fontFamily, style.fontSize, style.lineHeight, style.color,
+      style.paragraphGap, style.paragraphIndent, style.textAlign,
+      style.pageMargin, style.maxWidth, style.signOff, style.signature,
     ]);
     const clash = seen.get(key);
     assert.equal(clash, undefined, `${style.name} is identical to ${clash}`);
     seen.set(key, style.name);
   }
   assert.equal(seen.size, 50);
+});
+
+test('the looks differ in PAGE SHAPE, not only in typeface', () => {
+  /*
+   * The failure this exists to catch, reported after the first attempt at fifty
+   * looks: "I found just difference in font, no other differences."
+   *
+   * It was true. That version varied the typeface and then a point of body
+   * size, a tenth of leading, two points of paragraph gap and four near-blacks
+   * - so every one of the fifty had the same margins, the same measure, the
+   * same ragged right edge and the same block paragraphs. Ignore the font and
+   * there was exactly ONE letter.
+   *
+   * So this asserts on the levers a reader can actually see, with the typeface
+   * deliberately excluded from the comparison.
+   */
+  const shapes = new Set(
+    allStyles().map((style) =>
+      JSON.stringify([
+        style.pageMargin, style.textAlign, style.paragraphIndent,
+        style.paragraphGap, style.maxWidth, style.ruleAfterGreeting, style.ruleBeforeSignature,
+      ])
+    )
+  );
+
+  assert.ok(shapes.size >= 5, `ignoring the font, there are only ${shapes.size} distinct page shapes`);
+
+  // And the range has to be worth having: margins that differ by a hair are
+  // not a different page.
+  const margins = allStyles().map((style) => Number.parseFloat(style.pageMargin));
+  assert.ok(Math.max(...margins) - Math.min(...margins) >= 0.4, 'every letter has near enough the same margin');
+
+  assert.ok(allStyles().some((style) => style.textAlign === 'justify'), 'nothing is justified');
+  assert.ok(allStyles().some((style) => style.textAlign === 'left'), 'everything is justified');
+  assert.ok(allStyles().some((style) => style.paragraphIndent !== '0'), 'no form indents its paragraphs');
+  assert.ok(allStyles().some((style) => style.maxWidth), 'no form sets a narrow measure');
+  assert.ok(
+    allStyles().some((style) => style.ruleAfterGreeting || style.ruleBeforeSignature),
+    'no form carries a rule'
+  );
+});
+
+test('a form separates paragraphs with space OR indents them, never both', () => {
+  // Doing both is the mark of somebody who set neither on purpose; doing
+  // neither runs the letter together.
+  for (const style of allStyles()) {
+    const hasGap = Number.parseFloat(style.paragraphGap) > 0;
+    const hasIndent = Number.parseFloat(style.paragraphIndent) > 0;
+    assert.ok(hasGap || hasIndent, `${style.name} would run its paragraphs together`);
+    assert.equal(hasGap && hasIndent, false, `${style.name} both indents and spaces its paragraphs`);
+  }
 });
 
 test('different people get different looks', () => {
@@ -110,8 +163,7 @@ test('the look can be pinned, and a bad value falls back rather than throwing', 
     'garamond-formal'
   );
 
-  // A rhythm on its own is not a style name any more - it used to be, when
-  // there were five looks called classic/modern/formal/airy/compact - so it
+  // A form on its own is not a style name - it needs a typeface too - so it
   // falls back rather than half-matching something the operator did not ask
   // for. Pinned here because a silent fallback is exactly the failure an
   // operator would not notice.
@@ -139,9 +191,20 @@ test('every look stays a plain single column, because a scanner reads this too',
     assert.ok(Number(style.lineHeight) >= 1.4, `${style.name} is set too tight to read`);
     assert.match(style.color, /^#[0-9a-f]{6}$/i, `${style.name} has an odd ink`);
 
-    // Nothing may introduce a column, a float or a page break.
+    // A margin still has to leave a letter on the page.
+    const margin = Number.parseFloat(style.pageMargin);
+    assert.ok(margin >= 0.4 && margin <= 1.25, `${style.name} has a ${style.pageMargin} margin`);
+
+    // Nothing may introduce a column, a float, or take the text out of flow.
+    // Matched on the PROPERTY, not the substring: "text-transform" sets letter
+    // case and moves nothing, and an earlier version of this test failed the
+    // memo form over it.
     const css = [style.greeting, style.signOff, style.signature].join(' ');
-    assert.equal(/column|float|position|transform|rotate/i.test(css), false, `${style.name} moves the text around`);
+    assert.equal(
+      /(^|[s;])(transform|position|float|columns?|column-count)s*:/i.test(css),
+      false,
+      `${style.name} moves the text around`
+    );
   }
 });
 

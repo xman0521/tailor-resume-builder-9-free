@@ -127,6 +127,15 @@ const REFUSED_FOR_MS = 10 * 60_000;
 const UNUSABLE_FOR_MS = 2 * 60_000;
 
 /**
+ * How long a browser that showed none of the site's markup is left out.
+ *
+ * Long, because the cause is almost always a signed-out tab and that needs a
+ * person: cooling down for a minute would just feed it the next unit. Short
+ * enough that signing back in is noticed without restarting the server.
+ */
+const SIGNED_OUT_FOR_MS = 15 * 60_000;
+
+/**
  * Why a browser was passed over, and for how long - or null when the failure
  * was the REQUEST'S and no other browser would do better.
  *
@@ -175,7 +184,24 @@ function describeBrowserFault(
     return { reason: error.message, coolForMs: UNREACHABLE_FOR_MS };
   }
   if (!(error instanceof ChatTurnError)) return null;
-  if (error.kind === 'timeout' || error.kind === 'cancelled') return null;
+
+  /*
+   * A timeout is normally not the browser's fault, and saying otherwise would
+   * cool down a perfectly good browser every time an answer ran long.
+   *
+   * The exception is the timeout where NOTHING matched - no assistant selector
+   * found a node at any point. That is not a slow answer, it is a tab that is
+   * not showing the site, and it fails the same way every time. Left in
+   * rotation it kept taking work: a run of 360 resumes lost 10 to one
+   * signed-out browser, each of them retried three times onto the same dead
+   * tab, because a timeout could never mark an endpoint down.
+   */
+  if (error.kind === 'timeout') {
+    return error.browserSuspect
+      ? { reason: error.message, coolForMs: SIGNED_OUT_FOR_MS }
+      : null;
+  }
+  if (error.kind === 'cancelled') return null;
 
   if (error.kind === 'refused') {
     // Both before and after sending. The site has said it will not answer, so

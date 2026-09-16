@@ -504,10 +504,11 @@ export default function Home() {
 
       if (buildableJobs.length > 0) {
         const buildCount = buildableJobs.length * selectedProfiles.length;
+        const alreadyFailed = totalBuilds - buildCount;
         setGenerationStep(`Building ${buildCount} resume(s)`);
         updateGenerationProgress(
           totalBuilds,
-          totalBuilds - buildCount,
+          alreadyFailed,
           'Building resumes',
           undefined,
           undefined,
@@ -516,14 +517,44 @@ export default function Home() {
           normalizedJobs.length
         );
 
-        const result = await resumeApi.generateMultiJob({
-          ...aiRequestOverrides,
-          ...getDefaultGenerationOptions(),
-          // Deliberately no templateId: the server then resolves each profile's
-          // own preferred template, which is what the per-profile loop did.
-          jobs: buildableJobs,
-          profileIds: selectedProfiles.map((profile) => profile.id),
+        /*
+         * The whole grid is one request, so its response says nothing until the
+         * last resume is done. Without this the bar sat on "0 / 360" for an
+         * hour and read as frozen - and the line under it said "preparing
+         * resume generation" the entire time, because nothing had completed.
+         *
+         * Subscribed BEFORE the work starts, so the gap between the two calls
+         * cannot lose the first few units.
+         */
+        const progressId = `sheets-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const stopWatching = resumeApi.watchBatchProgress(progressId, (progress) => {
+          if (!progress.total) return;
+          updateGenerationProgress(
+            totalBuilds,
+            alreadyFailed + progress.completed,
+            'Building resumes',
+            progress.profileName,
+            progress.companyName,
+            undefined,
+            undefined,
+            normalizedJobs.length
+          );
         });
+
+        let result;
+        try {
+          result = await resumeApi.generateMultiJob({
+            ...aiRequestOverrides,
+            ...getDefaultGenerationOptions(),
+            // Deliberately no templateId: the server then resolves each profile's
+            // own preferred template, which is what the per-profile loop did.
+            jobs: buildableJobs,
+            profileIds: selectedProfiles.map((profile) => profile.id),
+            progressId,
+          });
+        } finally {
+          stopWatching();
+        }
 
         failedBuilds += result.failed;
         for (const failure of result.failures) {

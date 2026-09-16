@@ -21,6 +21,13 @@ import {
 } from '../config/aiPreferences';
 import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
 import { withUnitRetry } from '../services/ai/retry';
+import {
+  advanceBatch,
+  finishBatch,
+  setBatchPhase,
+  startBatch,
+  watchBatch,
+} from '../services/batchProgress';
 import { describeFailure, sendAiError } from '../middleware/aiErrors';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
@@ -216,6 +223,49 @@ router.post('/analyze-prompt-test', async (req: Request, res: Response) => {
       error: error instanceof Error ? error.message : 'Failed to test job description prompt',
     });
   }
+});
+
+/**
+ * Live progress for one batch, as server-sent events.
+ *
+ * GET rather than POST and text/event-stream rather than JSON, because this is
+ * the one thing the page needs WHILE the batch request is still in flight - it
+ * cannot learn it from the response it is waiting on.
+ *
+ * The id is chosen by the client and passed to the batch call, so the page can
+ * start listening before it starts the work and miss nothing.
+ */
+router.get('/batch-progress/:id', (req: Request<{ id: string }>, res: Response) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    // Nginx and friends buffer an event stream into uselessness otherwise.
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+
+  const send = (payload: unknown): void => {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const stop = watchBatch(req.params.id, (progress) => {
+    send(progress);
+    if (progress.done) res.end();
+  });
+
+  // A comment line every twenty seconds. It is not an event, so no client sees
+  // it, but it keeps a proxy from closing a stream that is legitimately quiet
+  // while one long model call runs.
+  const keepAlive = setInterval(() => res.write(': keep-alive\n\n'), 20_000);
+  keepAlive.unref?.();
+
+  const close = (): void => {
+    clearInterval(keepAlive);
+    stop();
+  };
+  req.on('close', close);
+  res.on('close', close);
 });
 
 router.post('/analyze-multi-job', async (req: Request, res: Response) => {
@@ -649,6 +699,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       profileIds,
       format = 'both',
       includeCoverLetterDocx,
+      progressId,
     } = req.body as {
       templateId?: string;
       jobs?: Array<{
@@ -662,6 +713,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       profileIds?: string[];
       format?: 'pdf' | 'docx' | 'both';
       includeCoverLetterDocx?: boolean;
+      progressId?: string;
     };
 
     const aiOverrides = readAiOverrides(req.body);
@@ -742,6 +794,10 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
         `${capacity.limit} at a time (${capacity.reason})`
     );
 
+    // Reported per unit as it lands, so the page's bar can move while this one
+    // request is still open. See services/batchProgress.
+    if (progressId) startBatch(progressId, units.length, 'Building resumes');
+
     const outcomes = await mapWithConcurrency(units, capacity.limit, ({ job, profile }) =>
       runBatchUnit(`${profile.name} x ${job.companyName}`, requestSignal(req, res), async () => {
         const template = await resolveTemplateForProfile(profile, templateId);
@@ -803,6 +859,22 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
 
         return { entry, tailoredContent };
       })
+        // Reported on settle, not in the loop below: that loop runs after the
+        // LAST unit, which is exactly too late to be progress.
+        .then(
+          (value) => {
+            if (progressId) {
+              advanceBatch(progressId, { ok: true, profileName: profile.name, companyName: job.companyName });
+            }
+            return value;
+          },
+          (error: unknown) => {
+            if (progressId) {
+              advanceBatch(progressId, { ok: false, profileName: profile.name, companyName: job.companyName });
+            }
+            throw error;
+          }
+        )
     );
 
     // Collected in INPUT order, not completion order. `mapWithConcurrency`
@@ -834,6 +906,10 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       failedCompanies.add(job.companyName);
     });
 
+    // Closes the stream the page is watching. Also on the error path below, so
+    // a run that blew up does not leave a bar turning forever.
+    if (progressId) finishBatch(progressId);
+
     res.json({
       generated: results.length,
       failed: failures.length,
@@ -845,6 +921,8 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
     });
   } catch (error) {
+    const { progressId } = req.body as { progressId?: string };
+    if (progressId) finishBatch(progressId);
     console.error('Error generating resumes for multiple jobs:', error);
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to generate resumes for multiple jobs',

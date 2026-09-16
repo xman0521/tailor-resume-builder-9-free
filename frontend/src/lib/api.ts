@@ -1999,6 +1999,43 @@ export const resumeApi = {
       body: JSON.stringify(data),
     }),
 
+  /**
+   * Subscribes to a batch's progress.
+   *
+   * The batch runs inside one request, so its own response cannot report
+   * anything until the whole grid is done. This is a second, read-only channel
+   * for the part the page needs WHILE that request is open. Open it before
+   * starting the work and pass the same id to `generateMultiJob`; the server
+   * remembers an id it has not seen yet, so nothing is missed in the gap.
+   */
+  watchBatchProgress: (
+    progressId: string,
+    onProgress: (progress: {
+      total: number;
+      completed: number;
+      failed: number;
+      phase: string;
+      profileName?: string;
+      companyName?: string;
+      done: boolean;
+    }) => void
+  ): (() => void) => {
+    // The host the page was loaded from, like every other self-issued fetch:
+    // an EventSource to a different origin is one more thing to get blocked.
+    const base = getPreferredApiBase();
+    const source = new EventSource(`${base}/resume/batch-progress/${encodeURIComponent(progressId)}`);
+    source.onmessage = (event) => {
+      try {
+        onProgress(JSON.parse(event.data));
+      } catch {
+        // A malformed frame is not worth failing a generation over.
+      }
+    };
+    // EventSource reconnects on its own; nothing to do but stop shouting.
+    source.onerror = () => {};
+    return () => source.close();
+  },
+
   generateMultiJob: (data: {
     templateId?: string;
     jobs: Array<{
@@ -2014,6 +2051,8 @@ export const resumeApi = {
     profileIds?: string[];
     format?: 'pdf' | 'docx' | 'both';
     includeCoverLetterDocx?: boolean;
+    /** Ties this run to a `watchBatchProgress` stream. */
+    progressId?: string;
   }) =>
     apiFetch<{
       generated: number;

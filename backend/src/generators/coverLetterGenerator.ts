@@ -8,7 +8,7 @@ import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getCoverLetterOutputFilename } from '../utils/generatedPath';
 import { withRenderPermit } from './renderConcurrency';
 
-const COVER_LETTER_GREETINGS = ['Hello Hiring Team,', 'Hi Hiring Team,', 'Hello Team,', 'Hi Team,', 'Hi,', 'Hello,', 'Hi Hiring Manager,', 'Hello, Hiring Manager'];
+const COVER_LETTER_GREETINGS = ['Hello Hiring Team,', 'Hi Hiring Team,', 'Hello Team,', 'Hi Team,', 'Hi,', 'Hello,', 'Hi Hiring Manager,', 'Hello Hiring Manager'];
 
 function getCoverLetterGreeting(): string {
   return COVER_LETTER_GREETINGS[Math.floor(Math.random() * COVER_LETTER_GREETINGS.length)];
@@ -27,23 +27,26 @@ function esc(s: string): string {
  *
  * WHY THIS EXISTS. Every letter this app produced was the same block of 11pt
  * Arial, so a batch sent on behalf of a dozen different people arrived looking
- * like a dozen copies of one template - which is exactly what a reader notices
- * and what the letter is supposed to deny.
+ * like a dozen copies of one template.
  *
- * WHY THEY ARE COMPOSED RATHER THAN LISTED. Fifty hand-written blocks would be
- * fifty places to make a typo and fifty things to keep consistent; every one of
- * them would repeat the same six fields with slightly different numbers. So the
- * catalogue is built from axes that are each sane on their own - a typeface, a
- * reading rhythm, an ink, a signature treatment - and combined. Ten typefaces
- * times five rhythms is exactly fifty, and the pairing is what guarantees no
- * two are alike: the other axes only add spice on top.
+ * WHY IT WAS REWRITTEN. The first attempt at fifty looks varied the typeface
+ * and then, honestly, nothing else: a point of body size, a tenth of leading,
+ * two points of paragraph gap, and four near-blacks nobody can tell apart. Set
+ * two of them side by side and the only difference you could name was the font.
+ * Fifty names, one letter.
+ *
+ * So the second axis is the SHAPE OF THE PAGE, not another nudge to a number.
+ * A block letter and an indented one are different documents to look at; so are
+ * a 0.55in margin and a 1.1in one, ragged right and justified, a narrow measure
+ * and a full one, a rule and no rule. Those are the things a reader actually
+ * sees, and the five forms below each bundle a set of them.
  *
  * WHAT DELIBERATELY DOES NOT VARY. All fifty are one column of ordinary
- * paragraphs. A cover letter is parsed by the same scanners the resume is, and
- * a layout that reads well to a person and badly to a parser would trade a real
- * advantage for a cosmetic one. Nor does any of them add or remove a word: the
- * ask was for a different look, not a different letter, and a "letterhead" that
- * repeated the sender's name would be content the caller never wrote.
+ * paragraphs in reading order. A cover letter is parsed by the same scanners
+ * the resume is, and a layout that reads well to a person and badly to a parser
+ * would trade a real advantage for a cosmetic one - so the rules are <hr>
+ * decoration a parser skips, never a table or a box. Nor does any of them add
+ * or remove a word: the ask was for a different look, not a different letter.
  *
  * Every stack ends in a generic family, because the font that renders is
  * whatever the machine doing the rendering happens to have: these run on a
@@ -56,11 +59,22 @@ type CoverLetterStyle = {
   fontSize: string;
   lineHeight: string;
   color: string;
-  /** Space between paragraphs. The main lever on how dense the page feels. */
+  /** Space between paragraphs. Zero on an indented form, which uses indent instead. */
   paragraphGap: string;
+  /** First-line indent. Zero on a block form, which uses the gap instead. */
+  paragraphIndent: string;
+  textAlign: 'left' | 'justify';
+  /** Page margin, handed to `page.pdf`. The single biggest lever on the look. */
+  pageMargin: string;
+  /** Caps the measure, so a form can read as a narrow column on a wide page. */
+  maxWidth: string | null;
   greeting: string;
   signOff: string;
   signature: string;
+  /** Decoration only - an <hr> a parser skips. */
+  ruleAfterGreeting: boolean;
+  ruleBeforeSignature: boolean;
+  accent: string;
 };
 
 /** Ten typefaces, each with a fallback chain that survives either platform. */
@@ -78,65 +92,138 @@ const FAMILIES: Array<{ key: string; stack: string; serif: boolean }> = [
 ];
 
 /**
- * Five reading rhythms, from dense to generous.
+ * Five ways to lay the page out.
  *
- * Serif faces carry a slightly larger body size at the same rhythm: the two
- * groups have different x-heights, and matching the number rather than the
- * apparent size is what made the old single style look cramped in some faces
- * and loose in others.
+ * Each changes several things at once on purpose. Varying one lever at a time
+ * is what produced fifty letters that looked like one; a form has to commit.
  */
-const RHYTHMS: Array<{
+type LetterForm = Omit<CoverLetterStyle, 'name' | 'fontFamily' | 'fontSize' | 'color' | 'accent'> & {
   key: string;
   serifSize: string;
   sansSize: string;
-  lineHeight: string;
-  paragraphGap: string;
-}> = [
-  { key: 'compact', serifSize: '11pt', sansSize: '10pt', lineHeight: '1.45', paragraphGap: '10pt' },
-  { key: 'plain', serifSize: '11.5pt', sansSize: '10.5pt', lineHeight: '1.55', paragraphGap: '12pt' },
-  { key: 'open', serifSize: '12pt', sansSize: '11pt', lineHeight: '1.65', paragraphGap: '13pt' },
-  { key: 'airy', serifSize: '12pt', sansSize: '11pt', lineHeight: '1.8', paragraphGap: '15pt' },
-  { key: 'formal', serifSize: '12.5pt', sansSize: '11.5pt', lineHeight: '1.5', paragraphGap: '14pt' },
+};
+
+const FORMS: LetterForm[] = [
+  {
+    // Block paragraphs, ragged right, ordinary margins. The default business
+    // letter, and the baseline everything else departs from.
+    key: 'block',
+    serifSize: '11.5pt',
+    sansSize: '10.5pt',
+    lineHeight: '1.55',
+    paragraphGap: '12pt',
+    paragraphIndent: '0',
+    textAlign: 'left',
+    pageMargin: '0.75in',
+    maxWidth: null,
+    greeting: 'margin: 0 0 14pt 0; font-weight: 600;',
+    signOff: 'margin: 16pt 0 6pt 0;',
+    signature: 'margin: 0; font-weight: bold;',
+    ruleAfterGreeting: false,
+    ruleBeforeSignature: false,
+  },
+  {
+    // The typed letter: first line indented, no space between paragraphs,
+    // justified. Unmistakably not the one above, whatever face it is set in.
+    key: 'indented',
+    serifSize: '12pt',
+    sansSize: '11pt',
+    lineHeight: '1.5',
+    paragraphGap: '0',
+    paragraphIndent: '26pt',
+    textAlign: 'justify',
+    pageMargin: '0.9in',
+    maxWidth: null,
+    greeting: 'margin: 0 0 12pt 0;',
+    signOff: 'margin: 18pt 0 6pt 0;',
+    signature: 'margin: 0;',
+    ruleAfterGreeting: false,
+    ruleBeforeSignature: true,
+  },
+  {
+    // Dense and edge to edge, with the greeting set as a heading. Reads as a
+    // memo rather than a letter.
+    key: 'memo',
+    serifSize: '11pt',
+    sansSize: '10pt',
+    lineHeight: '1.45',
+    paragraphGap: '9pt',
+    paragraphIndent: '0',
+    textAlign: 'left',
+    pageMargin: '0.55in',
+    maxWidth: null,
+    greeting: 'margin: 0 0 6pt 0; text-transform: uppercase; letter-spacing: 1.2pt; font-size: 0.85em; font-weight: bold;',
+    signOff: 'margin: 14pt 0 4pt 0;',
+    signature: 'margin: 0; font-weight: bold;',
+    ruleAfterGreeting: true,
+    ruleBeforeSignature: false,
+  },
+  {
+    // Wide margins, generous leading, justified, and room left under the
+    // sign-off the way a letter leaves space for a wet signature.
+    key: 'formal',
+    serifSize: '12pt',
+    sansSize: '11pt',
+    lineHeight: '1.8',
+    paragraphGap: '14pt',
+    paragraphIndent: '0',
+    textAlign: 'justify',
+    pageMargin: '1.1in',
+    maxWidth: null,
+    greeting: 'margin: 0 0 18pt 0;',
+    signOff: 'margin: 26pt 0 30pt 0;',
+    signature: 'margin: 0; text-transform: uppercase; letter-spacing: 1.5pt; font-size: 0.9em;',
+    ruleAfterGreeting: false,
+    ruleBeforeSignature: false,
+  },
+  {
+    // A narrow column on a full page: short lines, a lot of white to the right.
+    key: 'narrow',
+    serifSize: '11.5pt',
+    sansSize: '10.5pt',
+    lineHeight: '1.7',
+    paragraphGap: '13pt',
+    paragraphIndent: '0',
+    textAlign: 'left',
+    pageMargin: '0.85in',
+    maxWidth: '4.6in',
+    greeting: 'margin: 0 0 15pt 0; font-weight: 600;',
+    signOff: 'margin: 20pt 0 6pt 0;',
+    signature: 'margin: 0; font-weight: 600; font-size: 1.15em;',
+    ruleAfterGreeting: false,
+    ruleBeforeSignature: true,
+  },
 ];
 
-/** Inks. Near-black, bar two restrained blues that read as deliberate. */
-const INKS = ['#1A1A1A', '#000000', '#22272E', '#1F2933', '#123A5A'];
+/** Body inks. Near-black: a letter is not a brochure. */
+const INKS = ['#1A1A1A', '#000000', '#22272E', '#1F2933', '#101820'];
 
-/** How the name under "Best regards," is set. */
-const SIGNATURES = [
-  'margin: 0; font-weight: bold; color: #000000;',
-  'margin: 0; font-weight: 600; font-size: 1.1em;',
-  'margin: 0; letter-spacing: 0.5pt;',
-  'margin: 0; font-weight: bold; letter-spacing: 0.3pt; font-size: 1.05em;',
-  'margin: 0;',
-];
-
-/** Extra breathing room before the sign-off, where a wet signature would go. */
-const SIGN_OFF_GAPS = ['14pt', '16pt', '18pt', '20pt', '22pt'];
+/**
+ * Accents, used only where one line of colour is deliberate - a rule, or the
+ * signature. Never on body text, which stays near-black in all fifty.
+ */
+const ACCENTS = ['#123A5A', '#1F2933', '#2D4739', '#5A2D2D', '#000000'];
 
 function buildCoverLetterStyles(): CoverLetterStyle[] {
   const styles: CoverLetterStyle[] = [];
 
-  for (let index = 0; index < FAMILIES.length * RHYTHMS.length; index += 1) {
+  for (let index = 0; index < FAMILIES.length * FORMS.length; index += 1) {
     const family = FAMILIES[index % FAMILIES.length];
-    const rhythm = RHYTHMS[Math.floor(index / FAMILIES.length) % RHYTHMS.length];
+    const form = FORMS[Math.floor(index / FAMILIES.length) % FORMS.length];
 
     // Strides that share no factor with 5 walk the whole axis rather than
     // landing on the same two entries over and over.
     const ink = INKS[(index * 3) % INKS.length];
-    const signature = SIGNATURES[(index * 7) % SIGNATURES.length];
-    const signOffGap = SIGN_OFF_GAPS[(index * 9) % SIGN_OFF_GAPS.length];
+    const accent = ACCENTS[(index * 7) % ACCENTS.length];
 
+    const { key: _key, serifSize, sansSize, ...shape } = form;
     styles.push({
-      name: `${family.key}-${rhythm.key}`,
+      ...shape,
+      name: `${family.key}-${form.key}`,
       fontFamily: family.stack,
-      fontSize: family.serif ? rhythm.serifSize : rhythm.sansSize,
-      lineHeight: rhythm.lineHeight,
+      fontSize: family.serif ? serifSize : sansSize,
       color: ink,
-      paragraphGap: rhythm.paragraphGap,
-      greeting: `margin: 0 0 ${rhythm.paragraphGap} 0;`,
-      signOff: `margin: ${signOffGap} 0 6pt 0;`,
-      signature,
+      accent,
     });
   }
 
@@ -179,18 +266,38 @@ export function pickCoverLetterStyle(
   return COVER_LETTER_STYLES[hashName(key) % COVER_LETTER_STYLES.length];
 }
 
-/** Convert plain text content to HTML paragraphs */
+/**
+ * The body paragraphs.
+ *
+ * A form either separates paragraphs with space OR indents their first line -
+ * doing both is the mark of somebody who set neither on purpose, and doing
+ * neither runs the letter together. The first paragraph after a greeting is
+ * never indented, which is the ordinary typographic rule.
+ */
 function contentToHtmlParagraphs(content: string, style: CoverLetterStyle): string {
   const trimmed = content.trim();
   if (!trimmed) return '';
   const paragraphs = trimmed.split(/\n\s*\n/).filter((p) => p.trim());
   return paragraphs
-    .map(
-      (p) =>
-        `<p style="margin: 0 0 ${style.paragraphGap} 0; line-height: ${style.lineHeight};">` +
-        `${esc(p.trim().replace(/\n/g, ' '))}</p>`
-    )
+    .map((paragraph, index) => {
+      const indent = index === 0 ? '0' : style.paragraphIndent;
+      return (
+        `<p style="margin: 0 0 ${style.paragraphGap} 0; line-height: ${style.lineHeight}; ` +
+        `text-indent: ${indent}; text-align: ${style.textAlign};">` +
+        `${esc(paragraph.trim().replace(/\n/g, ' '))}</p>`
+      );
+    })
     .join('\n  ');
+}
+
+/**
+ * A decorative rule.
+ *
+ * An hr and nothing else: a parser skips it, and it carries no text that could
+ * be mistaken for part of the letter.
+ */
+function rule(style: CoverLetterStyle, margin: string): string {
+  return `<hr style="border: none; border-top: 0.75pt solid ${style.accent}; margin: ${margin};">`;
 }
 
 /**
@@ -210,6 +317,9 @@ function coverLetterTitle(profileName: string): string {
  */
 function buildCoverLetterHTML(content: string, profileName: string): string {
   const style = pickCoverLetterStyle(profileName);
+  // A narrow form caps the measure; the rest run the full width of the page.
+  const measure = style.maxWidth ? ` max-width: ${style.maxWidth};` : '';
+
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -220,13 +330,18 @@ function buildCoverLetterHTML(content: string, profileName: string): string {
        ligature glyph mapped to U+FB01/U+FB02, so the text copies out - and is
        read by a scanner - as "Artiﬁcial" rather than "Artificial". */
     *, *::before, *::after { font-variant-ligatures: none; }
+    /* Justified text without hyphenation opens rivers of white space, worst in
+       a narrow measure. This is what makes the justified forms readable. */
+    p { hyphens: auto; -webkit-hyphens: auto; orphans: 2; widows: 2; }
   </style>
 </head>
-<body style="font-family: ${style.fontFamily}; font-size: ${style.fontSize}; color: ${style.color}; line-height: ${style.lineHeight};">
+<body style="font-family: ${style.fontFamily}; font-size: ${style.fontSize}; color: ${style.color}; line-height: ${style.lineHeight};${measure}">
   <p style="${style.greeting}">${getCoverLetterGreeting()}</p>
+  ${style.ruleAfterGreeting ? rule(style, '0 0 12pt 0') : ''}
   ${contentToHtmlParagraphs(content, style)}
+  ${style.ruleBeforeSignature ? rule(style, '18pt 0 0 0') : ''}
   <p style="${style.signOff}">Best regards,</p>
-  <p style="${style.signature}">${esc(profileName.trim())}</p>
+  <p style="${style.signature} color: ${style.accent};">${esc(profileName.trim())}</p>
 </body>
 </html>`;
 }
@@ -237,7 +352,9 @@ function buildCoverLetterHTML(content: string, profileName: string): string {
  */
 function buildCoverLetterHTMLForDocx(content: string, profileName: string): string {
   const style = pickCoverLetterStyle(profileName);
-  const lineBreak = `<p style="margin: 0 0 ${style.paragraphGap} 0;"></p>`;
+  // A gap of zero belongs to an indented form, where the indent does the
+  // separating. A DOCX still needs something between the blocks.
+  const lineBreak = `<p style="margin: 0 0 ${style.paragraphGap === '0' ? '12pt' : style.paragraphGap} 0;"></p>`;
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -282,9 +399,14 @@ export async function saveCoverLetter(
     await page.emulateMediaType('print');
     await page.setContent(html, { waitUntil: 'load' });
 
+    // From the style, not a constant. The page margin is the single biggest
+    // lever on whether two letters read as different documents - 0.55in and
+    // 1.1in are not the same page - and it lives here because ${TICK}page.pdf${TICK} owns
+    // it rather than CSS.
+    const { pageMargin } = pickCoverLetterStyle(profile.name);
     const pdfBuffer = await page.pdf({
       format: 'A4',
-      margin: { top: '0.75in', right: '0.75in', bottom: '0.75in', left: '0.75in' },
+      margin: { top: pageMargin, right: pageMargin, bottom: pageMargin, left: pageMargin },
       printBackground: true,
     });
 
