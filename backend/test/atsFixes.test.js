@@ -127,16 +127,108 @@ test('the disciplines come out in the order the title names them', () => {
   );
 });
 
-test('an unrecognised title falls back to one real word, not to noise', () => {
-  // Measured against 493 real postings; these are the shapes that were coming
-  // out wrong before the noise list grew.
-  assert.deepEqual(titleDisciplines('Senior Fraud Strategist'), ['Fraud']);
-  assert.deepEqual(titleDisciplines('IT Engineer, First IT Hire'), ['IT']);
+// A fixed list, so these do not depend on what an operator has added in Admin.
+const SKILLS = [
+  'Java', 'Python', 'Go', '.NET', 'C#', 'C', 'R', 'SQL', 'SQL Server', 'Ruby', 'Ruby on Rails',
+  'DevSecOps', 'MLOps', 'Node.js', 'PL/SQL', 'Aurora', 'Rocket', 'Echo', 'Spring', 'Engineering',
+];
 
-  // A title made only of grades and role nouns names no discipline, and saying
-  // so is better than inventing one.
-  assert.deepEqual(titleDisciplines('Senior Software Engineer'), []);
-  assert.deepEqual(titleDisciplines(''), []);
+test('a title with no known field is tagged from the skill list or not at all', () => {
+  /*
+   * Every one of these reached a printed headline when the fallback took the
+   * first word left over: a company, a team, a rank, a level and an
+   * arrangement. None names a field or a skill, so none gets a tag. ("Senior
+   * Statistician", the job-noun case, now maps to Data Science.)
+   */
+  const untagged = [
+    'EverHealth - Senior Software Engineer (Remote - US)',
+    'Staff Software Engineer, Experience',
+    'Executive Director, Engineering (AA)',
+    'Software Engineer L4 (Remote)',
+    'Software Engineer (Part-time)',
+    'Part Time Software Engineer',
+    'Remote Software Engineer ($90-140/hour)',
+    'Senior Fraud Strategist',
+    'Senior Software Engineer',
+    '',
+  ];
+  for (const title of untagged) {
+    assert.deepEqual(titleDisciplines(title, SKILLS), [], `"${title}" should carry no tag`);
+  }
+
+  // A skill it does name comes out as the list spells it.
+  assert.deepEqual(titleDisciplines('Senior Software Engineer (.NET)', SKILLS), ['.NET']);
+  assert.deepEqual(titleDisciplines('SQL Programmer', SKILLS), ['SQL']);
+  assert.deepEqual(titleDisciplines('DevSecOps Engineer', SKILLS), ['DevSecOps']);
+  assert.deepEqual(titleDisciplines('Senior Software Engineer - Platform (MLOps)', SKILLS), ['MLOps']);
+  assert.deepEqual(titleDisciplines('Senior Software Engineer (Node.js, Python)', SKILLS), ['Node.js']);
+});
+
+test('the skill check prefers the longest name and splits paired skills', () => {
+  assert.deepEqual(titleDisciplines('Ruby on Rails Developer', SKILLS), ['Ruby on Rails']);
+  assert.deepEqual(titleDisciplines('Software Engineer (SQL Server)', SKILLS), ['SQL Server']);
+  assert.deepEqual(titleDisciplines('Java/Python Developer', SKILLS), ['Java']);
+  // One skill with a slash in its name stays whole.
+  assert.deepEqual(titleDisciplines('PL/SQL Developer', SKILLS), ['PL/SQL']);
+});
+
+test('skills that are also ordinary words do not tag a title', () => {
+  // "Aurora" here is a town and "Rocket" a company.
+  assert.deepEqual(titleDisciplines('L2 Field Engineer (Aurora)', SKILLS), []);
+  assert.deepEqual(titleDisciplines('Rocket Mobius Developer', SKILLS), []);
+  assert.deepEqual(titleDisciplines('Echo Team Engineer', SKILLS), []);
+  // A noise word that happens to be on the list is still noise.
+  assert.deepEqual(titleDisciplines('Engineering Lead', SKILLS), []);
+  // One letter is a language only with its marks.
+  assert.deepEqual(titleDisciplines('R&D Engineer', SKILLS), []);
+  assert.deepEqual(titleDisciplines('Software Engineer (C#)', SKILLS), ['C#']);
+  // "Go" the language, not "go" the verb.
+  assert.deepEqual(titleDisciplines('Senior Software Engineer (Go)', SKILLS), ['Go']);
+  assert.deepEqual(titleDisciplines('Go-To-Market Engineer', SKILLS), []);
+  assert.deepEqual(titleDisciplines('Engineer who will go far', SKILLS), []);
+});
+
+test('named products get a tag even where the skill list lacks or respells them', () => {
+  assert.deepEqual(titleDisciplines('Lead Software Engineer (Golang, TypeScript, React)', []), ['Go']);
+  assert.deepEqual(titleDisciplines('Senior ServiceNow Developer', []), ['ServiceNow']);
+  assert.deepEqual(titleDisciplines('SAP Data Conversion Engineer', []), ['SAP']);
+  assert.deepEqual(titleDisciplines('Oracle EBS Developer', []), ['Oracle']);
+  assert.deepEqual(titleDisciplines('Drupal Developer', []), ['Drupal']);
+});
+
+test('common titles that used to go untagged name their field', () => {
+  // Each taken from the untagged list of real titles.
+  const cases = [
+    ['Senior Software Test Engineer', ['QA']],
+    ['Test Engineering Lead', ['QA']],
+    ['Senior Software Quality Engineer', ['QA']],
+    ['Mobile Test Engineer', ['Mobile', 'QA']],
+    ['Senior Data Warehouse Engineer', ['Data Engineer']],
+    ['Staff Software Engineer, Data Lakehouse', ['Data Engineer']],
+    ['Agentic Engineer', ['AI/ML']],
+    ['RL Environment Software Engineer', ['AI/ML']],
+    ['Senior Data Analyst, Business Operations', ['Data Science']],
+    ['Senior Statistician', ['Data Science']],
+    ['Senior Build Engineer', ['DevOps']],
+    ['Build & Release Engineer', ['DevOps']],
+    ['Senior Fortinet Engineer', ['Security']],
+    ['API Engineering Lead', ['Backend']],
+  ];
+  for (const [title, expected] of cases) {
+    assert.deepEqual(titleDisciplines(title, []), expected, `"${title}" was read wrong`);
+  }
+  // "rl" in lower case is not reinforcement learning.
+  assert.deepEqual(titleDisciplines('Engineer, url routing', []), []);
+});
+
+test('IT is tagged only when the title says IT', () => {
+  assert.deepEqual(titleDisciplines('IT Engineer, First IT Hire', []), ['IT']);
+  assert.deepEqual(titleDisciplines('Service Desk Analyst', []), ['IT']);
+  // Support engineering is a different job, and "it" is an English word.
+  assert.deepEqual(titleDisciplines('Technical Support Engineer (Tier 1)', []), []);
+  assert.deepEqual(titleDisciplines('Product Support Engineer', []), []);
+  assert.deepEqual(titleDisciplines('Build & Release Support Engineer (CI/CD)', []), ['DevOps']);
+  assert.deepEqual(titleDisciplines('Engineer - Make it Happen', []), []);
 });
 
 test('the headline carries the discipline, and skips one it already states', () => {

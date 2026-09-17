@@ -2180,28 +2180,56 @@ const DISCIPLINES: Discipline[] = [
   { label: 'AI/ML', patterns: [
     /\bmachine[\s-]?learning\b/i, /\bdeep[\s-]?learning\b/i, /\bartificial[\s-]?intelligence\b/i,
     /\bml\b/i, /\bai\b/i, /\bllm(s)?\b/i, /\bgen[\s-]?ai\b/i, /\bnlp\b/i, /\bcomputer[\s-]?vision\b/i,
+    // Agent work is AI work. "RL" only in capitals: reinforcement learning.
+    /\bagentic\b/i, /\breinforcement[\s-]?learning\b/i, /\bRL\b/,
   ] },
-  { label: 'Data Engineer', patterns: [/\bdata[\s-]?engineer(ing)?\b/i, /\betl\b/i, /\belt\b/i, /\bdata[\s-]?platform\b/i] },
-  { label: 'Data Science', patterns: [/\bdata[\s-]?scien(ce|tist)\b/i, /\banalytics\b/i] },
+  { label: 'Data Engineer', patterns: [
+    /\bdata[\s-]?engineer(ing)?\b/i, /\betl\b/i, /\belt\b/i, /\bdata[\s-]?platform\b/i,
+    /\bdata[\s-]?warehous(e|ing)\b/i, /\bdata[\s-]?lake(house)?\b/i,
+  ] },
+  { label: 'Data Science', patterns: [
+    /\bdata[\s-]?scien(ce|tist)\b/i, /\banalytics\b/i,
+    // "Senior Statistician" is a data science job; "(Statistician)" only
+    // repeated the job's name.
+    /\bdata[\s-]?analysts?\b/i, /\bstatistic(s|al|ian|ians)\b/i,
+  ] },
   { label: 'DevOps', patterns: [
     /\bdev[\s-]?ops\b/i, /\bsre\b/i, /\bsite[\s-]?reliability\b/i,
     /\bplatform[\s-]?engineer(ing)?\b/i, /\bci\/?cd\b/i, /\binfrastructure\b/i,
+    /\bbuild[\s-]*(and|&)?[\s-]*release\b/i, /\brelease[\s-]?engineer(ing)?\b/i, /\bbuild[\s-]?engineer(ing)?\b/i,
   ] },
   { label: 'Integration', patterns: [/\bintegration(s)?\b/i, /\bmulesoft\b/i, /\bmiddleware\b/i, /\bipaas\b/i, /\besb\b/i, /\bboomi\b/i] },
-  { label: 'Security', patterns: [/\bsecurity\b/i, /\bappsec\b/i, /\binfosec\b/i, /\bcyber\b/i, /\bidentity\b/i] },
+  { label: 'Security', patterns: [
+    /\bsecurity\b/i, /\bappsec\b/i, /\binfosec\b/i, /\bcyber\b/i, /\bidentity\b/i,
+    /\bfortinet\b/i, /\bpalo[\s-]?alto\b/i, /\bfirewalls?\b/i,
+  ] },
   { label: 'Cloud', patterns: [/\bcloud\b/i, /\bkubernetes\b/i, /\bserverless\b/i] },
   { label: 'Mobile', patterns: [/\bmobile\b/i, /\bios\b/i, /\bandroid\b/i, /\breact[\s-]?native\b/i, /\bflutter\b/i] },
   { label: 'Frontend', patterns: [/\bfront[\s-]?end\b/i, /\bui[\s-]?engineer\b/i, /\bweb[\s-]?ui\b/i] },
-  { label: 'Backend', patterns: [/\bback[\s-]?end\b/i, /\bserver[\s-]?side\b/i, /\bapi[\s-]?engineer\b/i] },
-  { label: 'QA', patterns: [/\bqa\b/i, /\bquality[\s-]?assurance\b/i, /\bsdet\b/i, /\btest(ing)?[\s-]?automation\b/i] },
+  { label: 'Backend', patterns: [/\bback[\s-]?end\b/i, /\bserver[\s-]?side\b/i, /\bapi[\s-]?engineer(ing)?\b/i] },
+  { label: 'QA', patterns: [
+    /\bqa\b/i, /\bquality[\s-]?assurance\b/i, /\bsdet\b/i, /\btest(ing)?[\s-]?automation\b/i,
+    /\btest(ing)?[\s-]?engineer(ing)?\b/i, /\bquality[\s-]?engineer(ing)?\b/i, /\bsoftware[\s-]?quality\b/i,
+  ] },
   { label: 'Embedded', patterns: [/\bembedded\b/i, /\bfirmware\b/i, /\brtos\b/i] },
   { label: 'Network', patterns: [/\bnetwork(ing)?\b/i, /\bnetscaler\b/i] },
   { label: 'Database', patterns: [/\bdba\b/i, /\bdatabase[\s-]?admin/i] },
   { label: 'Salesforce', patterns: [/\bsalesforce\b/i, /\bapex\b/i] },
   { label: 'Automation', patterns: [/\brpa\b/i, /\buipath\b/i, /\bautomation\b/i] },
-  // Last, because "IT" is two letters that turn up inside other fields. Only
-  // reached when nothing more specific matched.
-  { label: 'IT', patterns: [/\bit\b/i, /\bhelp[\s-]?desk\b/i, /\bservice[\s-]?desk\b/i, /\bsupport[\s-]?engineer\b/i] },
+  // Products a title names often enough to be worth a tag, but which the hard
+  // skill list either lacks or spells differently ("Golang" is listed as "Go").
+  { label: 'Go', patterns: [/\bgolang\b/i] },
+  { label: 'ServiceNow', patterns: [/\bservice[\s-]?now\b/i] },
+  { label: 'SAP', patterns: [/\bsap\b/i] },
+  { label: 'Oracle', patterns: [/\boracle\b/i] },
+  { label: 'Drupal', patterns: [/\bdrupal\b/i] },
+  /*
+   * Last, and narrow. "IT" counts only in capitals: case-blind, it also matched
+   * the English word "it". And "support engineer" is no longer a trigger - it
+   * was tagging Technical, Product and SailPoint Support Engineers as (IT),
+   * which is a different job.
+   */
+  { label: 'IT', patterns: [/\bIT\b/, /\bhelp[\s-]?desk\b/i, /\bservice[\s-]?desk\b/i] },
 ];
 
 /** Words that describe the arrangement or the grade, never the field. */
@@ -2237,7 +2265,7 @@ const MAX_HEADLINE_LENGTH = 72;
  * Services" is a backend job first, and listing it (AI/ML, Backend, Cloud)
  * because that is alphabetical would misdescribe it.
  */
-export function titleDisciplines(title: string): string[] {
+export function titleDisciplines(title: string, skills: readonly string[] = technicalSkills): string[] {
   const text = String(title ?? '').trim();
   if (!text) return [];
 
@@ -2259,26 +2287,91 @@ export function titleDisciplines(title: string): string[] {
   }
 
   /*
-   * Nothing in the table matched, which is ordinary: the field is wider than
-   * any list of patterns. Fall back to the most distinctive word the title has
-   * left once the grades and the generic role nouns are removed - "Senior Fraud
-   * Strategist" has "fraud", and (Fraud) is both true and worth matching on.
+   * Nothing in the table matched. The tag then comes from the hard skill list
+   * or not at all.
+   *
+   * This used to take the first word left once grades and role nouns were
+   * removed. A blocklist cannot name every company, team, level or place, so
+   * over 613 real titles 221 were tagged that way, and most tags were wrong:
+   * (Everhealth), (Experience), (Executive), (L4), (Part-time), (Us), (90-140/hour).
+   * A skill on the list is something a scanner matches on, and it comes with
+   * its proper spelling - (.NET), (SQL), (DevSecOps) rather than (Net), (Sql),
+   * (Devsecops). A title that names neither a field nor a skill gets no tag:
+   * no tag is better than a wrong one.
    */
-  const leftover = text
+  const skill = skillNamedIn(text, skills);
+  return skill ? [skill] : [];
+}
+
+/**
+ * Skills that are also everyday words, places or names. In a job title the
+ * word is usually not the tool: "L2 Field Engineer (Aurora)" is a town,
+ * "Rocket Mobius Developer" is a company. Compared in lower case.
+ */
+const AMBIGUOUS_IN_TITLES = new Set([
+  'ada', 'analysis', 'apex', 'assembly', 'astro', 'aurora', 'awk', 'bamboo', 'beam',
+  'behave', 'bosh', 'bun', 'capacitor', 'chai', 'chef', 'chroma', 'consul', 'cron',
+  'crystal', 'cucumber', 'delphi', 'echo', 'elm', 'ember', 'emotion', 'envoy', 'expo',
+  'express', 'falcon', 'feign', 'fiber', 'flux', 'gatsby', 'gin', 'hack', 'hanami',
+  'harbor', 'hive', 'hugo', 'insomnia', 'ionic', 'jasmine', 'jetty', 'julia', 'kind',
+  'less', 'lighthouse', 'lit', 'locust', 'logs', 'macros', 'math', 'maven', 'mercurial',
+  'mocha', 'mocking', 'monit', 'netty', 'nomad', 'packer', 'paging', 'parcel', 'phoenix',
+  'pony', 'prefect', 'presto', 'puppet', 'pyramid', 'racket', 'realm', 'reflection',
+  'relay', 'remix', 'render', 'ribbon', 'rocket', 'scheme', 'sed', 'semaphore', 'sentry',
+  'sinatra', 'sorbet', 'spanner', 'spring', 'spying', 'streams', 'stubbing', 'superset',
+  'swift', 'thrift', 'tornado', 'transactions', 'triggers', 'vapor', 'vault', 'vector',
+  'warp', 'waterfall',
+]);
+
+/** The longest skill name, in words, worth looking for: "Google Cloud Platform". */
+const LONGEST_SKILL_NAME = 3;
+
+/**
+ * The first hard skill a title names, spelled as the skill list spells it.
+ *
+ * Longest name first at each position, so "Ruby on Rails" wins over "Ruby" and
+ * "SQL Server" over "SQL".
+ */
+function skillNamedIn(title: string, skills: readonly string[]): string | undefined {
+  const byName = new Map<string, string>();
+  for (const skill of skills) {
+    const name = String(skill ?? '').trim();
+    if (name && !byName.has(name.toLowerCase())) byName.set(name.toLowerCase(), name);
+  }
+  if (byName.size === 0) return undefined;
+
+  const words = title
     .replace(/[^A-Za-z0-9+#/.\s-]/g, ' ')
     .split(/\s+/)
-    // Trailing punctuation is why "(Sr.)" reached a printed resume: the token
-    // was "Sr." and the noise list holds "sr", so the two never met. Stripped
-    // on BOTH sides and only for the comparison - a name like "Node.js" keeps
-    // its dots when it is the word that gets used.
-    .filter((word) => {
-      const bare = word.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '').toLowerCase();
-      return bare.length > 1 && !TITLE_NOISE.has(bare);
-    });
+    // Punctuation on the END is the sentence, not the name ("Sr.", "Remote-").
+    // A leading dot is kept: it is half of ".NET".
+    .map((word) => word.replace(/[./-]+$/, ''))
+    // "Java/Python" names two skills; "PL/SQL" and "CI/CD" are one each.
+    .flatMap((word) => (word.includes('/') && !byName.has(word.toLowerCase()) ? word.split('/') : [word]))
+    .filter(Boolean);
 
-  // ONE word. Two of them read as a job title again - which is what this is not
-  // - and the second is usually the weaker of the pair anyway.
-  return leftover.length > 0 ? [toTitleCase(leftover[0].toLowerCase())] : [];
+  for (let at = 0; at < words.length; at += 1) {
+    for (let size = Math.min(LONGEST_SKILL_NAME, words.length - at); size >= 1; size -= 1) {
+      const phrase = words.slice(at, at + size).join(' ');
+      const skill = byName.get(phrase.toLowerCase());
+      if (skill && (size > 1 || usableAlone(phrase, skill))) return skill;
+    }
+  }
+  return undefined;
+}
+
+function usableAlone(word: string, skill: string): boolean {
+  // Trailing punctuation is why "(Sr.)" once reached a printed resume: the
+  // token was "Sr." and the noise list holds "sr". Stripped on both sides for
+  // the comparison only.
+  const bare = word.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '').toLowerCase();
+  if (TITLE_NOISE.has(bare) || AMBIGUOUS_IN_TITLES.has(bare)) return false;
+  // One letter is a language only with its marks - C#, C++, F#. A bare "R" or
+  // "C" is usually "R&D" or an initial.
+  if (bare.length < 2 && !/[+#]/.test(word)) return false;
+  // "Go" is the language; "go" is a verb. Same rule the skill extractor uses.
+  if (skill === 'Go') return word === 'Go';
+  return true;
 }
 
 /**
