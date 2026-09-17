@@ -1261,17 +1261,47 @@ function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
   );
 }
 
-function getResumeTitle(profile: Profile): string {
+/**
+ * The headline the resume is printed under.
+ *
+ * The TAILORED title first, which is the whole point of computing one. It
+ * carries the discipline the posting is about - "Senior Software Engineer
+ * (Integration)" - and this function used to ignore it completely and read
+ * ${TICK}profile.title${TICK} instead, so every bit of that work was thrown away between
+ * being decided and being printed. Nothing failed; the tag simply never
+ * appeared, which is exactly the kind of bug a unit test on the title function
+ * cannot see.
+ */
+function getResumeTitle(profile: Profile, tailoredContent?: TailoredContent): string {
+  const tailoredTitle = tailoredContent?.title?.trim();
+  if (tailoredTitle) return tailoredTitle;
   const profileTitle = profile.title?.trim();
   if (profileTitle) return profileTitle;
   const lastRole = profile.experience?.[0]?.title?.trim();
   return lastRole || 'Professional';
 }
 
-/** Sanitize title for ATS: remove hyphens, periods, commas, and other symbols */
+/**
+ * Strips the characters a scanner trips over, and keeps the ones a headline
+ * legitimately uses.
+ *
+ * It used to remove parentheses, commas, slashes and hyphens along with
+ * everything else, which quietly undid the discipline tag: "Senior Software
+ * Engineer (Backend, AI/ML, Cloud)" came out as "Senior Software Engineer
+ * Backend AI ML Cloud" - and "Full-Stack" as "Full Stack". Those four are the
+ * punctuation an ordinary job title is written with, so they stay; brackets,
+ * quotes and the symbol soup do not.
+ */
 function sanitizeTitleForATS(title: string): string {
   return title
-    .replace(/[-.,;:'"()\[\]\/\\@#$%&*+=<>]/g, ' ')
+    .replace(/[;:'"\[\]\\@#$%&*+=<>|{}~^]/g, ' ')
+    .replace(/\s+/g, ' ')
+    // A space before a closing bracket or a comma is the mark of something
+    // having been removed from inside it.
+    .replace(/\s+([),])/g, '$1')
+    .replace(/\(\s+/g, '(')
+    // An empty pair is what is left when everything inside it was stripped.
+    .replace(/\(\s*\)/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -1577,7 +1607,7 @@ export function prepareResumeRenderData(
     },
     companyName: companyName || '',
     role: role || '',
-    title: sanitizeTitleForATS(getResumeTitle(profile)),
+    title: sanitizeTitleForATS(getResumeTitle(profile, tailoredContent)),
     skillInventory: normalizeSkills([
       ...(profile.skills ?? []),
       ...tailoredHardSkills,
@@ -1842,8 +1872,37 @@ function renderTemplateBody(template: Template, renderData: unknown): string {
  * Early in the head, so a template that genuinely wants a ligature can still
  * ask for one: this selector has zero specificity and any real rule beats it.
  */
+/**
+ * Puts a real character between the contact fields.
+ *
+ * WHY. The header lays phone, email, LinkedIn and location out with
+ * `display:flex; gap:14px`, and a flex gap is not a character - it is space
+ * between boxes. The PDF therefore carries the four fields with NOTHING between
+ * them, and the text layer of every resume this app has produced reads:
+ *
+ *   (214) 865-9131jonalai0897@gmail.comlinkedin.com/in/jonathan-...The Colony, TX
+ *
+ * A scanner pulling the email out of that gets "…@gmail.comlinkedin.com", a
+ * domain that does not exist. Measured across 60 finished resumes: the email
+ * was present in 60 and cleanly delimited in 0. Same family as the ligature
+ * rule above - the page looks right and the text layer disagrees.
+ *
+ * A NON-BREAKING space, and generated content rather than markup. Measured
+ * against the alternatives: a whitespace text node between flex items is
+ * dropped by layout, a plain space in `content` is collapsed the same way, and
+ * swapping the gap for a margin changes nothing because neither is a glyph.
+ * U+00A0 survives all of it, is invisible next to an existing 14px gap, and
+ * needs no template edited - which matters, because 33 of them have this.
+ */
+const CONTACT_SEPARATOR_CSS =
+  '<style id="resume-contact-separator">' +
+  '.contact>*::after,.contact-row>*::after,.contact-item::after,' +
+  '.contact>*::before,.contact-row>*::before{content:"\\00a0"}' +
+  '</style>';
+
 const DISABLE_LIGATURES_CSS =
-  '<style id="resume-no-ligatures">*,*::before,*::after{font-variant-ligatures:none}</style>';
+  '<style id="resume-no-ligatures">*,*::before,*::after{font-variant-ligatures:none}</style>'
+  + CONTACT_SEPARATOR_CSS;
 
 /**
  * Puts the rule inside the document rather than in front of it.

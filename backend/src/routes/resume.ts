@@ -93,6 +93,35 @@ function resolveGenerationRole(role: unknown, analysis?: import('../types/templa
 }
 
 /**
+ * The analysis, carrying the title this build was actually asked for.
+ *
+ * WHY. The headline's discipline tag - "Software Engineer (Integration)" - is
+ * read from `jobAnalysis.jobMeta.title`, which is whatever the analyser wrote.
+ * Every route here already knew a better answer and discarded it: the sheet
+ * import sends the posting's title from its own job-title column as `role`,
+ * and `resolveGenerationRole` prefers exactly that. The two only ever met in
+ * the output folder name.
+ *
+ * So when the analyser came back with an empty or generic title, the tag
+ * vanished from every resume in the run while the folder names beside them
+ * showed the right title. Reproduced end to end: the same nine builds tag
+ * correctly with the title in the analysis and not at all without it, with the
+ * correct role sitting in the request the whole time.
+ *
+ * A copy, never an edit. One analysis is shared by every profile built for a
+ * job, and by the page that sent it.
+ */
+function withResolvedTitle<T extends import('../types/template').JobAnalysis | undefined>(
+  analysis: T,
+  role: string
+): T {
+  if (!analysis) return analysis;
+  const title = role.trim();
+  if (!title || analysis.jobMeta?.title?.trim() === title) return analysis;
+  return { ...analysis, jobMeta: { ...analysis.jobMeta, title } };
+}
+
+/**
  * Runs one batch item, trying again while the failure looks transient.
  *
  * WHY EVERY BATCH GOES THROUGH THIS. A 500-resume run ended with 76 failures,
@@ -105,6 +134,71 @@ function resolveGenerationRole(role: unknown, analysis?: import('../types/templa
  * The retry re-enters the tab pool, so the next attempt takes whichever browser
  * is free rather than the one that just failed.
  */
+/**
+ * What failed, by profile, at the end of a run.
+ *
+ * WHY BY PROFILE AND BY ROW. A 360-build run that loses ten of them leaves the
+ * operator with a red banner naming three companies and an ellipsis, which is
+ * not enough to do anything with. The sheet row is the handle they actually
+ * have: it is what they open to read the posting and what they re-run.
+ *
+ * The last line is the one worth reading first. A row that failed for EVERY
+ * profile is a problem with that job - an unreadable posting, a description
+ * that never downloaded - while a row that failed for one profile out of three
+ * is the ordinary transient kind that a re-run usually fixes. Those two want
+ * different responses, and separating them is most of the value here.
+ */
+function logFailedJobsByProfile(
+  failures: Array<{ profileName: string; sourceRowNumber?: number; companyName: string }>,
+  totalUnits: number,
+  profileCount: number
+): void {
+  if (failures.length === 0) {
+    console.log(`[Resume batch] All ${totalUnits} build(s) succeeded.`);
+    return;
+  }
+
+  const rowsByProfile = new Map<string, Set<number | string>>();
+  const profilesByRow = new Map<number | string, Set<string>>();
+
+  for (const failure of failures) {
+    // A job imported without a row number is named by its company instead,
+    // which is the only other handle there is.
+    const row = failure.sourceRowNumber ?? `"${failure.companyName}"`;
+    if (!rowsByProfile.has(failure.profileName)) rowsByProfile.set(failure.profileName, new Set());
+    (rowsByProfile.get(failure.profileName) as Set<number | string>).add(row);
+    if (!profilesByRow.has(row)) profilesByRow.set(row, new Set());
+    (profilesByRow.get(row) as Set<string>).add(failure.profileName);
+  }
+
+  const order = (values: Array<number | string>): Array<number | string> =>
+    [...values].sort((a, b) =>
+      typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b))
+    );
+
+  console.log(
+    `[Resume batch] ${failures.length} of ${totalUnits} build(s) failed. Failed jobs by profile:`
+  );
+  const width = Math.max(...[...rowsByProfile.keys()].map((name) => name.length));
+  for (const [profileName, rows] of rowsByProfile) {
+    console.log(
+      `  ${profileName.padEnd(width)}  ${rows.size} job(s): row ${order([...rows]).join(', ')}`
+    );
+  }
+
+  const everyProfile = order(
+    [...profilesByRow.entries()]
+      .filter(([, names]) => names.size >= profileCount && profileCount > 0)
+      .map(([row]) => row)
+  );
+  if (everyProfile.length > 0) {
+    console.log(
+      `[Resume batch] Failed for EVERY profile, so look at the job rather than the run: ` +
+        `row ${everyProfile.join(', ')}`
+    );
+  }
+}
+
 function runBatchUnit<T>(label: string, signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
   return withUnitRetry(work, {
     signal,
@@ -554,6 +648,7 @@ router.post('/generate-all', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Role is required' });
       return;
     }
+    analysis = withResolvedTitle(analysis, resolvedRole);
 
     const normalizedCompanyName = companyName.trim();
     const results: { profileId: string; profileName: string; pdf?: string; docx?: string; coverLetterPdf?: string; coverLetterDocx?: string }[] = [];
@@ -749,7 +844,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
         companyName: normalizedCompanyName,
         role: resolvedRole,
         jobDescription: trimmedJobDescription,
-        analysis,
+        analysis: withResolvedTitle(analysis, resolvedRole),
         sourceRowNumber: job.sourceRowNumber,
       };
     });
@@ -766,7 +861,13 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       coverLetterPdf?: string;
       coverLetterDocx?: string;
     }> = [];
-    const failures: Array<{ profileId: string; profileName: string; companyName: string; error: string }> = [];
+    const failures: Array<{
+      profileId: string;
+      profileName: string;
+      companyName: string;
+      sourceRowNumber?: number;
+      error: string;
+    }> = [];
     const failedCompanies = new Set<string>();
     const unconfirmedHardMap = new Map<string, string>();
     const unconfirmedSoftMap = new Map<string, string>();
@@ -901,10 +1002,16 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
         profileId: profile.id,
         profileName: profile.name,
         companyName: job.companyName,
+        // The sheet row, which is how an operator refers to a job: it is what
+        // they would open to look at the posting, and what they would re-run.
+        // The company name is not enough - two rows can name one company.
+        sourceRowNumber: job.sourceRowNumber,
         error: message,
       });
       failedCompanies.add(job.companyName);
     });
+
+    logFailedJobsByProfile(failures, units.length, profiles.length);
 
     // Closes the stream the page is watching. Also on the error path below, so
     // a run that blew up does not leave a bar turning forever.
@@ -939,12 +1046,14 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       jobAnalysis,
       model,
       profileIds,
+      role,
     } = req.body as {
       templateId?: string;
       jobDescription?: string;
       jobAnalysis?: import('../types/template').JobAnalysis;
       model?: string;
       profileIds?: string[];
+      role?: string;
     };
 
     const aiOverrides = readAiOverrides(req.body);
@@ -967,6 +1076,8 @@ router.post('/preview-all', async (req: Request, res: Response) => {
         requestSignal(req, res)
       );
     }
+    // The preview shows the same headline tag the saved file will carry.
+    analysis = withResolvedTitle(analysis, resolveGenerationRole(role, analysis));
 
     const previews: Array<{
       profileId: string;
@@ -1117,16 +1228,20 @@ router.post('/generate', async (req: Request, res: Response) => {
         requestSignal(req, res)
       );
     }
+    // Resolved BEFORE tailoring, so the headline is tagged from the title this
+    // build was asked for rather than from whatever the analyser wrote.
+    const resolvedRole = resolveGenerationRole(role, analysis);
+    if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
+      res.status(400).json({ error: 'Role is required' });
+      return;
+    }
+    analysis = withResolvedTitle(analysis, resolvedRole);
+
     if (tailoredContent && analysis) {
       tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);
     }
     if (!tailoredContent && analysis) {
       tailoredContent = await tailorResume(profile, analysis, selectedModel, requestSignal(req, res));
-    }
-    const resolvedRole = resolveGenerationRole(role, analysis);
-    if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
-      res.status(400).json({ error: 'Role is required' });
-      return;
     }
 
     const generateBoth = (format as string) === 'both';
@@ -1234,7 +1349,7 @@ router.post('/preview', async (req: Request, res: Response) => {
   const requestStartedAt = process.hrtime.bigint();
   console.log('[Resume timing] /resume/preview started');
   try {
-    const { profileId, templateId, jobDescription, jobAnalysis, tailoredContent: manualTailoredContent }: GenerateResumeRequest = req.body;
+    const { profileId, templateId, jobDescription, jobAnalysis, role, tailoredContent: manualTailoredContent }: GenerateResumeRequest = req.body;
 
     if (!profileId) {
       res.status(400).json({ error: 'Profile ID is required' });
@@ -1276,6 +1391,8 @@ router.post('/preview', async (req: Request, res: Response) => {
         requestSignal(req, res)
       );
     }
+    // The preview shows the same headline tag the saved file will carry.
+    analysis = withResolvedTitle(analysis, resolveGenerationRole(role, analysis));
     if (tailoredContent && analysis) {
       tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);
     }

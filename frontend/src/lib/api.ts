@@ -2119,6 +2119,7 @@ export const resumeApi = {
     templateId: string;
     jobDescription?: string;
     jobAnalysis?: JobAnalysis;
+    role?: string;
     tailoredContent?: TailoredContent;
     model?: string;
     effort?: EffortLevel;
@@ -2133,6 +2134,7 @@ export const resumeApi = {
     templateId?: string;
     jobDescription?: string;
     jobAnalysis?: JobAnalysis;
+    role?: string;
     model?: string;
     effort?: EffortLevel;
     thinking?: ThinkingMode;

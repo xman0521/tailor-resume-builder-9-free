@@ -19,6 +19,20 @@ import {
 import { moveCaseInsensitiveMatches, uniqueCaseInsensitive } from '../utils/array';
 import { extractJSON } from '../utils/json';
 import { removeDuplicateSubstrings, ensureMinTechSkills } from './utils/resumeBuilder';
+import { collectJobKeywords, findUncoveredKeywords } from './utils/keywordCoverage';
+import {
+  measurePlacement,
+  placementFloor,
+  renderedProse,
+  type PlacementReport,
+} from './utils/placementCoverage';
+import {
+  partitionSkills,
+  validateHardSkill,
+  validateSoftSkill,
+  REJECTION_DETAIL,
+  type SkillVerdict,
+} from './utils/skillValidation';
 import {
   extractConceptKeywords,
   isRedundantWithLibraryTerm,
@@ -855,6 +869,13 @@ function getKeywordChecklist(jobAnalysis?: JobAnalysis): string[] {
     ...(jobAnalysis?.keywords?.buzzwords ?? []),
     ...(jobAnalysis?.keywords?.mustInclude ?? []),
     ...getTechnicalSkills(jobAnalysis),
+    // Required and preferred were the two fields missing from this list, and
+    // the omission was invisible: both reach the Technical Skills SELECTION, so
+    // anything the library carries came out fine, and only a term the library
+    // had never heard of - a preferred technology like ArgoCD - was extracted
+    // from the posting and then written nowhere at all.
+    ...getRequiredSkills(jobAnalysis),
+    ...getPreferredSkills(jobAnalysis),
     ...getSoftSkills(jobAnalysis),
     ...getSkillTools(jobAnalysis),
     ...getTechnologies(jobAnalysis),
@@ -997,6 +1018,60 @@ function getConceptKeywords(jobAnalysis?: JobAnalysis, librarySkills: string[] =
   );
 }
 
+/**
+ * The prose targets, as the prompt received them.
+ *
+ * Built from the same two functions that fill `keywordsJson` and
+ * `conceptKeywordsJson`, so the thing being measured is the thing that was
+ * asked for. Anything else would produce a number that looks like coverage and
+ * answers a different question.
+ */
+function getProseChecklist(jobAnalysis?: JobAnalysis): string[] {
+  if (!jobAnalysis) return [];
+  const promptSkills = buildLibraryAugmentedPromptLists(jobAnalysis).promptSkills;
+  const concepts = getConceptKeywords(jobAnalysis, promptSkills);
+  const conceptSet = new Set(concepts.map((term) => term.toLowerCase()));
+  const keywords = buildLibraryAugmentedPromptLists(jobAnalysis).keywords
+    .filter((term) => !conceptSet.has(term.toLowerCase()));
+  return normalizeSkillsList([...keywords, ...concepts]);
+}
+
+/**
+ * Says how much of the checklist the finished resume carries.
+ *
+ * Logged rather than enforced. The model has already answered by the time this
+ * runs, and throwing away a resume that placed 84% of the terms in exchange for
+ * nothing is worse than shipping it with the number written down - the operator
+ * can see the figure, and a run whose average sits below the floor is a prompt
+ * problem rather than a per-resume one.
+ */
+function reportPlacement(
+  profileName: string,
+  content: { summary?: string; experience?: Array<{ description?: string; achievements?: string[] }> },
+  jobAnalysis?: JobAnalysis
+): PlacementReport | null {
+  const checklist = getProseChecklist(jobAnalysis);
+  if (checklist.length === 0) return null;
+
+  const report = measurePlacement(renderedProse(content), checklist);
+  const floor = placementFloor();
+  const percent = (report.ratio * 100).toFixed(0);
+
+  if (report.ratio >= floor) {
+    console.log(
+      `[Resume keywords] ${profileName}: ${report.placed}/${report.total} checklist terms placed (${percent}%).`
+    );
+    return report;
+  }
+
+  console.warn(
+    `[Resume keywords] ${profileName}: only ${report.placed}/${report.total} checklist terms placed ` +
+      `(${percent}%, floor ${(floor * 100).toFixed(0)}%). Missing: ` +
+      `${report.missing.slice(0, 12).join(', ')}${report.missing.length > 12 ? `, +${report.missing.length - 12} more` : ''}`
+  );
+  return report;
+}
+
 function getHardSkillChecklist(jobAnalysis?: JobAnalysis): string[] {
   return normalizeSkillsList([
     ...getTechnicalSkills(jobAnalysis),
@@ -1122,6 +1197,29 @@ const LANGUAGE_FILL_PRIORITY = new Map(
     'r',
   ].map((skill, index) => [skill, index])
 );
+
+/**
+ * Says what the skill blocks refused, once per distinct reason.
+ *
+ * Rejections used to be a `continue` inside whichever function noticed, so an
+ * operator looking at a resume with a keyword missing had nothing to read. This
+ * does not change what is printed; it makes the decision inspectable.
+ */
+function reportRejectedSkills(kind: 'hard' | 'soft', rejected: SkillVerdict[]): void {
+  if (rejected.length === 0) return;
+  const byReason = new Map<string, string[]>();
+  for (const verdict of rejected) {
+    if (verdict.ok) continue;
+    byReason.set(verdict.reason, [...(byReason.get(verdict.reason) ?? []), verdict.term]);
+  }
+  for (const [reason, terms] of byReason) {
+    console.log(
+      `[Resume skills] ${kind}: ${terms.length} term(s) kept out of the block - ` +
+        `${REJECTION_DETAIL[reason as keyof typeof REJECTION_DETAIL]}. ` +
+        `They stay in the prose checklists. (${terms.slice(0, 6).join(', ')}${terms.length > 6 ? ', ...' : ''})`
+    );
+  }
+}
 
 function getHardSkillRecord(skill: string): (typeof hardSkillRecords)[number] | undefined {
   const normalized = normalizeHardSkillAlias(skill);
@@ -2000,58 +2098,217 @@ function toTitleCase(text: string): string {
     .join(' ');
 }
 
-function buildSimpleSeniorEngineerTitle(
+/**
+ * The headline the resume is printed under: the candidate's own, unchanged.
+ *
+ * WHAT THIS REPLACED, AND WHY. It used to rebuild the headline into a fixed
+ * `Senior <domain> Engineer` shape from whichever title it could find, and the
+ * result was a resume that renamed the person. A profile that says "Software
+ * Engineer" came out as "Senior Software Engineer" - a promotion this app is in
+ * no position to hand out - and a MuleSoft posting turned the same person into
+ * "Senior Mulesoft Integration Engineer", which is the resume renaming itself
+ * for the job. The tailoring prompt already says not to do that: "The
+ * candidate's existing headline from their profile... Never the target job
+ * title, and never role-targeted."
+ *
+ * So the profile's title is used verbatim. The only thing added is the
+ * discipline tag in `withTargetTitle`, which is a parenthetical after it rather
+ * than a rewrite of it.
+ *
+ * The fallbacks are for a profile with no headline at all, and go to the
+ * candidate's own most recent role before anything else - still theirs.
+ */
+function buildResumeHeadline(
   contentTitle: string | undefined,
-  jobAnalysis?: JobAnalysis,
+  _jobAnalysis?: JobAnalysis,
   profile?: Profile
 ): string {
-  const source = (getJobAnalysisTitle(jobAnalysis) || contentTitle || profile?.title || '').trim();
-  const cleaned = source
-    .replace(/[^a-zA-Z0-9\s/+.-]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const candidates = [
+    profile?.title,
+    contentTitle,
+    profile?.experience?.[0]?.title,
+  ];
 
-  const stopWords = new Set([
-    'a',
-    'an',
-    'and',
-    'for',
-    'of',
-    'the',
-    'to',
-    'with',
-    'at',
-    'in',
-    'on',
-  ]);
-  const roleWords = new Set([
-    'engineer',
-    'engineering',
-    'developer',
-    'development',
-    'architect',
-    'specialist',
-    'manager',
-    'lead',
-    'principal',
-    'staff',
-    'sr',
-    'senior',
-    'mid',
-    'junior',
-    'ii',
-    'iii',
-    'iv',
-  ]);
+  for (const candidate of candidates) {
+    const trimmed = (candidate ?? '').trim().replace(/\s+/g, ' ');
+    if (trimmed) return trimmed;
+  }
+  return 'Professional';
+}
 
-  const domainTokens = cleaned
+/**
+ * The discipline a job title is really about, in one or two words.
+ *
+ * WHY THIS REPLACED THE LAST ATTEMPT. The first version put the target title in
+ * parentheses only when every meaningful word of it already appeared in the
+ * candidate's own history. That test almost never passes - a posting says
+ * "Mulesoft Integration Engineer" and the profile says "built integrations",
+ * which shares one word out of three - so across ten test resumes it fired
+ * exactly zero times. A rule that never fires is not a conservative rule, it is
+ * a dead one.
+ *
+ * So the claim is smaller and the trigger is simpler. Rather than repeating the
+ * posting's whole title, the headline carries the FIELD it belongs to:
+ *
+ *   Mulesoft Integration Engineer                      -> (Integration)
+ *   Senior Machine Learning Engineer                   -> (AI/ML)
+ *   Full Stack Software Engineer (Node.js)             -> (Full-Stack)
+ *   Backend Engineer - AI Platform and Cloud Native    -> (Backend, AI/ML, Cloud)
+ *   AWS DevOps                                         -> (DevOps)
+ *   Senior Engineer I, DevOps                          -> (DevOps)
+ *   Staff Data Engineer                                -> (Data Engineer)
+ *
+ * A discipline is a much weaker statement than a job title - it says which part
+ * of the field the resume is aimed at, which the rest of the document already
+ * says - and it is the part a scanner matching on "DevOps" or "Machine
+ * Learning" is looking for.
+ */
+type Discipline = { label: string; patterns: RegExp[] };
+
+/**
+ * Ordered most specific first, because the first match wins per discipline and
+ * several of these overlap: "full stack" must not also read as "backend", and
+ * "site reliability" must not read as "reliability engineering".
+ *
+ * Note what is NOT a trigger. A cloud VENDOR - AWS, Azure, GCP - does not make
+ * a title a cloud role: "AWS DevOps" is a DevOps job that happens to be on AWS,
+ * and tagging it (Cloud, DevOps) would say something the posting did not. The
+ * word "cloud" itself does, which is why "Cloud Native Services" tags Cloud.
+ */
+const DISCIPLINES: Discipline[] = [
+  { label: 'Full-Stack', patterns: [/\bfull[\s-]?stack\b/i] },
+  { label: 'AI/ML', patterns: [
+    /\bmachine[\s-]?learning\b/i, /\bdeep[\s-]?learning\b/i, /\bartificial[\s-]?intelligence\b/i,
+    /\bml\b/i, /\bai\b/i, /\bllm(s)?\b/i, /\bgen[\s-]?ai\b/i, /\bnlp\b/i, /\bcomputer[\s-]?vision\b/i,
+  ] },
+  { label: 'Data Engineer', patterns: [/\bdata[\s-]?engineer(ing)?\b/i, /\betl\b/i, /\belt\b/i, /\bdata[\s-]?platform\b/i] },
+  { label: 'Data Science', patterns: [/\bdata[\s-]?scien(ce|tist)\b/i, /\banalytics\b/i] },
+  { label: 'DevOps', patterns: [
+    /\bdev[\s-]?ops\b/i, /\bsre\b/i, /\bsite[\s-]?reliability\b/i,
+    /\bplatform[\s-]?engineer(ing)?\b/i, /\bci\/?cd\b/i, /\binfrastructure\b/i,
+  ] },
+  { label: 'Integration', patterns: [/\bintegration(s)?\b/i, /\bmulesoft\b/i, /\bmiddleware\b/i, /\bipaas\b/i, /\besb\b/i, /\bboomi\b/i] },
+  { label: 'Security', patterns: [/\bsecurity\b/i, /\bappsec\b/i, /\binfosec\b/i, /\bcyber\b/i, /\bidentity\b/i] },
+  { label: 'Cloud', patterns: [/\bcloud\b/i, /\bkubernetes\b/i, /\bserverless\b/i] },
+  { label: 'Mobile', patterns: [/\bmobile\b/i, /\bios\b/i, /\bandroid\b/i, /\breact[\s-]?native\b/i, /\bflutter\b/i] },
+  { label: 'Frontend', patterns: [/\bfront[\s-]?end\b/i, /\bui[\s-]?engineer\b/i, /\bweb[\s-]?ui\b/i] },
+  { label: 'Backend', patterns: [/\bback[\s-]?end\b/i, /\bserver[\s-]?side\b/i, /\bapi[\s-]?engineer\b/i] },
+  { label: 'QA', patterns: [/\bqa\b/i, /\bquality[\s-]?assurance\b/i, /\bsdet\b/i, /\btest(ing)?[\s-]?automation\b/i] },
+  { label: 'Embedded', patterns: [/\bembedded\b/i, /\bfirmware\b/i, /\brtos\b/i] },
+  { label: 'Network', patterns: [/\bnetwork(ing)?\b/i, /\bnetscaler\b/i] },
+  { label: 'Database', patterns: [/\bdba\b/i, /\bdatabase[\s-]?admin/i] },
+  { label: 'Salesforce', patterns: [/\bsalesforce\b/i, /\bapex\b/i] },
+  { label: 'Automation', patterns: [/\brpa\b/i, /\buipath\b/i, /\bautomation\b/i] },
+  // Last, because "IT" is two letters that turn up inside other fields. Only
+  // reached when nothing more specific matched.
+  { label: 'IT', patterns: [/\bit\b/i, /\bhelp[\s-]?desk\b/i, /\bservice[\s-]?desk\b/i, /\bsupport[\s-]?engineer\b/i] },
+];
+
+/** Words that describe the arrangement or the grade, never the field. */
+const TITLE_NOISE = new Set([
+  'a', 'an', 'and', 'for', 'of', 'the', 'to', 'with', 'at', 'in', 'on', 'or',
+  'senior', 'sr', 'junior', 'jr', 'mid', 'staff', 'principal', 'lead', 'head',
+  'contract', 'contractor', 'remote', 'hybrid', 'onsite', 'fulltime', 'parttime',
+  'i', 'ii', 'iii', 'iv', 'v', 'level', 'entry', 'engineer', 'engineering',
+  'developer', 'development', 'architect', 'specialist', 'manager', 'analyst',
+  'consultant', 'administrator', 'scientist', 'programmer', 'technician',
+  'services', 'platform', 'systems', 'system', 'software', 'technology', 'team',
+  // More role nouns, found by running this over 401 real postings: without them
+  // "Senior Fraud Strategist" fell back to "(Fraud Strategist)" rather than
+  // "(Fraud)".
+  'strategist', 'evangelist', 'owner', 'coordinator', 'associate', 'director',
+  'officer', 'partner', 'generalist', 'expert', 'professional', 'practitioner',
+  // Words about the hiring, not the job. "IT Engineer, First IT Hire" was
+  // producing "(It First)".
+  'first', 'hire', 'new', 'grad', 'graduate', 'intern', 'internship', 'opening',
+  'position', 'role', 'job', 'opportunity', 'urgent', 'immediate', 'needed',
+]);
+
+/** How many tags a headline may carry before it stops being a headline. */
+const MAX_DISCIPLINES = 3;
+
+/** How long the whole headline may get. */
+const MAX_HEADLINE_LENGTH = 72;
+
+/**
+ * The disciplines a title names, in the order the title names them.
+ *
+ * Order matters to a reader: "Backend Engineer - AI Platform and Cloud Native
+ * Services" is a backend job first, and listing it (AI/ML, Backend, Cloud)
+ * because that is alphabetical would misdescribe it.
+ */
+export function titleDisciplines(title: string): string[] {
+  const text = String(title ?? '').trim();
+  if (!text) return [];
+
+  const found: Array<{ label: string; at: number }> = [];
+  for (const discipline of DISCIPLINES) {
+    let earliest = -1;
+    for (const pattern of discipline.patterns) {
+      const match = text.match(pattern);
+      if (match?.index !== undefined && (earliest < 0 || match.index < earliest)) earliest = match.index;
+    }
+    if (earliest >= 0) found.push({ label: discipline.label, at: earliest });
+  }
+
+  if (found.length > 0) {
+    return found
+      .sort((a, b) => a.at - b.at)
+      .map((entry) => entry.label)
+      .slice(0, MAX_DISCIPLINES);
+  }
+
+  /*
+   * Nothing in the table matched, which is ordinary: the field is wider than
+   * any list of patterns. Fall back to the most distinctive word the title has
+   * left once the grades and the generic role nouns are removed - "Senior Fraud
+   * Strategist" has "fraud", and (Fraud) is both true and worth matching on.
+   */
+  const leftover = text
+    .replace(/[^A-Za-z0-9+#/.\s-]/g, ' ')
     .split(/\s+/)
-    .map((token) => token.toLowerCase())
-    .filter((token) => token && !stopWords.has(token) && !roleWords.has(token))
-    .slice(0, 2);
+    // Trailing punctuation is why "(Sr.)" reached a printed resume: the token
+    // was "Sr." and the noise list holds "sr", so the two never met. Stripped
+    // on BOTH sides and only for the comparison - a name like "Node.js" keeps
+    // its dots when it is the word that gets used.
+    .filter((word) => {
+      const bare = word.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '').toLowerCase();
+      return bare.length > 1 && !TITLE_NOISE.has(bare);
+    });
 
-  const domain = domainTokens.length > 0 ? toTitleCase(domainTokens.join(' ')) : 'Software';
-  return `Senior ${domain} Engineer`;
+  // ONE word. Two of them read as a job title again - which is what this is not
+  // - and the second is usually the weaker of the pair anyway.
+  return leftover.length > 0 ? [toTitleCase(leftover[0].toLowerCase())] : [];
+}
+
+/**
+ * The headline with the target role's discipline after it.
+ *
+ * Skipped when the headline already says it, which is common - somebody whose
+ * own title is "Senior Data Engineer" applying for a data engineering job does
+ * not need "(Data Engineer)" after it.
+ */
+export function withTargetTitle(
+  headline: string,
+  jobAnalysis?: JobAnalysis,
+  _profile?: Profile
+): string {
+  const base = headline.trim();
+  const target = getJobAnalysisTitle(jobAnalysis).trim();
+  if (!base || !target) return base;
+
+  const disciplines = titleDisciplines(target);
+  if (disciplines.length === 0) return base;
+
+  const spoken = base.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  const fresh = disciplines.filter((label) => {
+    const words = label.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    return !words.every((word) => spoken.includes(word));
+  });
+  if (fresh.length === 0) return base;
+
+  const combined = `${base} (${fresh.join(', ')})`;
+  return combined.length <= MAX_HEADLINE_LENGTH ? combined : `${base} (${fresh[0]})`;
 }
 
 function isCompanyDescriptionLike(value: string, company?: string): boolean {
@@ -2194,8 +2451,34 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
     })
     : normalizeSkillsList(content.hardSkills ?? content.skills ?? []);
 
+  /*
+   * The last gate before either block is printed.
+   *
+   * The selection already refuses concepts, job titles and prose - but it
+   * refuses them among the CANDIDATES, and two things reach the block without
+   * ever being a candidate: a library row that the concept rules did not catch
+   * when it was written, and the model's own `hardSkills` when there is no job
+   * analysis to select from. Both have put sentences in the skills block
+   * before. This is the check that applies the same standard to whatever is
+   * actually about to be printed.
+   *
+   * What it rejects is NOT lost. Every term here came from the posting or the
+   * profile, and the prose checklists already carry the posting in full - see
+   * `collectJobKeywords` and the coverage backstop in
+   * `buildTailorResumePromptValues` - so a keyword refused a bullet here has
+   * already been asked for in the summary and the experience bullets.
+   */
+  const librarySkillKeys = new Set(
+    hardSkillRecords.map((record) => record.skill.trim().toLowerCase().replace(/\s+/g, ' '))
+  );
+  const hardVerdicts = partitionSkills(
+    normalizeSkillsList(codeDecidedHardSkills),
+    (term) => validateHardSkill(term, librarySkillKeys)
+  );
+  reportRejectedSkills('hard', hardVerdicts.rejected);
+
   const atsSoftPriority = inferAtsSoftSkillsFromAnalysis(jobAnalysis);
-  const finalizedHardSkills = normalizeSkillsList(codeDecidedHardSkills);
+  const finalizedHardSkills = hardVerdicts.accepted;
   const hardSkills = usesJobPriorityHardSkillOrdering(profile)
     ? prioritizeHardSkills(finalizedHardSkills, jobAnalysis)
     : sortHardSkillsByLibraryPriority(finalizedHardSkills);
@@ -2210,7 +2493,9 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
     // named outright. These are the terms the job asked for in prose.
     ...softFromLibrary,
   ]);
-  const softLimited = finalizeSoftSkills(softMerged);
+  const softVerdicts = partitionSkills(softMerged, validateSoftSkill);
+  reportRejectedSkills('soft', softVerdicts.rejected);
+  const softLimited = finalizeSoftSkills(softVerdicts.accepted);
 
   const trimIncompleteEnd = (s: string): string =>
     s.trim().replace(/,+\s*$/, '').replace(/\s+(and|or)\s*$/i, '').trim();
@@ -2319,9 +2604,21 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
   );
   const finalSummary = modelSummary || (profile ? buildFallbackSummary(profile) : '');
 
+  // Measured on what will actually be rendered, after the summary has been
+  // sanitised and the experience normalised. Measuring the model's raw answer
+  // would count terms that the cleanup steps then removed.
+  reportPlacement(profile?.name ?? 'resume', {
+    summary: finalSummary,
+    experience: normalizedExperience,
+  }, jobAnalysis);
+
   return {
     ...content,
-    title: buildSimpleSeniorEngineerTitle(content.title, jobAnalysis, profile),
+    title: withTargetTitle(
+      buildResumeHeadline(content.title, jobAnalysis, profile),
+      jobAnalysis,
+      profile
+    ),
     summary: finalSummary,
     experience: normalizedExperience,
     hardSkills,
@@ -2456,6 +2753,35 @@ export function buildTailorResumePromptValues(
   const promptSkills = augmentedPromptLists.promptSkills;
   const conceptKeywords = getConceptKeywords(jobAnalysis, promptSkills);
   const conceptSet = new Set(conceptKeywords.map((keyword) => keyword.toLowerCase()));
+
+  /*
+   * Nothing the posting said is allowed to reach the prompt in no list at all.
+   *
+   * Every list here is assembled by its own function reading its own subset of
+   * the analysis, and for a long time nobody compared the union of them against
+   * the posting. A field left out of one list - `skills.required` and
+   * `skills.preferred` were both out of the prose checklist - meant a term
+   * extracted from the posting, carried through the whole analysis, and then
+   * written nowhere.
+   *
+   * So the last step subtracts: take every term the analysis produced, remove
+   * everything already spoken for, and append the remainder to the prose
+   * checklist. Fixing the checklist itself is the real repair and was done
+   * above; this is the backstop that makes the guarantee hold for the NEXT
+   * field somebody adds, rather than relying on them to remember this file.
+   *
+   * Concepts are excluded because they have their own list and the two are kept
+   * disjoint, so a term is asked for once rather than twice.
+   */
+  const spokenFor = [promptSkills, augmentedPromptLists.keywords, conceptKeywords,
+    getResponsibilities(jobAnalysis), getDomainKnowledge(jobAnalysis)];
+  const uncovered = findUncoveredKeywords(collectJobKeywords(jobAnalysis), spokenFor)
+    .filter((keyword) => !conceptSet.has(keyword.toLowerCase()));
+
+  const proseKeywords = normalizeSkillsList([
+    ...augmentedPromptLists.keywords.filter((keyword) => !conceptSet.has(keyword.toLowerCase())),
+    ...uncovered,
+  ]);
   const promptValues = {
     profileJson: promptJson(profileForPrompt),
     jobAnalysisJson: promptJson(jobAnalysisForPrompt),
@@ -2484,9 +2810,7 @@ export function buildTailorResumePromptValues(
     // Disjoint from the list above, so a term is asked for once. Both are prose
     // checklists; splitting them lets the prompt say something specific about
     // concepts without saying it twice about everything else.
-    keywordsJson: promptJson(
-      augmentedPromptLists.keywords.filter((keyword) => !conceptSet.has(keyword.toLowerCase()))
-    ),
+    keywordsJson: promptJson(proseKeywords),
     keyResponsibilitiesJson: promptJson(getResponsibilities(jobAnalysis)),
     domainKnowledge: promptJson([
       ...getDomainKnowledge(jobAnalysis),

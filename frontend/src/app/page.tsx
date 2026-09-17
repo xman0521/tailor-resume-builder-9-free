@@ -663,6 +663,7 @@ export default function Home() {
           profileId: selectedProfileId!,
           templateId,
           jobDescription,
+          role,
           jobAnalysis: analysis,
         });
         setPreviewHtml(preview.html);
@@ -692,6 +693,7 @@ export default function Home() {
         setGenerationStep('Building previews...');
         const res = await resumeApi.previewAll({
           jobDescription,
+          role,
           jobAnalysis: analysis,
           profileIds,
         });
@@ -932,6 +934,7 @@ export default function Home() {
             profileId: selectedProfileId!,
             templateId,
             jobDescription,
+            role,
             jobAnalysis: jobAnalysis || undefined,
             tailoredContent: nextTailored,
           });
@@ -1010,6 +1013,7 @@ export default function Home() {
                 profileId,
                 templateId,
                 jobDescription,
+                role,
                 jobAnalysis: jobAnalysis || undefined,
                 tailoredContent: nextTailored,
               });
@@ -1078,6 +1082,7 @@ export default function Home() {
         profileId: selectedProfileId!,
         templateId,
         jobDescription,
+        role,
         jobAnalysis: jobAnalysis || undefined,
         tailoredContent,
       });
@@ -1193,6 +1198,7 @@ export default function Home() {
         profileId,
         templateId,
         jobDescription,
+        role,
         jobAnalysis: jobAnalysis || undefined,
         tailoredContent: preview.tailoredContent,
       });
