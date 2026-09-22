@@ -24,6 +24,7 @@ import type {
   ProviderCapabilities,
   ProviderHealth,
 } from '../../types';
+import { type HistoryClearResult } from './history';
 import { BrowserChatSession, BrowserSessionError, debugEndpoint } from './session';
 import { readChatSite, type ChatSiteId } from './sites';
 import { ChatTurnError } from './tab';
@@ -229,6 +230,28 @@ function describeBrowserFault(
  * be frontmost in that window.
  */
 const sessions = new Map<string, BrowserChatSession>();
+
+/**
+ * The browsers this process has actually sent a prompt to.
+ *
+ * The sweep deletes an account's whole chat list, so what it is pointed at
+ * matters more than what it does. Pointing it at "the configured browsers"
+ * read that list from settings - and settings answer with DEFAULTS when an
+ * operator has saved none, which is a pair of port numbers nobody chose.
+ * A test with its own empty settings store therefore swept two real browsers
+ * on this machine. That is exactly the wrong failure for an irreversible
+ * action, and it happened the first time the code ran.
+ *
+ * So the list is earned rather than configured: an endpoint joins it when a
+ * call is actually served from it. A browser this process never drove has no
+ * conversation from this process in it, and is left alone.
+ */
+const driven = new Set<string>();
+
+/** For tests. */
+export function resetDrivenEndpointsForTests(): void {
+  driven.clear();
+}
 
 function sessionFor(endpoint: string): BrowserChatSession {
   const held = sessions.get(endpoint);
@@ -589,6 +612,7 @@ export function createBrowserChatAdapter(
 
       for (let attempt = 0; attempt < attempts; attempt += 1) {
         const lease = await acquireTab(pool, request, id, descriptor.label);
+        driven.add(lease.endpoint);
         try {
           const session = options.sessionFor?.(lease.endpoint) ?? options.session ?? sessionFor(lease.endpoint);
           const tab = await session.tabFor(site());
@@ -727,4 +751,136 @@ export function createBrowserChatAdapter(
       }
     },
   };
+}
+
+/** What one browser's cleanup did. */
+export type EndpointHistoryClear = {
+  endpoint: string;
+  siteId: ChatSiteId;
+  deleted: number;
+  failed: number;
+  note?: string;
+  error?: string;
+};
+
+export type ClearChatHistoryOptions = {
+  /** For tests: the browsers to sweep, instead of the saved ones. */
+  endpoints?: Array<{ endpoint: string; siteId: ChatSiteId }>;
+  /** For tests: what to do with each browser. */
+  clear?: (endpoint: string, siteId: ChatSiteId) => Promise<HistoryClearResult>;
+  /** For tests: whether a browser is mid-call. */
+  leased?: (endpoint: string) => boolean;
+  env?: NodeJS.ProcessEnv;
+  log?: (message: string) => void;
+};
+
+/**
+ * Empties the chat list of every registered account browser.
+ *
+ * WHY IT RUNS AT ALL. One conversation per call is what makes reading the
+ * reply sound, so a 500-resume batch leaves 500 chats in each account. Nobody
+ * can use an account in that state, and nobody is going to clear it by hand
+ * fifty browsers at a time.
+ *
+ * WHAT IT DELETES. The whole list, which is what was asked for: these are
+ * accounts registered for this app to drive. It cannot tell a chat this app
+ * started from one somebody started themselves, and it does not try - so a
+ * conversation of your own in one of these windows goes with the rest, and
+ * deletion is not reversible. `AI_WEB_CLEAR_HISTORY=false` turns it off.
+ *
+ * A browser in the middle of a call is SKIPPED, not waited for. Deleting the
+ * conversation a turn is reading would break that turn, and this runs at the
+ * end of a batch, when the next one may already have started.
+ */
+export async function clearAllChatHistory(
+  options: ClearChatHistoryOptions = {}
+): Promise<EndpointHistoryClear[]> {
+  const env = options.env ?? process.env;
+  if ((env.AI_WEB_CLEAR_HISTORY ?? '').trim().toLowerCase() === 'false') return [];
+
+  const log = options.log ?? ((message: string) => console.log(message));
+  const leased = options.leased ?? isEndpointLeased;
+
+  const browsers = options.endpoints ?? (await drivenBrowsers(env));
+  if (browsers.length === 0) return [];
+
+  const clear =
+    options.clear ??
+    ((endpoint: string, siteId: ChatSiteId) =>
+      sessionFor(endpoint).clearHistory(readChatSite(siteId, env)));
+
+  const results: EndpointHistoryClear[] = [];
+  // One at a time. Fifty browsers deleting at once is fifty Chrome windows
+  // working, on a machine that has just finished rendering several hundred
+  // PDFs, to save a few seconds of tidying nobody is waiting on.
+  for (const browser of browsers) {
+    if (leased(browser.endpoint)) {
+      results.push({
+        ...browser,
+        deleted: 0,
+        failed: 0,
+        note: 'busy with a call, left alone',
+      });
+      continue;
+    }
+    try {
+      const outcome = await clear(browser.endpoint, browser.siteId);
+      results.push({ ...browser, ...outcome });
+    } catch (error) {
+      results.push({
+        ...browser,
+        deleted: 0,
+        failed: 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const deleted = results.reduce((total, row) => total + row.deleted, 0);
+  const problems = results.filter((row) => row.error || row.failed > 0 || row.note);
+  log(
+    `[ai] chat history: ${deleted} conversation(s) deleted across ${results.length} browser(s).` +
+      problems
+        .map(
+          (row) =>
+            ` ${portOf(row.endpoint)} (${row.siteId}): ${
+              row.error ?? row.note ?? `${row.failed} could not be deleted`
+            }.`
+        )
+        .join('')
+  );
+  return results;
+}
+
+/**
+ * The browsers this process drove, each with the site it was driven for.
+ *
+ * Settings are read only to name the site, and only for an endpoint that is
+ * already on the driven list - so a settings file full of defaults can no
+ * longer put a browser in front of the sweep.
+ */
+async function drivenBrowsers(
+  env: NodeJS.ProcessEnv
+): Promise<Array<{ endpoint: string; siteId: ChatSiteId }>> {
+  if (driven.size === 0) return [];
+  const explicit = (env.AI_WEB_CDP_URL ?? '').trim();
+
+  let configured: Array<{ siteId: ChatSiteId; port: number }> = [];
+  try {
+    configured = (await getBrowserChatEndpoints()) as Array<{ siteId: ChatSiteId; port: number }>;
+  } catch {
+    // Settings unreadable: a cleanup is not worth failing a finished batch
+    // over, and without them there is no way to say which site a port is.
+    return [];
+  }
+
+  const byEndpoint = new Map<string, ChatSiteId>(
+    configured.map((entry) => [explicit || endpointUrl(entry.port), entry.siteId])
+  );
+  const browsers: Array<{ endpoint: string; siteId: ChatSiteId }> = [];
+  for (const endpoint of driven) {
+    const siteId = byEndpoint.get(endpoint);
+    if (siteId) browsers.push({ endpoint, siteId });
+  }
+  return browsers;
 }

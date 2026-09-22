@@ -11,6 +11,8 @@ import {
   refusalReason,
   STABLE_READS_WITH_BUSY_SIGNAL,
   STABLE_READS_WITHOUT_BUSY_SIGNAL,
+  stripDuplicatePrefix,
+  stripSpeakerLabel,
   unfamiliarText,
   usableBusySelectors,
   type ChatMessage,
@@ -364,7 +366,17 @@ export class ChatTab {
     const selector = this.assistantSelector ?? (await this.firstMatch(this.site.assistant));
     if (!selector) return [];
     this.assistantSelector = selector;
-    return this.page.messages(selector, this.site.messageIdAttr);
+    const messages = await this.page.messages(selector, this.site.messageIdAttr);
+    // Cleaned here, where the page is read, so the echo guard, the settle
+    // check and the answer all see the same text. The label goes first: the
+    // repeat it announces is only visible once its own words are gone. See
+    // `stripSpeakerLabel` and `stripDuplicatePrefix`.
+    return messages
+      ? messages.map((message) => ({
+          ...message,
+          text: stripDuplicatePrefix(stripSpeakerLabel(message.text)),
+        }))
+      : messages;
   }
 
   /**

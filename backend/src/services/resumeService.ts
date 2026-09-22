@@ -20,6 +20,7 @@ import { moveCaseInsensitiveMatches, uniqueCaseInsensitive } from '../utils/arra
 import { extractJSON } from '../utils/json';
 import { removeDuplicateSubstrings, ensureMinTechSkills } from './utils/resumeBuilder';
 import { collectJobKeywords, findUncoveredKeywords } from './utils/keywordCoverage';
+import { normalizeDashes } from './utils/dashes';
 import {
   measurePlacement,
   placementFloor,
@@ -2592,8 +2593,10 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
 
   const trimIncompleteEnd = (s: string): string =>
     s.trim().replace(/,+\s*$/, '').replace(/\s+(and|or)\s*$/i, '').trim();
+  // Every prose funnel below starts here, so the dash clean-up rides along
+  // with the tag strip rather than being remembered in four places.
   const stripBoldTags = (s: string): string =>
-    s.replace(/<\/?strong>/gi, '').replace(/<\/?b>/gi, '');
+    normalizeDashes(s.replace(/<\/?strong>/gi, '').replace(/<\/?b>/gi, ''));
   const sanitizeResumeText = (s: string): string => {
     const clean = stripUnsafeResumeSentences(stripBoldTags(s), undefined);
     return isUnsafeJobPostingPhrase(clean) ? '' : clean;
@@ -2633,6 +2636,13 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
 
   const normalizeSummary = (summary: string): string =>
     stripUnsafeResumeSentences(stripBoldTags(summary), undefined);
+
+  // The cover letter is written by the same model call and carries the same
+  // stand-in dashes. It is not prose the resume renders, so none of the
+  // funnels above has seen it; an absent letter stays absent.
+  const coverLetterFields = content.coverLetter
+    ? { coverLetter: normalizeDashes(content.coverLetter) }
+    : {};
 
   const normalizedExperience = (content.experience ?? []).map((item) => ({
     ...item,
@@ -2707,6 +2717,7 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
 
   return {
     ...content,
+    ...coverLetterFields,
     title: withTargetTitle(
       buildResumeHeadline(content.title, jobAnalysis, profile),
       jobAnalysis,

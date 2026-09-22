@@ -189,6 +189,25 @@ test('every look stays a plain single column, because a scanner reads this too',
     const size = Number.parseFloat(style.fontSize);
     assert.ok(size >= 10 && size <= 13, `${style.name} is ${style.fontSize}, outside what a letter is set in`);
     assert.ok(Number(style.lineHeight) >= 1.4, `${style.name} is set too tight to read`);
+    // The other end of the same rule. One form ran at 1.8 and read as though
+    // the sentences had been double-spaced.
+    assert.ok(Number(style.lineHeight) <= 1.6, `${style.name} is set too loose to read as a letter`);
+
+    /*
+     * The name belongs to the sign-off above it.
+     *
+     * One form left 30pt under "Best regards," - room for a wet signature on a
+     * document that is never printed - and the two read as unrelated blocks
+     * with a hole between them. The gap ABOVE the sign-off is the one that
+     * separates it from the letter, and that one is left alone.
+     */
+    const belowSignOff = Number.parseFloat(
+      (/margin:s*[^;]*?s([d.]+)pts+0;/.exec(style.signOff) ?? [])[1] ?? '0'
+    );
+    assert.ok(
+      belowSignOff <= 10,
+      `${style.name} leaves ${belowSignOff}pt between the sign-off and the name`
+    );
     assert.match(style.color, /^#[0-9a-f]{6}$/i, `${style.name} has an odd ink`);
 
     // A margin still has to leave a letter on the page.

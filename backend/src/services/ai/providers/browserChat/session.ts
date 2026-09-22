@@ -1,6 +1,7 @@
 import puppeteer from 'puppeteer';
 import type { Browser, Page } from 'puppeteer';
 import { hostOf, matchesHost, matchesSite } from './conversation';
+import { clearSiteHistory, type HistoryClearResult } from './history';
 import { wrapPuppeteerPage } from './page';
 import { ChatTab, type ChatTabOptions } from './tab';
 import type { ChatSite, ChatSiteId } from './sites';
@@ -204,6 +205,24 @@ export class BrowserChatSession {
     const tab = new ChatTab(wrapPuppeteerPage(page), site, this.tabOptions);
     this.tabs.set(site.id, tab);
     return tab;
+  }
+
+  /**
+   * Deletes this account's chat list, from inside the tab that is signed in.
+   *
+   * Sent back to the site's own address afterwards rather than left on the
+   * conversation that was open, because that conversation no longer exists.
+   * Nothing is brought to the front: this runs on every registered browser at
+   * the end of a run, and raising fifty windows to tidy up would be worse than
+   * the mess.
+   */
+  async clearHistory(site: ChatSite): Promise<HistoryClearResult> {
+    const page = await this.pageFor(site);
+    const result = await clearSiteHistory(site.id, page);
+    await page
+      .goto(site.url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      .catch(() => undefined);
+    return result;
   }
 
   /** Whether the browser is reachable and this site has a usable tab. */

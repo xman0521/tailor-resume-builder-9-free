@@ -35,6 +35,16 @@ const analysisWithBlankTitle = () => ({
 
 test('the sheet\'s job title reaches the headline when the analyser left its own blank', async (t) => {
   useTempStorage('headline-e2e');
+  // This drives the REAL batch route, which ends by clearing the chat list of
+  // every account browser it drove. It drives none here - the model is stubbed
+  // - but the switch is set anyway: a test must not be one wiring change away
+  // from deleting somebody's conversations.
+  const clearing = process.env.AI_WEB_CLEAR_HISTORY;
+  process.env.AI_WEB_CLEAR_HISTORY = 'false';
+  t.after(() => {
+    if (clearing === undefined) delete process.env.AI_WEB_CLEAR_HISTORY;
+    else process.env.AI_WEB_CLEAR_HISTORY = clearing;
+  });
 
   const execution = require('../dist/services/ai/promptExecution');
   const original = execution.createPromptCompletion;

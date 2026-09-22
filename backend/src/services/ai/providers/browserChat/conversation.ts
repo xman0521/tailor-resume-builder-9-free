@@ -399,3 +399,73 @@ export function composePrompt(body: string, nudge: string): string {
   if (!nudge.trim()) return trimmed;
   return `${trimmed}\n\n${nudge.trim()}`;
 }
+
+/**
+ * The speaker label a site prints in front of its own answer.
+ *
+ * WHY. The answer is read as `innerText` of the assistant node, and both sites
+ * put a label for screen readers inside it. Those labels are positioned off
+ * the page rather than hidden, so `innerText` returns them - and a cover letter
+ * came back reading "Claude responded: I have spent the past decade...", with
+ * the label printed on the finished PDF.
+ *
+ * Only the resume escaped it, and only by accident: that answer is JSON and
+ * `extractJSON` starts at the first brace, so anything before it is skipped.
+ * A plain-text answer has no such landmark, which is why the letter carried it.
+ *
+ * Removed at the point the page is read, so the label is gone before anything
+ * else looks at the text - the echo guard, the settle check and the answer
+ * itself all see the same string. One label, at the very start, and only when
+ * something follows it: a node that has rendered its label but not yet its
+ * text reads as empty, which is what it is.
+ */
+const SPEAKER_LABEL = /^\s*(?:claude|chatgpt|gpt(?:[\s-][\w.]+)?|assistant)\s*(?:said|says|responded|replied)?\s*:[ \t]*\n?/i;
+
+export function stripSpeakerLabel(text: string): string {
+  const value = String(text ?? '');
+  if (!SPEAKER_LABEL.test(value)) return value;
+  const withoutLabel = value.replace(SPEAKER_LABEL, '');
+  // A label with nothing behind it is not an answer to strip down to - the
+  // caller reads "" as "no answer yet", which is the truth at that moment.
+  return withoutLabel.trim() ? withoutLabel : '';
+}
+
+/**
+ * The opening of an answer, said twice.
+ *
+ * Same root as `stripSpeakerLabel`, one layer deeper. The label a site prints
+ * for screen readers does not sit alone: it announces the answer as it starts,
+ * so the node carries "Claude responded: <the opening>" AND then the message
+ * itself, opening with those same words. Stripping the label left the repeat:
+ *
+ *   "I have spent the last ten years ... but a contract.
+ *    I have spent the last ten years ... but a contract. At Samsara, I ..."
+ *
+ * Both letters this was found in read that way on the finished PDF. Only the
+ * letters: a resume answer is JSON and the parser starts at the first brace,
+ * so it never saw the announcement at all.
+ *
+ * Matched by looking for the text repeating ITSELF at the front rather than
+ * for a sentence, because the announcement is a snapshot of a stream and can
+ * stop mid-word - a prefix of the message rather than a sentence of it. Only
+ * the very start is examined, and only a run long enough that two identical
+ * openings cannot be a coincidence.
+ */
+const MIN_DUPLICATE_CHARS = 24;
+
+/** No announcement is longer than this, and a whole paragraph might be. */
+const MAX_DUPLICATE_CHARS = 600;
+
+export function stripDuplicatePrefix(text: string): string {
+  const value = String(text ?? '');
+  const body = value.trimStart();
+  const limit = Math.min(MAX_DUPLICATE_CHARS, Math.floor(body.length / 2));
+
+  for (let cut = MIN_DUPLICATE_CHARS; cut <= limit; cut += 1) {
+    const head = body.slice(0, cut).trimEnd();
+    if (head.length < MIN_DUPLICATE_CHARS) continue;
+    const rest = body.slice(cut).trimStart();
+    if (rest.startsWith(head)) return rest;
+  }
+  return value;
+}

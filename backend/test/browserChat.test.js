@@ -14,6 +14,8 @@ const {
   pickReply,
   poll,
   refusalReason,
+  stripDuplicatePrefix,
+  stripSpeakerLabel,
   unfamiliarText,
   usableBusySelectors,
 } = require('../dist/services/ai/providers/browserChat/conversation');
@@ -110,6 +112,101 @@ test('text that changes between polls restarts the count', () => {
   const grew = poll(state, 'one two', false);
   assert.equal(grew.done, null, 'a reply that resumed is not finished');
   assert.equal(poll(grew.state, 'one two', false).done, 'one two');
+});
+
+test('the name of the site is not part of its answer', () => {
+  /*
+   * Taken from a finished cover letter: "Claude responded: I have spent the
+   * past decade...". Both sites put a label for screen readers inside the
+   * message, positioned off the page rather than hidden, so reading the node's
+   * innerText returns it. The resume escaped only because its answer is JSON
+   * and the parser starts at the first brace; a letter is plain text and
+   * carried the label onto the PDF.
+   */
+  assert.equal(
+    stripSpeakerLabel('Claude responded: I have spent the past decade building software.'),
+    'I have spent the past decade building software.'
+  );
+  assert.equal(stripSpeakerLabel('ChatGPT said:\nI have spent ten years.'), 'I have spent ten years.');
+  assert.equal(stripSpeakerLabel('Assistant: the answer'), 'the answer');
+  assert.equal(stripSpeakerLabel('GPT-4o replied: the answer'), 'the answer');
+
+  // An answer that simply starts with one of those words is left alone.
+  const kept = 'Claude Code is the tool I used to build the pipeline.';
+  assert.equal(stripSpeakerLabel(kept), kept);
+  assert.equal(stripSpeakerLabel('I have spent the past decade'), 'I have spent the past decade');
+
+  // The label renders before the text does: that is no answer yet, not an
+  // answer of nothing.
+  assert.equal(stripSpeakerLabel('Claude responded:'), '');
+  assert.equal(stripSpeakerLabel(''), '');
+});
+
+test('a label in front of the answer never reaches the caller', async () => {
+  const page = fakePage({
+    present: (selector, state) => {
+      if (selector === '#composer' || selector === '#send') return true;
+      if (selector === '#stop') return state.reads > 4 && state.reads < 10;
+      return state.reads > 4;
+    },
+    messages: (_selector, state) =>
+      (state.reads > 6 ? [{ id: null, text: 'Claude responded: I have spent the past decade.' }] : []),
+  });
+  assert.equal(await tabFor(page).ask('write a cover letter', 600_000), 'I have spent the past decade.');
+});
+
+test('the opening the site announces is not printed twice', () => {
+  /*
+   * The label does not sit alone. The site announces the answer as it starts,
+   * so the node carries the announcement AND the message that opens with the
+   * same words. Both of these are taken verbatim from finished cover letters,
+   * where the reader saw the opening sentence, then the whole letter starting
+   * with that sentence again.
+   */
+  const leo =
+    'I have spent the last ten years building software at the scale where reliability is not a feature but a contract.'
+    + '\n\nI have spent the last ten years building software at the scale where reliability is not a feature but a contract.'
+    + ' At Samsara, I work on systems that ingest real-time data.';
+  assert.equal(
+    stripDuplicatePrefix(leo),
+    'I have spent the last ten years building software at the scale where reliability is not a feature but a contract.'
+    + ' At Samsara, I work on systems that ingest real-time data.'
+  );
+
+  // The announcement is a snapshot of a stream, so it can stop mid-word. That
+  // is a prefix of the message rather than a sentence of it.
+  assert.equal(
+    stripDuplicatePrefix('I have spent the past decade building softw I have spent the past decade building software at scale.'),
+    'I have spent the past decade building software at scale.'
+  );
+
+  // A letter that simply reuses a phrase is left alone, and so is a short one.
+  const ordinary = 'I have spent ten years on platforms. The work is steady, and I have spent it on systems that matter.';
+  assert.equal(stripDuplicatePrefix(ordinary), ordinary);
+  assert.equal(stripDuplicatePrefix('Yes. Yes.'), 'Yes. Yes.');
+  assert.equal(stripDuplicatePrefix(''), '');
+});
+
+test('the announcement and its repeat are both gone by the time the caller sees the answer', async () => {
+  // The whole failure, as it reached the page: label, opening, opening again.
+  const answer =
+    'Claude responded: I have spent the past decade building software at a scale most engineers only read about.'
+    + ' I have spent the past decade building software at a scale most engineers only read about.'
+    + ' At Samsara, I lead the platform team.';
+  const page = fakePage({
+    present: (selector, state) => {
+      if (selector === '#composer' || selector === '#send') return true;
+      if (selector === '#stop') return state.reads > 4 && state.reads < 10;
+      return state.reads > 4;
+    },
+    messages: (_selector, state) => (state.reads > 6 ? [{ id: null, text: answer }] : []),
+  });
+
+  assert.equal(
+    await tabFor(page).ask('write a cover letter', 600_000),
+    'I have spent the past decade building software at a scale most engineers only read about.'
+    + ' At Samsara, I lead the platform team.'
+  );
 });
 
 test('the prompt coming back is recognised as an echo, not an answer', () => {

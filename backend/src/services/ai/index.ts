@@ -55,6 +55,9 @@ export {
 } from './freeChatRouting';
 export type { FreeChatRoute, FreeChatSiteStatus } from './freeChatRouting';
 
+export { clearAllChatHistory } from './providers/browserChat';
+export type { EndpointHistoryClear } from './providers/browserChat';
+
 export { getUsageSnapshot, warnOnce } from './telemetry';
 export type { UsageSnapshot } from './telemetry';
 

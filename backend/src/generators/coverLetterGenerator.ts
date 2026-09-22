@@ -7,6 +7,7 @@ import { Profile } from '../types/profile';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getCoverLetterOutputFilename } from '../utils/generatedPath';
 import { withRenderPermit } from './renderConcurrency';
+import { normalizeDashes } from '../services/utils/dashes';
 
 const COVER_LETTER_GREETINGS = ['Hello Hiring Team,', 'Hi Hiring Team,', 'Hello Team,', 'Hi Team,', 'Hi,', 'Hello,', 'Hi Hiring Manager,', 'Hello Hiring Manager'];
 
@@ -159,19 +160,28 @@ const FORMS: LetterForm[] = [
     ruleBeforeSignature: false,
   },
   {
-    // Wide margins, generous leading, justified, and room left under the
-    // sign-off the way a letter leaves space for a wet signature.
+    /*
+     * Wide margins and justified text: the most formal of the five.
+     *
+     * It used to leave 30pt under the sign-off, the way a printed letter
+     * leaves room for a wet signature, on a document nobody prints and signs -
+     * so "Best regards," and the name read as two separate things with a hole
+     * between them. Its leading was 1.8 against 1.45-1.55 everywhere else,
+     * which opened the body of the letter to match. Formality here is the
+     * margins, the justification and the small-caps name, none of which costs
+     * the reader a line of white space.
+     */
     key: 'formal',
     serifSize: '12pt',
     sansSize: '11pt',
-    lineHeight: '1.8',
-    paragraphGap: '14pt',
+    lineHeight: '1.55',
+    paragraphGap: '12pt',
     paragraphIndent: '0',
     textAlign: 'justify',
     pageMargin: '1.1in',
     maxWidth: null,
-    greeting: 'margin: 0 0 18pt 0;',
-    signOff: 'margin: 26pt 0 30pt 0;',
+    greeting: 'margin: 0 0 14pt 0;',
+    signOff: 'margin: 18pt 0 6pt 0;',
     signature: 'margin: 0; text-transform: uppercase; letter-spacing: 1.5pt; font-size: 0.9em;',
     ruleAfterGreeting: false,
     ruleBeforeSignature: false,
@@ -181,7 +191,7 @@ const FORMS: LetterForm[] = [
     key: 'narrow',
     serifSize: '11.5pt',
     sansSize: '10.5pt',
-    lineHeight: '1.7',
+    lineHeight: '1.6',
     paragraphGap: '13pt',
     paragraphIndent: '0',
     textAlign: 'left',
@@ -275,7 +285,9 @@ export function pickCoverLetterStyle(
  * never indented, which is the ordinary typographic rule.
  */
 function contentToHtmlParagraphs(content: string, style: CoverLetterStyle): string {
-  const trimmed = content.trim();
+  // Both the PDF and the DOCX come through here, and so does the letter
+  // written without a job description, which no resume funnel ever sees.
+  const trimmed = normalizeDashes(content).trim();
   if (!trimmed) return '';
   const paragraphs = trimmed.split(/\n\s*\n/).filter((p) => p.trim());
   return paragraphs
