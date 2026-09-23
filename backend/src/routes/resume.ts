@@ -19,7 +19,7 @@ import {
   type AiChoice,
   type AiPreferences,
 } from '../config/aiPreferences';
-import { clearAllChatHistory, mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
+import { mapWithConcurrency, resolveBatchCapacity } from '../services/ai';
 import { withUnitRetry } from '../services/ai/retry';
 import {
   advanceBatch,
@@ -83,25 +83,6 @@ async function timeResumeStage<T>(label: string, action: () => Promise<T>): Prom
 
 function shouldGenerateCoverLetterDocx(value: unknown): boolean {
   return typeof value === 'boolean' ? value : true;
-}
-
-/**
- * Clears every registered account browser's chat list, after a run.
- *
- * NOT awaited, and deliberately. The resumes are written and the operator is
- * waiting on the response; whether somebody's chat list is tidy is not worth
- * holding that open for, and on fifty browsers the sweep takes longer than the
- * request it would be attached to. Failures are logged by the sweep itself -
- * there is nothing an operator would do differently about a run that finished
- * and then could not tidy up.
- */
-function sweepChatHistory(label: string): void {
-  void clearAllChatHistory().catch((error) => {
-    console.warn(
-      `[ai] chat history: the sweep after ${label} did not finish: ` +
-        `${error instanceof Error ? error.message : String(error)}`
-    );
-  });
 }
 
 function resolveGenerationRole(role: unknown, analysis?: import('../types/template').JobAnalysis): string {
@@ -785,8 +766,6 @@ router.post('/generate-all', async (req: Request, res: Response) => {
       });
     });
 
-    sweepChatHistory('generate-all');
-
     res.json({
       generated: results.length,
       results,
@@ -1037,8 +1016,6 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
     // Closes the stream the page is watching. Also on the error path below, so
     // a run that blew up does not leave a bar turning forever.
     if (progressId) finishBatch(progressId);
-
-    sweepChatHistory('batch');
 
     res.json({
       generated: results.length,

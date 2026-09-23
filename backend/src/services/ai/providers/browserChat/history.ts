@@ -2,11 +2,12 @@ import type { Page } from 'puppeteer';
 import type { ChatSiteId } from './sites';
 
 /**
- * Clearing an account browser's chat list after a run.
+ * Clearing an account browser's chat list, when the operator asks.
  *
  * WHY IT IS NEEDED. Every call starts a fresh conversation - that is what makes
  * the reply latch sound - so a batch of 500 resumes leaves 500 chats in the
  * account. Across fifty registered browsers that is a list nobody can use.
+ * Run from a button on the Settings page, never by itself.
  *
  * WHY THROUGH THE PAGE. The work runs as a script inside the tab that is
  * already signed in, so it acts as the account the operator signed in with and
@@ -40,6 +41,9 @@ export async function clearClaudeHistory(): Promise<HistoryClearResult> {
   // is serialised and run in the browser, where this module does not exist.
   const MAX_PAGES = 400;
   const PAGE_SIZE = 50;
+  // Deletes in flight at once. The site answers one at a time slowly enough
+  // that 500 in a row is most of a minute; a handful together is not a burst.
+  const PARALLEL = 6;
 
   const read = async (url: string): Promise<{ ok: boolean; status: number; body: unknown }> => {
     const response = await fetch(url, { credentials: 'include' });
@@ -68,20 +72,30 @@ export async function clearClaudeHistory(): Promise<HistoryClearResult> {
       const conversations = Array.isArray(list.body) ? (list.body as Array<{ uuid?: string }>) : [];
       if (!list.ok || conversations.length === 0) break;
 
+      const ids = conversations
+        .map((conversation) => (typeof conversation?.uuid === 'string' ? conversation.uuid : ''))
+        .filter(Boolean);
+
       let removedThisRound = 0;
-      for (const conversation of conversations) {
-        const id = typeof conversation?.uuid === 'string' ? conversation.uuid : '';
-        if (!id) continue;
-        const response = await fetch(`/api/organizations/${uuid}/chat_conversations/${id}`, {
-          method: 'DELETE',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-        });
-        if (response.ok) {
-          deleted += 1;
-          removedThisRound += 1;
-        } else {
-          failed += 1;
+      for (let at = 0; at < ids.length; at += PARALLEL) {
+        const outcomes = await Promise.all(
+          ids.slice(at, at + PARALLEL).map((id) =>
+            fetch(`/api/organizations/${uuid}/chat_conversations/${id}`, {
+              method: 'DELETE',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+            })
+              .then((response) => response.ok)
+              .catch(() => false)
+          )
+        );
+        for (const ok of outcomes) {
+          if (ok) {
+            deleted += 1;
+            removedThisRound += 1;
+          } else {
+            failed += 1;
+          }
         }
       }
 

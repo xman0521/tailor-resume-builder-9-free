@@ -7,6 +7,7 @@ import {
   AdminAppSettings,
   AdminAppSettingsUpdate,
   BrowserChatEndpoint,
+  ChatHistoryClearReport,
   DebugBrowserReport,
   AIProvider,
   DefaultMode,
@@ -234,6 +235,8 @@ export default function AdminSettingsPage() {
   const [debugError, setDebugError] = useState('');
   const [debugCheckedAt, setDebugCheckedAt] = useState('');
   const [isChecking, setIsChecking] = useState(false);
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
+  const [historyReport, setHistoryReport] = useState<ChatHistoryClearReport | null>(null);
   const [newBrowserSite, setNewBrowserSite] = useState<AIProvider>('claude-web');
   const [newBrowserPort, setNewBrowserPort] = useState('');
   const [isBrowsingDirectory, setIsBrowsingDirectory] = useState(false);
@@ -449,6 +452,36 @@ export default function AdminSettingsPage() {
     // saying "no debug port registered" directly under the row that was just
     // registered. Not awaited - the panel says "Checking..." while it settles.
     void refreshDebugBrowsers();
+  };
+
+  /**
+   * Deletes every conversation in every registered account browser.
+   *
+   * Asked first, because it cannot be undone and it takes the operator's own
+   * conversations in those windows along with the ones this app started - the
+   * sites give no way to tell them apart.
+   */
+  const clearChatHistory = async () => {
+    if (!form || form.browserChatEndpoints.length === 0) return;
+    const count = form.browserChatEndpoints.length;
+    const confirmed = window.confirm(
+      `Delete ALL chat history in ${count} registered account browser${count === 1 ? '' : 's'}?\n\n` +
+        'Every conversation in each account is deleted, including any you started yourself in ' +
+        'those windows. This cannot be undone.\n\n' +
+        'A browser that is answering a request right now is skipped.'
+    );
+    if (!confirmed) return;
+
+    setIsClearingHistory(true);
+    setHistoryReport(null);
+    setDebugError('');
+    try {
+      setHistoryReport(await adminApi.clearBrowserChatHistory());
+    } catch (err) {
+      setDebugError(err instanceof Error ? err.message : 'Could not delete the chat history');
+    } finally {
+      setIsClearingHistory(false);
+    }
   };
 
   const unregisterBrowser = async (port: number) => {
@@ -718,6 +751,15 @@ export default function AdminSettingsPage() {
             >
               {isChecking ? 'Checking...' : 'Check status'}
             </button>
+            <button
+              type="button"
+              onClick={() => void clearChatHistory()}
+              disabled={isClearingHistory || savingSection !== null || form.browserChatEndpoints.length === 0}
+              title="Deletes every conversation in every registered account browser"
+              className="rounded-md border border-red-300 px-3 py-2 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
+            >
+              {isClearingHistory ? 'Deleting chat history...' : 'Delete chat history'}
+            </button>
             {debugCheckedAt ? (
               <span className="self-center text-xs text-gray-500">
                 Last checked {debugCheckedAt}
@@ -837,6 +879,42 @@ npm run browser:debug
           </div>
 
           {debugError ? <p className="text-sm text-red-600">{debugError}</p> : null}
+
+          {isClearingHistory ? (
+            <p className="text-sm text-gray-600">
+              Deleting chat history in every registered browser. With many conversations this can
+              take a few minutes; leave this page open.
+            </p>
+          ) : null}
+
+          {/* One line per browser, so a signed-out or stopped browser is
+              visible rather than folded into a total that looks complete. */}
+          {historyReport ? (
+            <div className="rounded-md border border-gray-200 p-3">
+              <p className="text-sm font-medium text-gray-900">
+                Deleted {historyReport.deleted} conversation{historyReport.deleted === 1 ? '' : 's'} across{' '}
+                {historyReport.results.length} browser{historyReport.results.length === 1 ? '' : 's'}.
+              </p>
+              <ul className="mt-2 space-y-1">
+                {historyReport.results.map((row) => (
+                  <li key={row.port} className="flex flex-wrap gap-x-3 text-sm">
+                    <span className="min-w-[9rem] text-gray-900">{getAIProviderLabel(row.siteId)}</span>
+                    <span className="text-gray-600">port {row.port}</span>
+                    {row.error ? (
+                      <span className="text-red-600">not reached: {row.error}</span>
+                    ) : row.note ? (
+                      <span className="text-amber-700">{row.note}</span>
+                    ) : (
+                      <span className="text-green-700">
+                        {row.deleted} deleted
+                        {row.failed > 0 ? `, ${row.failed} could not be deleted` : ''}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
         </section>
 

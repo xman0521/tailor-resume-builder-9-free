@@ -947,6 +947,26 @@ export interface DebugBrowserReport {
   queues: Record<string, TabQueueStats>;
 }
 
+/** One account browser's result from "Delete chat history". */
+export interface ChatHistoryClearRow {
+  endpoint: string;
+  port: number;
+  siteId: AIProvider;
+  /** Conversations the site confirmed deleted. */
+  deleted: number;
+  /** Conversations it refused to delete. */
+  failed: number;
+  /** Why nothing happened: signed out, busy with a call. */
+  note?: string;
+  /** The browser could not be reached at all. */
+  error?: string;
+}
+
+export interface ChatHistoryClearReport {
+  results: ChatHistoryClearRow[];
+  deleted: number;
+}
+
 export interface BrowseOutputDirectoryResponse {
   selectedPath: string | null;
 }
@@ -1107,6 +1127,10 @@ export const adminApi = {
     normalizeAdminAppSettings(await apiFetch<AdminAppSettings>('/admin/settings')),
 
   getDebugBrowsers: () => apiFetch<DebugBrowserReport>('/admin/browser/debug'),
+
+  /** Deletes every conversation in every registered account browser. Irreversible. */
+  clearBrowserChatHistory: () =>
+    apiFetch<ChatHistoryClearReport>('/admin/browser/clear-history', { method: 'POST' }),
 
   browseOutputDirectory: (currentPath?: string) =>
     apiFetch<BrowseOutputDirectoryResponse>('/admin/browse-output-directory', {

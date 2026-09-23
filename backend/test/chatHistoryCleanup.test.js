@@ -138,15 +138,18 @@ test('nothing to delete is not an error', async (t) => {
 
 // ------------------------------------------------------------- the sweep
 
+// High ports nothing listens on. The sweep is always handed its browsers and
+// its clear function here: pointed at the real settings it would reach the
+// operator's signed-in browsers, which is exactly what happened once.
 const BROWSERS = [
-  { endpoint: 'http://127.0.0.1:9222', siteId: 'claude-web' },
-  { endpoint: 'http://127.0.0.1:9223', siteId: 'chatgpt-web' },
+  { port: 59281, siteId: 'claude-web' },
+  { port: 59282, siteId: 'chatgpt-web' },
 ];
 
-test('every registered browser is swept, and the counts are reported', async () => {
+test('every registered browser is cleared, and the counts are reported', async () => {
   const swept = [];
   const results = await clearAllChatHistory({
-    endpoints: BROWSERS,
+    browsers: BROWSERS,
     leased: () => false,
     log: () => {},
     clear: async (endpoint, siteId) => {
@@ -155,17 +158,20 @@ test('every registered browser is swept, and the counts are reported', async () 
     },
   });
 
-  assert.deepEqual(swept, ['http://127.0.0.1:9222 claude-web', 'http://127.0.0.1:9223 chatgpt-web']);
+  assert.deepEqual(swept.sort(), ['http://127.0.0.1:59281 claude-web', 'http://127.0.0.1:59282 chatgpt-web']);
   assert.equal(results.reduce((total, row) => total + row.deleted, 0), 14);
+  // Rows come back in the order the page lists the browsers, whatever order
+  // they finished in, so the page can show them against its own list.
+  assert.deepEqual(results.map((row) => row.port), [59281, 59282]);
 });
 
 test('a browser in the middle of a call is left alone', async () => {
   // Deleting the conversation a turn is reading would break that turn, and the
-  // next batch may already have started by the time this runs.
+  // button can be pressed while a batch is running.
   const swept = [];
   const results = await clearAllChatHistory({
-    endpoints: BROWSERS,
-    leased: (endpoint) => endpoint.endsWith('9222'),
+    browsers: BROWSERS,
+    leased: (endpoint) => endpoint.endsWith('59281'),
     log: () => {},
     clear: async (endpoint) => {
       swept.push(endpoint);
@@ -173,17 +179,17 @@ test('a browser in the middle of a call is left alone', async () => {
     },
   });
 
-  assert.deepEqual(swept, ['http://127.0.0.1:9223']);
+  assert.deepEqual(swept, ['http://127.0.0.1:59282']);
   assert.match(results[0].note ?? '', /busy/);
 });
 
 test('one browser failing does not stop the others', async () => {
   const results = await clearAllChatHistory({
-    endpoints: BROWSERS,
+    browsers: BROWSERS,
     leased: () => false,
     log: () => {},
     clear: async (endpoint) => {
-      if (endpoint.endsWith('9222')) throw new Error('browser is not running');
+      if (endpoint.endsWith('59281')) throw new Error('browser is not running');
       return { deleted: 5, failed: 0 };
     },
   });
@@ -192,48 +198,30 @@ test('one browser failing does not stop the others', async () => {
   assert.equal(results[1].deleted, 5);
 });
 
-test('a browser this process never drove is never swept', async () => {
-  /*
-   * The regression this pins, and it is the reason the sweep no longer reads
-   * the settings list on its own.
-   *
-   * Pointed at "the configured browsers", the sweep asked settings - and
-   * settings answer with DEFAULT ports when nobody has saved any. A test with
-   * its own empty settings store therefore aimed an irreversible delete at two
-   * real browsers on the machine, and hit them.
-   *
-   * An endpoint now has to have served a call in this process before the sweep
-   * will touch it. No call, no browsers, nothing deleted.
-   */
-  const { resetDrivenEndpointsForTests } = require('../dist/services/ai/providers/browserChat');
-  resetDrivenEndpointsForTests();
-
-  let called = false;
-  const results = await clearAllChatHistory({
-    log: () => {},
-    leased: () => false,
-    clear: async () => {
-      called = true;
-      return { deleted: 99, failed: 0 };
-    },
-  });
-
-  assert.deepEqual(results, []);
-  assert.equal(called, false, 'a browser that was never driven must not be opened, let alone cleared');
+test('no registered browsers is nothing to do, not an error', async () => {
+  assert.deepEqual(await clearAllChatHistory({ browsers: [], log: () => {} }), []);
 });
 
-test('the sweep can be switched off, and then deletes nothing', async () => {
-  let called = false;
-  const results = await clearAllChatHistory({
-    endpoints: BROWSERS,
-    env: { AI_WEB_CLEAR_HISTORY: 'false' },
-    log: () => {},
-    clear: async () => {
-      called = true;
-      return { deleted: 1, failed: 0 };
-    },
-  });
+test('generating resumes never clears chat history by itself', () => {
+  /*
+   * It used to run at the end of every batch; the operator asked for that to
+   * stop and for a button instead. A trigger inside a route is also reached
+   * by anything that drives the route - which is how a test once aimed it at
+   * real browsers. So the batch routes must not reach it at all: the only
+   * caller is the admin route behind the Settings button.
+   */
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const routes = path.join(__dirname, '..', 'dist', 'routes');
 
-  assert.deepEqual(results, []);
-  assert.equal(called, false, 'nothing may be deleted once it is switched off');
+  const callers = fs
+    .readdirSync(routes)
+    .filter((file) => file.endsWith('.js'))
+    .filter((file) => fs.readFileSync(path.join(routes, file), 'utf8').includes('clearAllChatHistory'));
+
+  assert.deepEqual(callers, ['admin.js'], 'only the admin route may clear chat history');
+
+  const admin = fs.readFileSync(path.join(routes, 'admin.js'), 'utf8');
+  assert.match(admin, /router\.post\('\/browser\/clear-history', auth_1\.authMiddleware/,
+    'and only behind the admin sign-in');
 });

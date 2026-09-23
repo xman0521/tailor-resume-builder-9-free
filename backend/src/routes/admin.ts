@@ -12,6 +12,7 @@ import {
 import { getProviderLabel } from '../config/providerCatalog';
 import { fetchGoogleSheetsRange, GoogleSheetsRequestError, updateGoogleSheetsRange } from '../integrations/googleSheets';
 import { probeDebugBrowser } from '../services/debugBrowser';
+import { clearAllChatHistory } from '../services/ai';
 import { getTabPoolStats } from '../services/ai/providers/browserChat/pool';
 import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
@@ -160,6 +161,29 @@ router.get('/browser/debug', authMiddleware, async (_req: Request, res: Response
   } catch (error) {
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Could not check the debug browsers',
+    });
+  }
+});
+
+/**
+ * Deletes the chat list of every registered account browser.
+ *
+ * Only ever reached from the button on the Settings page, which asks first:
+ * it deletes every conversation in each account and cannot be undone. The
+ * list it works through is the list that page shows. A browser that is not
+ * running, or is signed out, comes back as a row saying so rather than
+ * failing the rest.
+ */
+router.post('/browser/clear-history', authMiddleware, async (_req: Request, res: Response) => {
+  try {
+    const results = await clearAllChatHistory();
+    res.json({
+      results,
+      deleted: results.reduce((total, row) => total + row.deleted, 0),
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Could not clear the chat history',
     });
   }
 });
