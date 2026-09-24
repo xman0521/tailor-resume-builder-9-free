@@ -108,6 +108,18 @@ export class TabPool {
    * that failed fast back at the head of the queue, ahead of one that has not
    * run at all.
    */
+  /**
+   * Failures in a row per browser, cleared by a success.
+   *
+   * WHY A COUNT AND NOT A VERDICT. Whether one failure is the browser's fault
+   * is often unanswerable - a timeout is usually a slow answer, and benching a
+   * good browser for one of those would be worse than the problem. The same
+   * browser failing three times running while the others answer is not
+   * ambiguous, and nothing was asking that question: a browser whose account
+   * had stopped answering kept being handed work for the rest of the run.
+   */
+  private readonly failuresInARow = new Map<string, number>();
+
   private readonly lastUsedAt = new Map<string, number>();
   private useSequence = 0;
 
@@ -209,7 +221,26 @@ export class TabPool {
     this.wakeTimers.set(endpoint, timer);
   }
 
+  /**
+   * One failed turn. Returns how many have now failed in a row.
+   *
+   * Counted for every failure, whatever its kind: the caller decides what to
+   * do with a run of them, and the kinds that bench a browser on their own
+   * have already done so by the time this is called.
+   */
+  noteFailure(endpoint: string): number {
+    const next = (this.failuresInARow.get(endpoint) ?? 0) + 1;
+    this.failuresInARow.set(endpoint, next);
+    return next;
+  }
+
+  /** For the status line: how many in a row this browser has failed. */
+  failureStreak(endpoint: string): number {
+    return this.failuresInARow.get(endpoint) ?? 0;
+  }
+
   markReachable(endpoint: string): void {
+    this.failuresInARow.delete(endpoint);
     this.downUntil.delete(endpoint);
     const timer = this.wakeTimers.get(endpoint);
     if (timer) {

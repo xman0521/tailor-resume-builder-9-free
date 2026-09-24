@@ -858,6 +858,8 @@ export class ChatTab {
     let state = INITIAL_POLL_STATE;
     let latched: string | null = null;
     let everRendered = false;
+    // Whether any TEXT was ever read, as opposed to a node appearing.
+    let everAnswered = false;
     /**
      * Has the stop control been seen at all this turn?
      *
@@ -940,6 +942,7 @@ export class ChatTab {
 
       if (!picked) continue;
       everRendered = true;
+      if (picked.reply.text.trim().length > 0) everAnswered = true;
       latched = picked.id;
 
       if (isEcho(prompt, picked.reply.text)) {
@@ -988,9 +991,23 @@ export class ChatTab {
     }
 
     const timedOut = new ChatTurnError('timeout', this.timeoutReason(everRendered));
-    // Nothing ever rendered AND no selector ever matched: this browser is not
-    // showing the site. See `browserSuspect`.
-    timedOut.browserSuspect = !everRendered && !this.assistantSelector;
+    /*
+     * Two shapes of "this browser, not this answer".
+     *
+     * Nothing ever rendered and no selector ever matched: the tab is not
+     * showing the site. That was the signed-out case.
+     *
+     * And a message node that appeared and never wrote a word: the whole
+     * budget spent watching an empty bubble. That is the shape an account in
+     * this state actually takes - a screenshot of one showed every chat in the
+     * sidebar sitting on a spinner - and it was not covered, because a node
+     * HAD rendered. A slow model that has not started writing within the whole
+     * budget is indistinguishable from it, and sits out a cool-off it did not
+     * deserve; with dozens of browsers registered that costs nothing, and the
+     * alternative is what was measured: the same dead account taking work
+     * until the run ended.
+     */
+    timedOut.browserSuspect = (!everRendered && !this.assistantSelector) || !everAnswered;
     throw timedOut;
   }
 

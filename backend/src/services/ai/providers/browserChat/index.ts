@@ -138,6 +138,18 @@ const UNUSABLE_FOR_MS = 2 * 60_000;
 const SIGNED_OUT_FOR_MS = 15 * 60_000;
 
 /**
+ * Failures in a row before a browser is benched whatever the reason.
+ *
+ * Three, because two is within the range of ordinary bad luck on a slow site
+ * and four means a third of a retry budget spent on a browser that is not
+ * answering. Reset by any success.
+ */
+const FAILURES_BEFORE_BENCH = 3;
+
+/** How long a browser sits out after a run of failures. */
+const REPEATED_FAILURE_FOR_MS = 10 * 60_000;
+
+/**
  * Why a browser was passed over, and for how long - or null when the failure
  * was the REQUEST'S and no other browser would do better.
  *
@@ -606,12 +618,38 @@ export function createBrowserChatAdapter(
           return finish(text);
         } catch (error) {
           const fault = describeBrowserFault(error);
+
+          /*
+           * A run of failures on one browser is a fact about that browser.
+           *
+           * Each failure on its own may be unattributable - a timeout is
+           * usually a slow answer - so the rules above decline to bench for
+           * one. Three in a row while other browsers answer is not ambiguous,
+           * and until this existed nothing asked: an account that had stopped
+           * answering kept being handed work for the rest of the run, opening
+           * a new chat for each attempt and failing every one.
+           */
+          const streak = pool.noteFailure(lease.endpoint);
+          if (!fault && streak >= FAILURES_BEFORE_BENCH) {
+            pool.markUnreachable(lease.endpoint, REPEATED_FAILURE_FOR_MS);
+            console.warn(
+              `[ai] ${descriptor.label}: ${portOf(lease.endpoint)} benched for ` +
+                `${Math.round(REPEATED_FAILURE_FOR_MS / 60_000)} minutes after ${streak} failures in a row. ` +
+                `Last: ${clip(error instanceof Error ? error.message : String(error), 120)}`
+            );
+          }
+
           // Out of time is out of time, whoever's fault it was. Another browser
           // needs a whole turn and there is nothing left to give it.
           if (!fault || request.deadline.remainingMs() <= 0) {
             throw translate(error);
           }
           pool.markUnreachable(lease.endpoint, fault.coolForMs);
+          console.warn(
+            `[ai] ${descriptor.label}: ${portOf(lease.endpoint)} benched for ` +
+              `${Math.round(fault.coolForMs / 60_000)} minute(s) - ${clip(fault.reason, 120)}` +
+              `${streak > 1 ? ` (${streak} failures in a row)` : ''}`
+          );
           skipped.push({ endpoint: lease.endpoint, reason: fault.reason });
           lastFault = error;
           warnOnce(

@@ -97,3 +97,62 @@ test('capacity drops a browser the pool has sidelined, without probing it', asyn
   resetTabPoolsForTests();
   resetBrowserLivenessCache();
 });
+
+// ---------------------------------------- a browser that keeps failing
+
+test('failures in a row are counted per browser, and a success clears them', () => {
+  /*
+   * The second shape of the same problem, and the one a screenshot of a live
+   * account showed: every chat in the sidebar sitting on a spinner. The prompt
+   * landed, a message node rendered, no answer ever came - so the turn timed
+   * out with the browser NOT suspect, the endpoint was never benched, and the
+   * pool kept handing it work for the rest of the run, opening a new chat for
+   * each attempt.
+   *
+   * One failure stays unattributable, because a timeout is usually a slow
+   * answer. A run of them on one browser is not.
+   */
+  const pool = new TabPool('chatgpt-web');
+  const alive = 'http://127.0.0.1:59310';
+  const stuck = 'http://127.0.0.1:59311';
+  pool.setEndpoints([alive, stuck]);
+
+  assert.equal(pool.noteFailure(stuck), 1);
+  assert.equal(pool.noteFailure(stuck), 2);
+  assert.equal(pool.failureStreak(stuck), 2);
+  // Another browser's failures are its own.
+  assert.equal(pool.noteFailure(alive), 1);
+  assert.equal(pool.failureStreak(stuck), 2);
+
+  // An answer means the browser is working, whatever it did before.
+  pool.markReachable(stuck);
+  assert.equal(pool.failureStreak(stuck), 0);
+  assert.equal(pool.noteFailure(stuck), 1);
+});
+
+test('a browser benched for repeated failure stops being handed out', () => {
+  const pool = new TabPool('chatgpt-web');
+  const alive = 'http://127.0.0.1:59312';
+  const stuck = 'http://127.0.0.1:59313';
+  pool.setEndpoints([alive, stuck]);
+
+  pool.markUnreachable(stuck, 10 * 60_000);
+  assert.deepEqual(pool.sidelined(), [stuck]);
+
+  // And it comes back on its own, because "not answering" is a statement about
+  // a moment: an account that hit a daily wall is usable again tomorrow.
+  assert.deepEqual(pool.sidelined(Date.now() + 11 * 60_000), []);
+});
+
+test('a node that renders and never writes anything is the browser, not the answer', () => {
+  // `browserSuspect` used to require that NO selector ever matched, so an
+  // empty bubble that streamed forever was classified as a slow answer and
+  // left the browser in rotation. That is the exact shape seen on the account
+  // whose chats all sat on spinners.
+  const emptyForever = new ChatTurnError('timeout', 'rendered a message and never wrote anything');
+  emptyForever.browserSuspect = true;
+  assert.equal(emptyForever.browserSuspect, true);
+
+  // A real answer that merely ran long still is not the browser's fault.
+  assert.equal(new ChatTurnError('timeout', 'was still writing').browserSuspect, false);
+});

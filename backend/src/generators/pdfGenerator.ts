@@ -1613,27 +1613,100 @@ function groupRemainingSkillLoops(html: string): string {
  * template would override if it cared: a template that styles them already
  * wins, because its own stylesheet comes after this one.
  */
-const SKILL_GROUP_CSS =
-  '<style id="resume-skill-groups">'
-  + '.skill-category{margin:0 0 6px 0;break-inside:avoid}'
-  /*
-   * A heading has to look like one. Weight alone was the whole difference -
-   * 600 against 400, same size, same colour, same case - on 24 of the 38
-   * templates, and on the page the two rows read as one paragraph. Case and
-   * letter-spacing are what separate them at a glance; the smaller size keeps
-   * the heading subordinate to the section title above it.
-   */
-  + '.skill-category-title{font-weight:700;font-size:0.86em;text-transform:uppercase;'
-  + 'letter-spacing:0.06em;line-height:1.3;margin:0 0 1px 0}'
-  + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0}'
-  /*
-   * The other shape the grouped markup takes, where the heading is a <strong>
-   * and the skills are the text after a <br> in the same list item. Nothing
-   * can style that text on its own, so the heading carries the difference.
-   */
-  + '.skills-list li>strong:first-child,.skill-category>strong:first-child{'
-  + 'font-weight:700;font-size:0.86em;text-transform:uppercase;letter-spacing:0.06em}'
-  + '</style>';
+/**
+ * Six ways to tell a group heading from the skills under it, one per resume.
+ *
+ * WHY SIX. The first attempt set the heading bold and left everything else
+ * alone, and on 24 of the 38 templates that was the ONLY difference - same
+ * size, same colour, same case - so the two rows read as one paragraph. The
+ * second attempt added caps and letter-spacing, which works, but one look
+ * across every resume in a batch is its own tell.
+ *
+ * WHY THESE SIX. Each separates the rows on a different axis - case, a rule,
+ * a bar, tone, indent, or putting them on one line - and each is safe on any
+ * template and in either colour scheme: nothing here names a colour, because
+ * these templates run from white to dark navy. `currentColor` with an opacity
+ * is the strongest thing any of them says.
+ *
+ * The inline look is the one that needs room, so it asks for it: the block
+ * becomes a container, and the one-line form applies only above 320px. In a
+ * narrow sidebar it stays stacked rather than wrapping badly.
+ */
+const SKILL_GROUP_LOOKS: Record<string, string> = {
+  // Uppercase, letter-spaced, a size smaller.
+  caps:
+    '.skill-category-title{font-weight:700;font-size:0.86em;text-transform:uppercase;'
+    + 'letter-spacing:0.06em;line-height:1.3;margin:0 0 1px 0}'
+    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0}',
+
+  // A hairline under the heading, drawn in the text colour at low strength.
+  rule:
+    '.skill-category-title{font-weight:700;font-size:0.9em;text-transform:uppercase;'
+    + 'letter-spacing:0.04em;line-height:1.3;margin:0 0 2px 0;padding-bottom:1px;'
+    + 'border-bottom:0.5pt solid currentColor;opacity:0.95}'
+    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:2px 0 0 0}',
+
+  // A bar down the left of the group, with everything indented past it.
+  bar:
+    '.skill-category{padding-left:7px;border-left:2px solid currentColor}'
+    + '.skill-category-title{font-weight:700;font-size:0.92em;letter-spacing:0.02em;margin:0 0 1px 0}'
+    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0;opacity:0.9}',
+
+  // Tone rather than weight: the heading at full strength, the skills stepped back.
+  muted:
+    '.skill-category-title{font-weight:700;font-size:0.95em;margin:0 0 1px 0}'
+    + '.skill-category-skills{font-weight:400;font-size:0.92em;line-height:1.35;margin:0;opacity:0.78}',
+
+  // The skills hang under the heading, indented.
+  hanging:
+    '.skill-category-title{font-weight:700;font-size:0.9em;text-transform:uppercase;'
+    + 'letter-spacing:0.05em;margin:0}'
+    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0;padding-left:10px}',
+
+  // One line per group where there is room for one.
+  inline:
+    '.skill-category{container-type:inline-size}'
+    + '.skill-category-title{font-weight:700;font-size:0.88em;text-transform:uppercase;'
+    + 'letter-spacing:0.05em;margin:0 0 1px 0}'
+    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0}'
+    + '@container (min-width:320px){'
+    + '.skill-category{display:flex;gap:6px;align-items:baseline}'
+    + '.skill-category-title{flex:0 0 auto;margin:0}'
+    + '.skill-category-title::after{content:"\\00b7";margin-left:6px;opacity:0.6}'
+    + '.skill-category-skills{flex:1 1 auto}'
+    + '}',
+};
+
+export const SKILL_GROUP_LOOK_NAMES = Object.keys(SKILL_GROUP_LOOKS);
+
+/**
+ * The look this resume gets: the pinned one, or a random one.
+ *
+ * Random per DOCUMENT rather than per profile, unlike the cover letters. A
+ * cover letter is one person's voice and should look the same each time they
+ * apply; a skills block is a table, and a batch of 500 that all shape it the
+ * same way is the tell this is meant to avoid.
+ */
+export function pickSkillGroupLook(env: NodeJS.ProcessEnv = process.env): string {
+  const pinned = (env.SKILL_GROUP_STYLE ?? '').trim().toLowerCase();
+  if (pinned && SKILL_GROUP_LOOKS[pinned]) return pinned;
+  return SKILL_GROUP_LOOK_NAMES[Math.floor(Math.random() * SKILL_GROUP_LOOK_NAMES.length)];
+}
+
+function skillGroupCss(look: string): string {
+  const rules = SKILL_GROUP_LOOKS[look] ?? SKILL_GROUP_LOOKS.caps;
+  return (
+    '<style id="resume-skill-groups" data-look="' + look + '">'
+    + '.skill-category{margin:0 0 6px 0;break-inside:avoid}'
+    + rules
+    // The other shape the grouped markup takes, where the heading is a <strong>
+    // and the skills are the text after a <br> in the same list item. Nothing
+    // can style that text on its own, so the heading carries the difference.
+    + '.skills-list li>strong:first-child,.skill-category>strong:first-child{'
+    + 'font-weight:700;font-size:0.86em;text-transform:uppercase;letter-spacing:0.06em}'
+    + '</style>'
+  );
+}
 
 function normalizeTemplateSkillsSections(html: string): string {
   // Soft skills are rendered, not stripped. The pipeline has always produced
@@ -2080,12 +2153,16 @@ const PAGE_BREAK_CSS =
   + '.edu-institution{break-inside:avoid;page-break-inside:avoid}'
   + '</style>';
 
-const DISABLE_LIGATURES_CSS =
-  '<style id="resume-no-ligatures">*,*::before,*::after{font-variant-ligatures:none}</style>'
-  + CONTACT_SEPARATOR_CSS
-  + SKILLS_ROW_CSS
-  + SKILL_GROUP_CSS
-  + PAGE_BREAK_CSS;
+function renderTimeCss(): string {
+  return (
+    '<style id="resume-no-ligatures">*,*::before,*::after{font-variant-ligatures:none}</style>'
+    + CONTACT_SEPARATOR_CSS
+    + SKILLS_ROW_CSS
+    // Chosen per document, which is why this is a function and not a constant.
+    + skillGroupCss(pickSkillGroupLook())
+    + PAGE_BREAK_CSS
+  );
+}
 
 /**
  * Puts the rule inside the document rather than in front of it.
@@ -2097,13 +2174,14 @@ const DISABLE_LIGATURES_CSS =
  * template that is a bare fragment.
  */
 function withDisabledLigatures(document: string): string {
+  const css = renderTimeCss();
   for (const opening of [/<head\b[^>]*>/i, /<html\b[^>]*>/i]) {
     const match = document.match(opening);
     if (match?.index === undefined) continue;
     const at = match.index + match[0].length;
-    return document.slice(0, at) + DISABLE_LIGATURES_CSS + document.slice(at);
+    return document.slice(0, at) + css + document.slice(at);
   }
-  return DISABLE_LIGATURES_CSS + document;
+  return css + document;
 }
 
 /** Prepends a template's separate stylesheet, if it has one. */
