@@ -21,6 +21,7 @@ import { extractJSON } from '../utils/json';
 import { removeDuplicateSubstrings, ensureMinTechSkills } from './utils/resumeBuilder';
 import { collectJobKeywords, findUncoveredKeywords } from './utils/keywordCoverage';
 import { normalizeDashes } from './utils/dashes';
+import { bannedTermsIn, plainLanguage } from './utils/plainLanguage';
 import {
   measurePlacement,
   placementFloor,
@@ -2593,10 +2594,28 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
 
   const trimIncompleteEnd = (s: string): string =>
     s.trim().replace(/,+\s*$/, '').replace(/\s+(and|or)\s*$/i, '').trim();
-  // Every prose funnel below starts here, so the dash clean-up rides along
-  // with the tag strip rather than being remembered in four places.
+  /*
+   * Every prose funnel below starts here, so the clean-ups ride along with the
+   * tag strip rather than being remembered in four places: the stand-in dashes
+   * a model writes when told not to use em-dashes, and the banned vocabulary -
+   * "leveraged", "spearheaded", "scalable", "cross-functional" and the rest.
+   * The prompt asks for plain words; this is what makes it true of every
+   * resume rather than of most of them.
+   */
+  /*
+   * The terms the posting asked for, which the rewrite must not touch.
+   *
+   * Without this the app asked for a word and then deleted it: the analyser
+   * extracts past-tense action verbs as required keywords - its own examples
+   * are "architected" and "orchestrated" - the prompt tells the model to write
+   * every one of them, and the vocabulary rules swapped them straight back
+   * out. Measured on an answer that placed every term perfectly, coverage fell
+   * from 34/34 to 17/34, eleven of them lost exactly this way.
+   */
+  const askedFor = getProseChecklist(jobAnalysis);
+
   const stripBoldTags = (s: string): string =>
-    normalizeDashes(s.replace(/<\/?strong>/gi, '').replace(/<\/?b>/gi, ''));
+    plainLanguage(normalizeDashes(s.replace(/<\/?strong>/gi, '').replace(/<\/?b>/gi, '')), askedFor);
   const sanitizeResumeText = (s: string): string => {
     const clean = stripUnsafeResumeSentences(stripBoldTags(s), undefined);
     return isUnsafeJobPostingPhrase(clean) ? '' : clean;
@@ -2641,16 +2660,22 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
   // stand-in dashes. It is not prose the resume renders, so none of the
   // funnels above has seen it; an absent letter stays absent.
   const coverLetterFields = content.coverLetter
-    ? { coverLetter: normalizeDashes(content.coverLetter) }
+    // No protected terms: the letter is a separate document and does not count
+    // towards keyword coverage, so it can be plain throughout.
+    ? { coverLetter: plainLanguage(normalizeDashes(content.coverLetter)) }
     : {};
 
   const normalizedExperience = (content.experience ?? []).map((item) => ({
     ...item,
-    description: clampRoleBrief(
-      item.description ?? buildFallbackExperienceDescription(item.title ?? '', jobAnalysis),
-      item.company,
-      item.title
-    ),
+    /*
+     * No paragraph under the company name. A role used to open with two or
+     * three sentences of scene-setting before the first bullet, and it was the
+     * part of the page that read most like it had been generated: the bullets
+     * say what the person did, and the paragraph said it again with adjectives.
+     * Emptied here rather than left to each template, so the PDF, the DOCX and
+     * the preview all drop it together.
+     */
+    description: '',
     achievements: normalizeSkillsList(item.achievements).map(sanitizeResumeText).filter(Boolean).length > 0
       ? normalizeSkillsList(item.achievements).map(sanitizeResumeText).filter(Boolean)
       : buildFallbackAchievements(jobAnalysis),
@@ -2715,6 +2740,26 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
     experience: normalizedExperience,
   }, jobAnalysis);
 
+  /*
+   * What the swaps could not take out.
+   *
+   * A banned adjective is deleted and a banned verb is swapped, so anything
+   * still here is the kind that cannot be fixed a word at a time: a metaphor
+   * needs the sentence rewritten, and only the model knows what it meant.
+   * Said out loud, once per resume, because the answer is a prompt change and
+   * an operator cannot ask for one they cannot see.
+   */
+  const leftover = bannedTermsIn(
+    [finalSummary, ...normalizedExperience.flatMap((role) => role.achievements ?? [])].join(' '),
+    askedFor
+  );
+  if (leftover.length > 0) {
+    console.log(
+      `[Resume tone] ${profile?.name ?? 'resume'}: ${leftover.length} banned term(s) the rewrite ` +
+        `could not remove: ${leftover.slice(0, 8).join(', ')}${leftover.length > 8 ? ', ...' : ''}`
+    );
+  }
+
   return {
     ...content,
     ...coverLetterFields,
@@ -2726,7 +2771,14 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
     summary: finalSummary,
     experience: normalizedExperience,
     hardSkills,
-    softSkills: softLimited,
+    /*
+     * No soft-skills block. It was a row of nouns nobody reads - and 44 of the
+     * library's entries are the exact register the operator asked to be rid
+     * of: "Innovation", "Creative solutions", "Proactiveness", "Visionary
+     * Leadership". The soft skills a posting names are still written into the
+     * prose, where they are attached to something the candidate did.
+     */
+    softSkills: [],
     strengths: normalizedStrengths,
     // Keep legacy field aligned with hard skills for older templates/components.
     skills: hardSkills,
@@ -2965,7 +3017,10 @@ export function parseTailoredResumeContent(
 
   return {
     ...finalResult,
-    softSkills: confirmedSoftSkills,
+    // Empty on purpose: there is no soft-skills block on the resume any more.
+    // The reconciliation above still runs, because the Unconfirmed Skills
+    // panel is built from it and an operator still catalogues terms there.
+    softSkills: [],
     unconfirmedHardSkills,
     unconfirmedSoftSkills,
     skills: finalResult.hardSkills,

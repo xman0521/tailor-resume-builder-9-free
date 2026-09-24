@@ -100,7 +100,11 @@ function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>):
   <p style="font-weight: bold; font-size: 11pt; color: #1A1A1A;">${esc(exp.company ?? '')}</p>
   <p style="font-size: 10pt; color: ${accentColor}; font-style: italic;">${esc(exp.title ?? '')}</p>
   <p style="font-size: 8pt; color: #555555;">${esc(dates)}${esc(loc)}</p>
-  <p style="font-size: 9pt; color: #1A1A1A; line-height: 1.35;">${esc(exp.description ?? '')}</p>
+  ${exp.description?.trim()
+    // Roles open straight into their bullets now, so this is usually empty and
+    // an empty paragraph is a blank line under the company name.
+    ? `<p style="font-size: 9pt; color: #1A1A1A; line-height: 1.35;">${esc(exp.description)}</p>`
+    : ''}
   ${bullets}`;
       }
     )

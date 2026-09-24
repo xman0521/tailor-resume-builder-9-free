@@ -44,57 +44,24 @@ function tailor(profile, analysis) {
   );
 }
 
-test('a job that names no soft skills still fills the section', () => {
-  const out = tailor(profileFor(), analysisFor('We need a Python developer.'));
-  assert.ok(out.softSkills.length >= 5, `only ${out.softSkills.length}: ${out.softSkills.join(', ')}`);
-});
-
-test('a job that names one soft skill keeps it and fills around it', () => {
-  const out = tailor(
+/*
+ * The four tests that stood here pinned the Soft Skills section's fill: at
+ * least five entries, the job's own terms kept, the cap held. There is no such
+ * section any more - it was a row of nouns nobody reads, and 44 of the
+ * library's entries were the exact register the operator asked to be rid of.
+ * The soft skills a posting names are now written into the prose, where they
+ * are attached to something the candidate actually did, and the prose
+ * checklist below is what pins that.
+ */
+test('the resume carries no soft-skills block, whatever the posting names', () => {
+  const rich = tailor(
     profileFor(),
-    analysisFor('Python developer. Must have strong communication.', { soft: ['communication'] })
+    analysisFor('Python dev needing communication, ownership, mentoring and leadership.', {
+      soft: ['communication', 'ownership', 'mentoring', 'leadership'],
+    })
   );
-  assert.ok(out.softSkills.length >= 5, `only ${out.softSkills.length}`);
-  assert.ok(
-    out.softSkills.some((s) => /communicat/i.test(s)),
-    'what the job actually asked for must survive the fill'
-  );
-});
-
-test('the floor survives condensing, not just the fill', () => {
-  // The fill counts RAW names and the finalizer then condenses and dedupes
-  // them, so a job asking four ways for one trait could be filled to five and
-  // collapse back to two.
-  const out = tailor(
-    profileFor(),
-    analysisFor(
-      `Python developer wanting excellent communication skills, communication and
-       collaboration, someone who can communicate clearly, and outstanding written
-       communication skills.`,
-      {
-        soft: [
-          'excellent communication skills',
-          'strong communication and collaboration across teams',
-          'ability to communicate clearly with stakeholders',
-          'outstanding written communication skills throughout the org',
-        ],
-      }
-    )
-  );
-  assert.ok(out.softSkills.length >= 5, `condensing dropped it to ${out.softSkills.length}`);
-  assert.equal(new Set(out.softSkills.map((s) => s.toLowerCase())).size, out.softSkills.length);
-});
-
-test('a job rich in soft skills is not padded', () => {
-  const out = tailor(
-    profileFor(),
-    analysisFor(
-      'Python dev needing communication, ownership, collaboration, mentoring, adaptability, leadership and problem solving.',
-      { soft: ['communication', 'ownership', 'collaboration', 'mentoring', 'adaptability', 'leadership', 'problem solving'] }
-    )
-  );
-  assert.ok(out.softSkills.length >= 5);
-  assert.ok(out.softSkills.length <= 10, 'the cap still holds');
+  assert.deepEqual(rich.softSkills, []);
+  assert.deepEqual(tailor(profileFor(), analysisFor('We need a Python developer.')).softSkills, []);
 });
 
 test('the concepts kept out of the skills block are handed to the prompt', () => {

@@ -319,7 +319,7 @@ test('buildTailorResumePromptValues augments prompt lists from skill library and
   assert.equal(keywords.includes('Written Communication'), true);
 });
 
-test('a library-matched soft keyword reaches the soft skills list, not the summary', () => {
+test('a soft keyword from the posting is not bolted onto the summary', () => {
   const jobAnalysis = parseJobAnalysisContent(
     JSON.stringify({
       jobMeta: {
@@ -363,12 +363,10 @@ test('a library-matched soft keyword reaches the soft skills list, not the summa
 
   const parsed = parseTailoredResumeContent(content, makeProfile(), jobAnalysis);
 
-  // The job asks in prose for someone adaptable. That has to survive somewhere,
-  // and the Soft Skills section is where it belongs.
-  assert.ok(
-    parsed.softSkills.some((skill) => /^adaptab/i.test(skill)),
-    `expected an adaptability keyword in ${JSON.stringify(parsed.softSkills)}`
-  );
+  // The job asks in prose for someone adaptable. There is no Soft Skills
+  // section to catch that any more - it is a prose target now, and the
+  // keyword-placement report is what measures it.
+  assert.deepEqual(parsed.softSkills, []);
 
   // And the summary is the model's, untouched. Appending "Strengths include
   // ..." to catch the keyword is what made every summary end the same way.
@@ -414,7 +412,9 @@ test('parseTailoredResumeContent does not append unsafe job-analysis fragments t
   assert.equal(resumeText.includes('enable our customers'), false);
   assert.equal(resumeText.includes('break ground'), false);
   assert.equal(resumeText.includes('contributed to dependable product delivery'), false);
-  assert.equal(parsed.experience[0].description, 'Built reliable systems.');
+  // Roles open straight into their bullets, so there is no paragraph for an
+  // unsafe fragment to be appended to in the first place.
+  assert.equal(parsed.experience[0].description, '');
 });
 
 test('parseTailoredResumeContent strips meta-tailoring summary language and raw company descriptions', () => {
@@ -443,5 +443,5 @@ test('parseTailoredResumeContent strips meta-tailoring summary language and raw 
 
   assert.equal(parsed.summary.includes('maps to'), false);
   assert.equal(parsed.summary, 'Experienced engineer building reliable systems.');
-  assert.equal(parsed.experience[0].description, 'Senior Software Engineer focused on reliable product delivery, maintainable systems, and practical engineering outcomes.');
+  assert.equal(parsed.experience[0].description, '');
 });

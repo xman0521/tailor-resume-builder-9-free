@@ -91,6 +91,8 @@ test('a real metric survives alongside the years', () => {
 });
 
 test('a summary with nothing to fix is returned untouched', () => {
-  const text = 'Payments engineer of 8 years who has owned settlement services end to end.';
+  // No banned words in the fixture: "end to end" is deleted on the way out
+  // now, which would make this test about the vocabulary rather than hygiene.
+  const text = 'Payments engineer of 8 years who has owned settlement services since 2019.';
   assert.equal(summaryFrom(text), text);
 });
