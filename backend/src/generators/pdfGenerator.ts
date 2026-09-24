@@ -1086,6 +1086,8 @@ function sortHardSkillsByPriority(skills: string[]): string[] {
 }
 
 type SkillsData = {
+  /** The model's own grouping, printed as given. See `TailoredContent`. */
+  aiSkillGroups?: SkillCategoryGroup[];
   hardSkills?: string[];
   softSkills?: string[];
   skills?: string[];
@@ -1197,6 +1199,20 @@ function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
     (group) => group?.category?.trim() && Array.isArray(group.skills) && group.skills.length > 0
   );
 
+  /*
+   * The model's grouping wins outright, and nothing below runs.
+   *
+   * Every other branch here shapes the block: the flat one filters concepts,
+   * the authored one re-groups, the last two pad each heading to a minimum and
+   * truncate it to a maximum from the library. That was the right behaviour
+   * while code chose the skills. It no longer does - the tailor call returns
+   * the finished block - and reshaping it here would be this file overruling
+   * the answer it asked for.
+   */
+  const fromModel = (data.aiSkillGroups ?? []).filter(
+    (group) => group?.category?.trim() && Array.isArray(group.skills) && group.skills.length > 0
+  );
+
   const finish = (skillCategories: SkillCategoryGroup[]): SkillsLimitedData<T> => {
     const lines = renderSkillLines(skillCategories);
     return {
@@ -1214,6 +1230,8 @@ function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
       skillCategories,
     } as SkillsLimitedData<T>;
   };
+
+  if (fromModel.length > 0) return finish(fromModel);
 
   const hasTailoredHardSkills = Array.isArray(data.hardSkills) && data.hardSkills.length > 0;
   const selected = hasTailoredHardSkills
@@ -1503,12 +1521,119 @@ function guardSoftSkillsSection(html: string): string {
  * already holds the individual names, so the loop the author wrote does exactly
  * what they meant it to.
  */
+/** The `{{#if}}` that `layoutBranch` opens, so a scan can recognise its own work. */
+const LAYOUT_BRANCH_OPENER = '{{#if skillCategories.[0].category}}';
+
 function layoutBranch(originalMarkup: string, groupedMarkup: string): string {
   // `skillCategories.[0].category` is non-empty only in the categorized layout;
   // the flat group's heading is the empty string, which Handlebars reads as
   // false. Nothing has to be passed in for this - the shape already says it.
   return `{{#if skillCategories.[0].category}}${groupedMarkup}{{else}}${originalMarkup}{{/if}}`;
 }
+
+/** The grouped block: a heading, then that heading's skills on one line. */
+const GROUPED_SKILLS_MARKUP =
+  '{{#each skillCategories}}<div class="skill-category">'
+  + '<div class="skill-category-title">{{category}}</div>'
+  + '<div class="skill-category-skills">{{join skills ", "}}</div>'
+  + '</div>{{/each}}';
+
+/**
+ * Swaps a template's skills loop for the grouped one, whatever shape it is in.
+ *
+ * WHY THIS IS A SCANNER AND NOT MORE REGEXES. The rules below it match the
+ * exact markup of the shapes that had been seen: a skill-box per entry, a
+ * chip per entry, a span with a dot between. Measured across the installed
+ * templates after the skills block moved to the model, ELEVEN still rendered
+ * flat - all of them the same unseen shape, `{{#each hardSkills}}{{this}}
+ * {{#unless @last}}, {{/unless}}{{/each}}`, which turns the grouped lines into
+ * one run-on sentence: "Languages: TypeScript, JavaScript, Backend & APIs:
+ * Node.js, ...". Adding a twelfth regex would leave a thirteenth shape.
+ *
+ * So this finds the BLOCK rather than the markup: the `{{#if hardSkills.length}}`
+ * that opens it, or a bare `{{#each hardSkills}}`, matched to its own close by
+ * counting Handlebars blocks. What it replaces the block with is the same
+ * grouped markup the specific rules use, behind the same layout branch, so a
+ * profile using the flat layout still renders exactly what its author wrote.
+ */
+function groupRemainingSkillLoops(html: string): string {
+  const OPENERS = ['{{#if hardSkills.length}}', '{{#each hardSkills}}'];
+  let output = html;
+
+  for (const opener of OPENERS) {
+    // Scanning forward from a cursor, never from the start of the string. The
+    // replacement CONTAINS the block it replaced - that is what the flat
+    // branch is - so searching from zero finds the same opener again and
+    // rewrites it forever. It did: the first run of this never returned.
+    let from = 0;
+    for (;;) {
+      const start = output.indexOf(opener, from);
+      if (start === -1) break;
+
+      // Walk forward counting opens and closes, so a nested {{#unless}} or
+      // {{#each skills}} inside the block does not end it early.
+      let depth = 0;
+      let end = -1;
+      const tag = /\{\{([#/])[^}]*\}\}/g;
+      tag.lastIndex = start;
+      let match: RegExpExecArray | null;
+      while ((match = tag.exec(output)) !== null) {
+        depth += match[1] === '#' ? 1 : -1;
+        if (depth === 0) {
+          end = match.index + match[0].length;
+          break;
+        }
+      }
+      if (end === -1) break;
+
+      const original = output.slice(start, end);
+      const branchOpen = output.lastIndexOf(LAYOUT_BRANCH_OPENER, start);
+      const insideBranch = branchOpen !== -1 && branchOpen > output.lastIndexOf('{{/if}}', start);
+
+      // Left alone when one of the specific rules already claimed it, and when
+      // it is sitting in the flat half of a branch one of them built.
+      if (original.includes('skillCategories') || insideBranch) {
+        from = start + opener.length;
+        continue;
+      }
+
+      const replacement = layoutBranch(original, GROUPED_SKILLS_MARKUP);
+      output = output.slice(0, start) + replacement + output.slice(end);
+      from = start + replacement.length;
+    }
+  }
+
+  return output;
+}
+
+/**
+ * Sane defaults for the grouped block, for templates that never had one.
+ *
+ * Only the two classes the grouped markup introduces, and only properties a
+ * template would override if it cared: a template that styles them already
+ * wins, because its own stylesheet comes after this one.
+ */
+const SKILL_GROUP_CSS =
+  '<style id="resume-skill-groups">'
+  + '.skill-category{margin:0 0 6px 0;break-inside:avoid}'
+  /*
+   * A heading has to look like one. Weight alone was the whole difference -
+   * 600 against 400, same size, same colour, same case - on 24 of the 38
+   * templates, and on the page the two rows read as one paragraph. Case and
+   * letter-spacing are what separate them at a glance; the smaller size keeps
+   * the heading subordinate to the section title above it.
+   */
+  + '.skill-category-title{font-weight:700;font-size:0.86em;text-transform:uppercase;'
+  + 'letter-spacing:0.06em;line-height:1.3;margin:0 0 1px 0}'
+  + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0}'
+  /*
+   * The other shape the grouped markup takes, where the heading is a <strong>
+   * and the skills are the text after a <br> in the same list item. Nothing
+   * can style that text on its own, so the heading carries the difference.
+   */
+  + '.skills-list li>strong:first-child,.skill-category>strong:first-child{'
+  + 'font-weight:700;font-size:0.86em;text-transform:uppercase;letter-spacing:0.06em}'
+  + '</style>';
 
 function normalizeTemplateSkillsSections(html: string): string {
   // Soft skills are rendered, not stripped. The pipeline has always produced
@@ -1520,6 +1645,9 @@ function normalizeTemplateSkillsSections(html: string): string {
   // guard, and `softSkills` simply goes unread.
   let output = guardSoftSkillsSection(html);
   output = stripTemplateSectionByClass(output, 'section-strengths');
+  // The specific rules below run first, because each preserves the author's
+  // own item markup for the flat layout. `groupRemainingSkillLoops` then
+  // catches whatever shape they had never seen.
   output = output
     .replace(/Hard Skills/g, 'Technical Skills')
     .replace(
@@ -1548,7 +1676,7 @@ function normalizeTemplateSkillsSections(html: string): string {
         '{{#each skillCategories}}<li><strong>{{category}}</strong><br>{{join skills ", "}}</li>{{/each}}')
     );
 
-  return guardEmptyCategoryHeadings(output);
+  return guardEmptyCategoryHeadings(groupRemainingSkillLoops(output));
 }
 
 /**
@@ -1619,6 +1747,7 @@ export function prepareResumeRenderData(
       skills: tailoredSkills,
       hardSkills: tailoredHardSkills,
       softSkills: tailoredContent.softSkills ?? [],
+      aiSkillGroups: tailoredContent.skillGroups ?? [],
       strengths: []
     })
   };
@@ -1900,9 +2029,63 @@ const CONTACT_SEPARATOR_CSS =
   '.contact>*::before,.contact-row>*::before{content:"\\00a0"}' +
   '</style>';
 
+/**
+ * The column the Soft Skills block used to stand in.
+ *
+ * Several templates lay the two blocks side by side - `.skills-row` is a
+ * two-column grid, 1.18fr for the technical skills and 0.82fr for the soft
+ * ones. There is no soft-skills block any more, so the second column was being
+ * reserved and left blank: two fifths of the page width, empty, beside a list
+ * squeezed into the other three.
+ *
+ * Fixed at render time rather than in 38 template files, and asked as a
+ * question about the page rather than about the data: if nothing in the row
+ * has any skills under it besides the technical block, the row is one column.
+ * `:has` is a Chrome selector and Chrome is what prints these.
+ */
+const SKILLS_ROW_CSS =
+  '<style id="resume-skills-row">'
+  + '.skills-row:not(:has(.section-soft-skills .skills-list li))'
+  + '{grid-template-columns:minmax(0,1fr) !important}'
+  + '</style>';
+
+/**
+ * Where a page is allowed to break.
+ *
+ * Two faults, both seen on finished resumes. A role's company and title sat at
+ * the foot of a page with its bullets on the next one, which reads as a heading
+ * for nothing. And the education section was cut in half by a boundary.
+ *
+ * Said as "keep this with what follows" rather than "never split this role": a
+ * role with eight bullets SHOULD be allowed to break between bullet three and
+ * four, and forbidding that would leave half a page empty every time. So the
+ * header rows keep the first bullet with them, and the break falls after it.
+ *
+ * Class names, not structure, because the templates share names rather than
+ * shapes - `job-title` appears in 36 of the 38, `achievements` in 36 - while
+ * the wrapper around a role appears in 14. Listed rather than guessed at, and
+ * a template that sets its own rule still wins: this stylesheet is written
+ * before the template's own.
+ */
+const PAGE_BREAK_CSS =
+  '<style id="resume-page-breaks">'
+  // The header of a role, and anything printed with it.
+  + '.job-title,.company-line,.job-header,.job-meta,.job-date,.company-name,'
+  + '.entry-head,.entry-subline,.entry-location,.experience-meta,.experience-desc,'
+  + '.job-description{break-inside:avoid;break-after:avoid;page-break-after:avoid}'
+  // ...and the first bullet, so the header cannot be left behind alone.
+  + '.achievements>li:first-child{break-before:avoid;page-break-before:avoid}'
+  // Education is short and reads as one thing; it stays whole.
+  + '.section-education,.education-item,.edu-item,.edu-header,.edu-degree,'
+  + '.edu-institution{break-inside:avoid;page-break-inside:avoid}'
+  + '</style>';
+
 const DISABLE_LIGATURES_CSS =
   '<style id="resume-no-ligatures">*,*::before,*::after{font-variant-ligatures:none}</style>'
-  + CONTACT_SEPARATOR_CSS;
+  + CONTACT_SEPARATOR_CSS
+  + SKILLS_ROW_CSS
+  + SKILL_GROUP_CSS
+  + PAGE_BREAK_CSS;
 
 /**
  * Puts the rule inside the document rather than in front of it.

@@ -20,9 +20,11 @@ import { moveCaseInsensitiveMatches, uniqueCaseInsensitive } from '../utils/arra
 import { extractJSON } from '../utils/json';
 import { removeDuplicateSubstrings, ensureMinTechSkills } from './utils/resumeBuilder';
 import { collectJobKeywords, findUncoveredKeywords } from './utils/keywordCoverage';
+import { conceptToolOptions } from './utils/hardSkillSelection';
 import { normalizeDashes } from './utils/dashes';
 import { bannedTermsIn, plainLanguage } from './utils/plainLanguage';
 import {
+  containsTerm,
   measurePlacement,
   placementFloor,
   renderedProse,
@@ -594,15 +596,16 @@ const HARD_SKILL_CATEGORY_WEIGHT: Record<HardSkillCategory, number> = {
 /**
  * Appended to the tailor-resume turn.
  *
- * The code below decides every skill list from the skill library and the job
- * analysis, then overwrites whatever the model returned. Telling the model to
- * omit those fields is therefore not a preference, it is what keeps the model
- * from spending output tokens on text that is discarded. It lives here rather
- * than in the stored prompt so an admin editing the prompt cannot remove it
- * without also changing the code that depends on it.
+ * It used to say the opposite: "do not decide, generate, or return skills",
+ * because code decided every list from the skill library and overwrote
+ * whatever came back. The library is no longer consulted for what a resume
+ * prints, so the same slot now carries the instruction the pipeline actually
+ * depends on - return the block, grouped - and says plainly that it is printed
+ * unchanged. It lives here rather than in the stored prompt so an admin
+ * editing the prompt cannot drop the field the renderer reads.
  */
 const FINAL_SKILL_OVERRIDE = `FINAL SKILL OVERRIDE:
-Do not decide, generate, or return skills. Omit the fields "skills", "hardSkills", "softSkills", "unconfirmedHardSkills", and "unconfirmedSoftSkills" from the JSON output. Technical skills and soft-skill keywords are already decided by code from skillsJSON and keywordsJson.`;
+Return "skillGroups": an array of { "category": string, "skills": string[] }, 4-7 groups, 4-10 skills each, ordered as you want them read. Count the skills before returning: about 18 in total, never fewer, never more than 32 - fill up from the candidate's own stack, the tools their companies and domains plainly run on, so the block reads as theirs rather than as a copy of this posting. It is printed exactly as returned - nothing reorders, merges, filters or tops it up - so no duplicates of one product, no concepts, no invented versions, and nothing from a domain this candidate has not worked in. Omit "skills", "hardSkills", "softSkills", "unconfirmedHardSkills" and "unconfirmedSoftSkills": there is no soft-skills section, and the flat lists are derived from skillGroups.`;
 
 function usesJobPriorityHardSkillOrdering(profile?: Profile): boolean {
   return getProfileHardSkillOrdering(profile) === 'job-priority';
@@ -1058,6 +1061,30 @@ function reportPlacement(
   const report = measurePlacement(renderedProse(content), checklist);
   const floor = placementFloor();
   const percent = (report.ratio * 100).toFixed(0);
+
+  /*
+   * Soft skills counted on their own, as well as inside the total.
+   *
+   * They used to have a section of their own, which satisfied a scanner
+   * whatever the prose did. The section is gone - it printed the skill
+   * library's idea of a soft skill, "Innovation" and "Proactiveness" - so a
+   * scanner now finds them only if the sentences carry them. Buried in a
+   * 34-term total, a run that drops every one of them still reads as 88%
+   * placed, and the thing that changed is invisible.
+   */
+  const softWanted = normalizeSkillsList([
+    ...getSoftSkills(jobAnalysis),
+    ...getMatchedLibrarySoftSkills(jobAnalysis),
+  ]);
+  if (softWanted.length > 0) {
+    const prose = renderedProse(content);
+    const softPlaced = softWanted.filter((term) => containsTerm(prose, term));
+    const missing = softWanted.filter((term) => !containsTerm(prose, term));
+    console.log(
+      `[Resume soft skills] ${profileName}: ${softPlaced.length}/${softWanted.length} placed in the prose` +
+        `${missing.length > 0 ? `. Missing: ${missing.slice(0, 8).join(', ')}` : '.'}`
+    );
+  }
 
   if (report.ratio >= floor) {
     console.log(
@@ -2507,76 +2534,138 @@ function promptJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * Each concept the posting named, with the tools it is built with.
+ *
+ * WHY THE MODEL GETS OPTIONS RATHER THAN A DECISION. A posting says "CI/CD",
+ * "containerization", "infrastructure as code"; a skills block has to say
+ * Jenkins, Docker, Terraform. Which one is right depends on the candidate -
+ * a Node shop runs GitHub Actions where a Java shop runs Jenkins - and the
+ * model has the profile in front of it. Code does not, and code may not touch
+ * the block it returns.
+ *
+ * WHY THE ORDER IS SHUFFLED. Handed the same list in the same order, a model
+ * reaches for the same first entry every time, and fifty resumes come back
+ * naming Jenkins. The order changes per request, so the pick varies between
+ * candidates while still being one of the tools the concept is actually built
+ * with. A tool the POSTING named is not affected: that one is written as the
+ * posting spells it, which the prompt says plainly.
+ */
+function buildConceptToolOptions(
+  jobAnalysis: JobAnalysis,
+  concepts: string[]
+): Array<{ concept: string; tools: string[] }> {
+  const named = new Set(
+    [...getJobNamedHardSkills(jobAnalysis), ...getTechnicalSkills(jobAnalysis)]
+      .map((term) => term.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  const rows: Array<{ concept: string; tools: string[] }> = [];
+  for (const concept of concepts) {
+    const options = conceptToolOptions(concept);
+    if (options.length === 0) continue;
+
+    // A tool the posting named for itself comes first and unshuffled - it is
+    // not a choice, it is the answer.
+    const fromPosting = options.filter((tool) => named.has(tool.toLowerCase()));
+    const rest = shuffled(options.filter((tool) => !named.has(tool.toLowerCase())));
+    rows.push({ concept, tools: [...fromPosting, ...rest] });
+  }
+  return rows;
+}
+
+function shuffled<T>(items: T[]): T[] {
+  const copy = [...items];
+  for (let at = copy.length - 1; at > 0; at -= 1) {
+    const swap = Math.floor(Math.random() * (at + 1));
+    [copy[at], copy[swap]] = [copy[swap], copy[at]];
+  }
+  return copy;
+}
+
+/**
+ * Says what the model returned for the skills block. Changes nothing.
+ *
+ * Two things an operator would want to know and cannot see from the page:
+ * whether the block came in thin - the prompt asks for about 18 skills and
+ * tops up from the candidate's own stack to get there - and how much of it is
+ * simply the posting's own list. A block that is entirely the posting's terms
+ * is the shape a reader recognises as written for them this morning, which is
+ * the thing the prompt is trying to avoid.
+ *
+ * Reported rather than corrected, because correcting it would mean editing an
+ * answer this app asked the model to own.
+ */
+function reportSkillBlock(
+  profileName: string,
+  groups: Array<{ category: string; skills: string[] }>,
+  skills: string[],
+  jobAnalysis?: JobAnalysis
+): void {
+  if (groups.length === 0) return;
+
+  const posting = new Set(
+    [...getJobNamedHardSkills(jobAnalysis), ...getTechnicalSkills(jobAnalysis)]
+      .map((term) => term.trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const fromPosting = skills.filter((skill) => posting.has(skill.trim().toLowerCase())).length;
+  const share = skills.length > 0 ? Math.round((100 * fromPosting) / skills.length) : 0;
+
+  const thin = skills.length < MIN_SKILL_BLOCK_SIZE ? ` - thin, the prompt asks for about ${MIN_SKILL_BLOCK_SIZE}` : '';
+  console.log(
+    `[Resume skills] ${profileName}: ${skills.length} skill(s) in ${groups.length} group(s)${thin}. ` +
+      `${share}% are terms this posting named.`
+  );
+}
+
+/** What the prompt asks the model to fill the block up to. */
+const MIN_SKILL_BLOCK_SIZE = 18;
+
 function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAnalysis, profile?: Profile): TailoredContent {
-  // What the job asks for, plus what this person's own roles show they have,
-  // with concepts translated into the tools that implement them and the list
-  // topped up towards a full block. See `selectHardSkills`.
-  // `promptSkills`, not `skills`. The categorized list is padded to make a
-  // heading grid look full - it fills each category from the library up to a
-  // minimum and then truncates it to a maximum - so reading it here put filler
-  // like "SQL Injection" and "Ruby on Rails" on the resume as though the job had
-  // asked for them, and the per-category truncation dropped ones it HAD asked
-  // for. `promptSkills` is the unpadded set of library terms actually found in
-  // the posting, which is the honest input to a selection.
-  const codeDecidedHardSkills = jobAnalysis
-    ? selectHardSkills({
-      // The analyser's own named technologies FIRST, then the library terms
-      // found in the raw text. The union, not either alone: raw-text matching
-      // catches what a posting mentions in passing, and the extracted fields
-      // catch what it lists. Both are the job speaking; neither is code
-      // choosing skills on the job's behalf.
-      jobSkills: normalizeSkillsList([
-        ...getJobNamedHardSkills(jobAnalysis),
-        ...buildLibraryAugmentedPromptLists(jobAnalysis).promptSkills,
-      ]),
-      experienceSkills: getProfileExperienceSkills(profile),
-      library: hardSkillRecords,
-      // The library is a spelling and grouping aid here, not a vocabulary
-      // ceiling: a technology the job named is allowed on the resume whether or
-      // not somebody has added it to the library yet.
-      unlistedJobSkills: getUnlistedJobSkills(jobAnalysis),
-      unlistedExperienceSkills: getUnlistedProfileSkills(profile),
-      // For the tools they imply, not for themselves. A posting written wholly
-      // in abilities names no library term, and without this there is nothing
-      // for the selection to anchor on at all.
-      jobConceptSkills: getConceptKeywords(jobAnalysis),
-      // The name each skill is finally printed under, so the count to twenty is
-      // a count of lines a reader will see rather than of library rows.
-      canonicalize: (skill) => resolveHardSkill(skill)?.display ?? skill,
-    })
-    : normalizeSkillsList(content.hardSkills ?? content.skills ?? []);
-
   /*
-   * The last gate before either block is printed.
+   * The skills block, as the model returned it, printed unchanged.
    *
-   * The selection already refuses concepts, job titles and prose - but it
-   * refuses them among the CANDIDATES, and two things reach the block without
-   * ever being a candidate: a library row that the concept rules did not catch
-   * when it was written, and the model's own `hardSkills` when there is no job
-   * analysis to select from. Both have put sentences in the skills block
-   * before. This is the check that applies the same standard to whatever is
-   * actually about to be printed.
+   * WHAT THIS REPLACED. The block used to be chosen by code: library matching,
+   * concept mapping, vendor-prefix collapsing, priority ordering, padding each
+   * heading to a minimum and truncating it to a maximum. The library is a
+   * curated list of 1,492 rows, and what it curated reached every resume -
+   * "Echo", "Logs", "Reflection", "Behave", "Amazon Kinesis" printed beside
+   * "Kinesis", "REST" beside "REST API". Rules were added for each of those in
+   * turn and the next row found the next gap.
    *
-   * What it rejects is NOT lost. Every term here came from the posting or the
-   * profile, and the prose checklists already carry the posting in full - see
-   * `collectJobKeywords` and the coverage backstop in
-   * `buildTailorResumePromptValues` - so a keyword refused a bullet here has
-   * already been asked for in the summary and the experience bullets.
+   * So the operator took the decision away from the library. The tailor call
+   * already has the profile and the posting in front of it, and it now returns
+   * the finished block, grouped under its own headings. Nothing here reorders
+   * it, dedupes it, filters it or tops it up: a rule worth keeping is stated in
+   * the prompt, where the model can act on it, rather than applied afterwards
+   * to an answer this file did not write.
+   *
+   * The flat list is kept in step because templates, the DOCX writer and the
+   * keyword measurement all read `hardSkills`.
    */
-  const librarySkillKeys = new Set(
-    hardSkillRecords.map((record) => record.skill.trim().toLowerCase().replace(/\s+/g, ' '))
-  );
-  const hardVerdicts = partitionSkills(
-    normalizeSkillsList(codeDecidedHardSkills),
-    (term) => validateHardSkill(term, librarySkillKeys)
-  );
-  reportRejectedSkills('hard', hardVerdicts.rejected);
+  const modelSkillGroups = (content.skillGroups ?? [])
+    .map((group) => ({
+      category: String(group?.category ?? '').trim(),
+      skills: (Array.isArray(group?.skills) ? group.skills : [])
+        .map((skill) => String(skill ?? '').trim())
+        .filter(Boolean),
+    }))
+    .filter((group) => group.category && group.skills.length > 0);
 
+  const hardSkills = modelSkillGroups.length > 0
+    ? modelSkillGroups.flatMap((group) => group.skills)
+    // No groups in the answer - an older prompt, or a build with no posting to
+    // tailor against. The model's flat list, then the profile's own skills.
+    : normalizeSkillsList(content.hardSkills ?? content.skills ?? profile?.skills ?? []);
+
+  reportSkillBlock(profile?.name ?? 'resume', modelSkillGroups, hardSkills, jobAnalysis);
+
+  // Ordering used to happen here - job-priority first, or the library's own
+  // priority column. Neither applies now: the model returns the block in the
+  // order it wants it read, and that order is part of the answer.
   const atsSoftPriority = inferAtsSoftSkillsFromAnalysis(jobAnalysis);
-  const finalizedHardSkills = hardVerdicts.accepted;
-  const hardSkills = usesJobPriorityHardSkillOrdering(profile)
-    ? prioritizeHardSkills(finalizedHardSkills, jobAnalysis)
-    : sortHardSkillsByLibraryPriority(finalizedHardSkills);
   const softFromModel = normalizeSkillsList(content.softSkills);
   const softFromAnalysis = getSoftSkills(jobAnalysis);
   const softFromLibrary = getMatchedLibrarySoftSkills(jobAnalysis);
@@ -2591,6 +2680,7 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
   const softVerdicts = partitionSkills(softMerged, validateSoftSkill);
   reportRejectedSkills('soft', softVerdicts.rejected);
   const softLimited = finalizeSoftSkills(softVerdicts.accepted);
+  void softLimited;
 
   const trimIncompleteEnd = (s: string): string =>
     s.trim().replace(/,+\s*$/, '').replace(/\s+(and|or)\s*$/i, '').trim();
@@ -2771,6 +2861,7 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
     summary: finalSummary,
     experience: normalizedExperience,
     hardSkills,
+    skillGroups: modelSkillGroups,
     /*
      * No soft-skills block. It was a row of nouns nobody reads - and 44 of the
      * library's entries are the exact register the operator asked to be rid
@@ -2967,6 +3058,10 @@ export function buildTailorResumePromptValues(
     // checklists; splitting them lets the prompt say something specific about
     // concepts without saying it twice about everything else.
     keywordsJson: promptJson(proseKeywords),
+    // The tools each concept this posting names is actually built with, so a
+    // concept becomes a tool on the resume rather than a line of jargon.
+    // Shuffled per request: see `buildConceptToolOptions`.
+    conceptToolsJson: promptJson(buildConceptToolOptions(jobAnalysis, conceptKeywords)),
     keyResponsibilitiesJson: promptJson(getResponsibilities(jobAnalysis)),
     domainKnowledge: promptJson([
       ...getDomainKnowledge(jobAnalysis),
@@ -3008,12 +3103,12 @@ export function parseTailoredResumeContent(
    * has catalogued yet puts it on this resume AND offers to catalogue it,
    * instead of dropping it in silence as it used to.
    */
-  const unconfirmedHardSkills = uniqueCaseInsensitive([
-    ...getUnlistedJobSkills(jobAnalysis),
-    ...getUnlistedProfileSkills(profile),
-  ]).filter((skill) =>
-    finalResult.hardSkills.some((selected) => selected.toLowerCase() === skill.toLowerCase())
-  );
+  // Empty now, and the panel with it. It listed skills that reached a resume
+  // without a library row behind them, so an operator could add them - useful
+  // while the library chose the block. It no longer does: the model writes the
+  // block, and every skill on it would be "unconfirmed", which is a list of
+  // everything and therefore a list of nothing.
+  const unconfirmedHardSkills: string[] = [];
 
   return {
     ...finalResult,

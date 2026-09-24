@@ -136,31 +136,28 @@ test('the analyser folding technical into required does not re-admit them', () =
   }
 });
 
-test('a named tool still reaches the skills block from the tool fields', () => {
-  // The restriction must not cost real technologies their place.
-  const out = parseTailoredResumeContent(
-    JSON.stringify({
-      title: 'Engineer', summary: 'S.', experience: profile().experience, strengths: [], coverLetter: 'x',
-    }),
-    profile(),
-    analysisWith()
-  );
+test('a named tool reaches the PROMPT, which is where the block is decided now', () => {
+  /*
+   * This used to assert that code put Python, PostgreSQL and Docker into the
+   * Technical Skills block. Code no longer chooses that block - the tailor call
+   * returns it, grouped, and it is printed unchanged - so the contract that
+   * matters is upstream: everything the posting named has to reach the prompt,
+   * or the model cannot put it anywhere.
+   */
+  const { buildTailorResumePromptValues } = require('../dist/services/resumeService');
+  const values = buildTailorResumePromptValues(profile(), analysisWith());
+  const sent = (values.skillsJSON + ' ' + values.jobAnalysisJson).toLowerCase();
+
   for (const tool of ['Python', 'PostgreSQL', 'Docker']) {
-    assert.ok(
-      out.hardSkills.some((s) => s.toLowerCase() === tool.toLowerCase()),
-      `${tool} was named by the job and should be listed`
-    );
+    assert.ok(sent.includes(tool.toLowerCase()), tool + ' was named by the job and must reach the prompt');
   }
 });
 
-test('every hard skill the job named reaches the skills block', () => {
-  // The block used to be built by matching the library against the posting's RAW
-  // TEXT, which threw the extraction away: `getTailoringSourceText` returns the
-  // raw description whenever there is one, so `technologies`, `tools` and
-  // `protocols` - the fields whose whole job is naming technologies - were never
-  // read for it. Pulumi went missing from a posting that named it, because it
-  // was absent from the raw text and, being a library term, the unlisted path
-  // refused it too. It fell through both.
+test('every hard skill the job named reaches the prompt, from every field', () => {
+  // The fields whose whole job is naming technologies - `tools`,
+  // `technologies`, `protocols` - were once read for the block and then not
+  // read at all, and Pulumi went missing from a posting that named it. The
+  // block moved to the model; the fields still have to arrive.
   const tools = ['Docker', 'Kubernetes', 'Terraform', 'Datadog', 'Vault', 'Argo CD'];
   const technologies = ['Python', 'Go', 'FastAPI', 'PostgreSQL', 'Temporal', 'Pulumi'];
   const protocols = ['REST', 'gRPC', 'GraphQL', 'OAuth 2.0'];
@@ -178,19 +175,12 @@ test('every hard skill the job named reaches the skills block', () => {
     'Senior Backend Engineer. Python and Go services on PostgreSQL.'
   );
 
-  const out = parseTailoredResumeContent(
-    JSON.stringify({
-      title: 'Engineer', summary: 'S.', experience: profile().experience, coverLetter: 'x',
-    }),
-    profile(),
-    analysis
-  );
+  const { buildTailorResumePromptValues } = require('../dist/services/resumeService');
+  const values = buildTailorResumePromptValues(profile(), analysis);
+  const sent = (values.skillsJSON + ' ' + values.jobAnalysisJson).toLowerCase();
 
   for (const named of [...tools, ...technologies, ...protocols]) {
-    assert.ok(
-      out.hardSkills.some((s) => s.toLowerCase() === named.toLowerCase()),
-      `"${named}" was named by the job and is missing from the skills block`
-    );
+    assert.ok(sent.includes(named.toLowerCase()), named + ' was named by the job and never reached the prompt');
   }
 });
 

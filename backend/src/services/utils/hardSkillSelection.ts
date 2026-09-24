@@ -483,6 +483,21 @@ const CONCEPT_TO_CONCRETE: Array<{ key: string; concrete: string[] }> = [
  * source of invented skills: a target that is misspelled, or that a later
  * library edit removes, simply produces nothing.
  */
+/**
+ * The tools a concept is built with, ungated.
+ *
+ * `mapConceptToConcreteSkills` filters the same table against the skill
+ * library, which was right while the library decided the block. It no longer
+ * does - the model writes the block - and the options are sent to the model as
+ * a hint, where a library filter would only hide the ones nobody has
+ * catalogued yet.
+ */
+export function conceptToolOptions(concept: string): string[] {
+  const normalized = normalize(concept);
+  const entry = CONCEPT_TO_CONCRETE.find((candidate) => normalized.includes(candidate.key));
+  return entry ? [...entry.concrete] : [];
+}
+
 export function mapConceptToConcreteSkills(
   concept: string,
   librarySkills: ReadonlySet<string>

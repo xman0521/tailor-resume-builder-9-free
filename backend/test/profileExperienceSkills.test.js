@@ -98,8 +98,19 @@ test('enrichProfileExperienceSkillsForJob keeps only JD-matched skills and assig
   ]);
 });
 
-test('parseTailoredResumeContent ignores model-selected hard skills and uses code-decided skills', () => {
+test('parseTailoredResumeContent prints the skills the model returned', () => {
+  /*
+   * The reverse of what this test used to assert. Code decided the block from
+   * the skill library and overwrote whatever the model sent; the operator took
+   * that decision away, because what the library curated - "Echo", "Logs",
+   * "Amazon Kinesis" beside "Kinesis" - reached every resume it touched. The
+   * model now returns the block, grouped, and nothing here reshapes it.
+   */
   const enriched = enrichProfileExperienceSkillsForJob(makeProfile(), makeJobAnalysis());
+  const groups = [
+    { category: 'Languages', skills: ['TypeScript', 'Python'] },
+    { category: 'Cloud', skills: ['AWS Textract', 'AWS Lambda'] },
+  ];
   const content = JSON.stringify({
     title: 'Senior Software Engineer',
     summary: 'Experienced engineer building reliable product systems.',
@@ -112,7 +123,7 @@ test('parseTailoredResumeContent ignores model-selected hard skills and uses cod
       description: item.description,
       achievements: item.achievements,
     })),
-    hardSkills: ['AWS Textract', 'Secure backend logic', 'SQL databases (MySQL', 'React,'],
+    skillGroups: groups,
     softSkills: [],
     strengths: [],
     coverLetter: 'I enjoy building useful systems.',
@@ -120,15 +131,10 @@ test('parseTailoredResumeContent ignores model-selected hard skills and uses cod
 
   const parsed = parseTailoredResumeContent(content, enriched, makeJobAnalysis());
 
-  assert.equal(parsed.hardSkills.includes('AWS Textract'), false);
-  assert.equal(parsed.hardSkills.includes('React,'), false);
-  assert.equal(parsed.hardSkills.includes('Secure backend logic'), false);
-  assert.equal(parsed.hardSkills.includes('SQL databases (MySQL'), false);
-  assert.equal(parsed.hardSkills.includes('TypeScript'), true);
-  assert.equal(parsed.hardSkills.includes('React'), true);
-  assert.equal(parsed.hardSkills.every((skill) => typeof skill === 'string' && skill.trim()), true);
-  assert.deepEqual(parsed.skills, parsed.hardSkills);
-  assert.deepEqual(parsed.unconfirmedHardSkills, []);
+  assert.deepEqual(parsed.skillGroups, groups);
+  assert.deepEqual(parsed.hardSkills, ['TypeScript', 'Python', 'AWS Textract', 'AWS Lambda']);
+  // Including a term the library has never heard of, which used to be dropped.
+  assert.ok(parsed.hardSkills.includes('AWS Textract'));
 });
 
 test('parseJobAnalysisContent removes employer-perspective job posting slogans', () => {

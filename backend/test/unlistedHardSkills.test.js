@@ -104,19 +104,22 @@ test('an unlisted tool does not outrank the library fundamentals', () => {
   assert.equal(picked[0], 'Python');
 });
 
-test('an unlisted tool is reported so it can be added to the library', () => {
+test('nothing is offered to the library any more', () => {
+  /*
+   * The Unconfirmed Skills panel listed skills that reached a resume without a
+   * library row behind them, so an operator could add them. The library is no
+   * longer consulted for what a resume prints - the model returns the block -
+   * so every skill would qualify, which is a list of everything and therefore
+   * a list of nothing.
+   */
   const analysis = parseJobAnalysisContent(
     JSON.stringify({
       jobMeta: { title: 'Platform Engineer', seniority: 'Senior', industry: 'Software', department: 'Engineering' },
-      // In `tools`, where the analyser's own prompt says named software goes.
-      // `skills.technical` is defined there as abilities NOT tied to a named
-      // tool, and is no longer read for the skills block - a tool mis-filed
-      // into it gets prose coverage instead of a line in Technical Skills.
       skills: { technical: [], tools: [...UNLISTED, 'Python'], soft: [] },
       responsibilities: [], domainKnowledge: [],
       keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
     }),
-    `Platform Engineer working with ${UNLISTED.join(', ')} and Python.`
+    'Platform Engineer working with ' + UNLISTED.join(', ') + ' and Python.'
   );
   const profile = {
     id: 'p', name: 'T', title: 'Platform Engineer', totalYearsExperience: 6,
@@ -130,21 +133,20 @@ test('an unlisted tool is reported so it can be added to the library', () => {
   };
 
   const out = parseTailoredResumeContent(
-    JSON.stringify({ title: 'Engineer', summary: 'S.', experience: profile.experience, strengths: [], coverLetter: 'x' }),
+    JSON.stringify({
+      title: 'Engineer', summary: 'S.', experience: profile.experience, strengths: [],
+      skillGroups: [{ category: 'Platform', skills: [...UNLISTED, 'Python'] }],
+      coverLetter: 'x',
+    }),
     profile,
     analysis
   );
 
+  // The tools are on the resume, whatever the library knows about them.
   for (const name of UNLISTED) {
-    assert.ok(has(out.hardSkills, name), `${name} should be on the resume`);
-    assert.ok(has(out.unconfirmedHardSkills, name), `${name} should be offered to the library`);
+    assert.ok(has(out.hardSkills, name), name + ' should be on the resume');
   }
-  // Only terms that actually made the resume are offered, and a term the
-  // library already knows is never offered.
-  for (const reported of out.unconfirmedHardSkills) {
-    assert.ok(has(out.hardSkills, reported), `${reported} was reported but is not on the resume`);
-    assert.ok(!inLibrary.has(reported.toLowerCase()), `${reported} is already in the library`);
-  }
+  assert.deepEqual(out.unconfirmedHardSkills, []);
 });
 
 test('an activity phrase built on an acronym is not a skill', () => {

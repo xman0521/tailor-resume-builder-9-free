@@ -115,8 +115,25 @@ export type RawNestedJobAnalysis = Partial<JobAnalysis> & {
   }
 };
 
+/** One heading of the Technical Skills block, as the model grouped it. */
+export interface TailoredSkillGroup {
+  category: string;
+  skills: string[];
+}
+
 export interface TailoredContent {
   title: string;
+  /**
+   * The skills block, grouped, exactly as the model returned it.
+   *
+   * Printed verbatim: no library matching, no reordering, no padding to a
+   * category count, no validation gate. The skill library is no longer
+   * consulted for what appears on a resume - it was adding its own rows
+   * ("Echo", "Logs", "Amazon Kinesis" beside "Kinesis") to every block it
+   * touched - so the rules that used to be enforced in code are stated in the
+   * prompt instead, and what comes back is what gets printed.
+   */
+  skillGroups?: TailoredSkillGroup[];
   summary: string;
   experience: TailoredExperience[];
   skills: string[];
