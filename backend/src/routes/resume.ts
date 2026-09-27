@@ -95,18 +95,15 @@ function resolveGenerationRole(role: unknown, analysis?: import('../types/templa
 /**
  * The analysis, carrying the title this build was actually asked for.
  *
- * WHY. The headline's discipline tag - "Software Engineer (Integration)" - is
- * read from `jobAnalysis.jobMeta.title`, which is whatever the analyser wrote.
- * Every route here already knew a better answer and discarded it: the sheet
- * import sends the posting's title from its own job-title column as `role`,
- * and `resolveGenerationRole` prefers exactly that. The two only ever met in
- * the output folder name.
+ * WHY. `jobAnalysis.jobMeta.title` is whatever the analyser wrote, and it is
+ * what the tailoring prompt is told the job is called and what names the output
+ * folder. Every route here already knew a better answer and discarded it: the
+ * sheet import sends the posting's title from its own job-title column as
+ * `role`, and `resolveGenerationRole` prefers exactly that. The two only ever
+ * met in the folder name.
  *
- * So when the analyser came back with an empty or generic title, the tag
- * vanished from every resume in the run while the folder names beside them
- * showed the right title. Reproduced end to end: the same nine builds tag
- * correctly with the title in the analysis and not at all without it, with the
- * correct role sitting in the request the whole time.
+ * So when the analyser came back with an empty or generic title, the prompt was
+ * told nothing about the role while the folder beside it showed the right one.
  *
  * A copy, never an edit. One analysis is shared by every profile built for a
  * job, and by the page that sent it.
@@ -1076,7 +1073,7 @@ router.post('/preview-all', async (req: Request, res: Response) => {
         requestSignal(req, res)
       );
     }
-    // The preview shows the same headline tag the saved file will carry.
+    // The preview is built from the same title the saved file will be.
     analysis = withResolvedTitle(analysis, resolveGenerationRole(role, analysis));
 
     const previews: Array<{
@@ -1228,8 +1225,8 @@ router.post('/generate', async (req: Request, res: Response) => {
         requestSignal(req, res)
       );
     }
-    // Resolved BEFORE tailoring, so the headline is tagged from the title this
-    // build was asked for rather than from whatever the analyser wrote.
+    // Resolved BEFORE tailoring, so the prompt is told the title this build was
+    // asked for rather than whatever the analyser wrote.
     const resolvedRole = resolveGenerationRole(role, analysis);
     if (appSettings.outputPathUsesJobTitle && !resolvedRole) {
       res.status(400).json({ error: 'Role is required' });
@@ -1391,7 +1388,7 @@ router.post('/preview', async (req: Request, res: Response) => {
         requestSignal(req, res)
       );
     }
-    // The preview shows the same headline tag the saved file will carry.
+    // The preview is built from the same title the saved file will be.
     analysis = withResolvedTitle(analysis, resolveGenerationRole(role, analysis));
     if (tailoredContent && analysis) {
       tailoredContent = parseTailoredResumeContent(JSON.stringify(tailoredContent), profile, analysis);

@@ -8,21 +8,17 @@ const http = require('node:http');
 const { useTempStorage } = require('./helpers');
 
 /**
- * The headline tag, checked through the route the sheet import actually calls.
+ * The headline, checked through the route the sheet import actually calls.
  *
- * This feature was "done" three times and absent from every resume each time,
- * because each check tested one piece and the piece was right:
+ * The headline is the CANDIDATE's own title, whatever the posting is called;
+ * the posting's role is named in the summary instead, in the model's own words.
+ * Every earlier version of this line was checked one piece at a time, each
+ * piece was right, and the printed resume was wrong anyway - which is why this
+ * drives the real route rather than the helper.
  *
- *   1. the tag function was correct; the renderer read `profile.title` instead;
- *   2. the renderer was fixed; the headline was rebuilt from the posting, so
- *      the tag was correctly suppressed as a repeat;
- *   3. the headline was fixed; the tag read only the ANALYSER's title, and a
- *      real analysis can come back with that empty - while the request carried
- *      the right title from the sheet's job-title column the whole time.
- *
- * So this drives POST /generate-multi-job with the model stubbed and the
- * analyser's title deliberately blank, and asserts on the tailored title that
- * the route hands to the renderer.
+ * The two postings below name fields this candidate's headline does not, and
+ * the analyser's own title is deliberately blank, so anything leaking from
+ * either would show up here.
  */
 
 const analysisWithBlankTitle = () => ({
@@ -33,7 +29,7 @@ const analysisWithBlankTitle = () => ({
   keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
 });
 
-test('the sheet\'s job title reaches the headline when the analyser left its own blank', async (t) => {
+test('the headline reaches the renderer as the profile wrote it, whatever the posting is called', async (t) => {
   useTempStorage('headline-e2e');
 
   const execution = require('../dist/services/ai/promptExecution');
@@ -119,10 +115,7 @@ test('the sheet\'s job title reaches the headline when the analyser left its own
     assert.equal(response.status, 200);
     assert.equal(body.failed, 0);
 
-    assert.deepEqual(printed.sort(), [
-      'Software Engineer (DevOps)',
-      'Software Engineer (Integration)',
-    ]);
+    assert.deepEqual(printed.sort(), ['Software Engineer', 'Software Engineer']);
 
     // The on-screen preview has to agree with the file that gets saved.
     const preview = await fetch(`http://127.0.0.1:${server.address().port}/api/resume/preview`, {
@@ -138,7 +131,7 @@ test('the sheet\'s job title reaches the headline when the analyser left its own
     });
     const shown = await preview.json();
     assert.equal(preview.status, 200, JSON.stringify(shown).slice(0, 300));
-    assert.equal(shown.html, '<p>Software Engineer (AI/ML)</p>');
+    assert.equal(shown.html, '<p>Software Engineer</p>');
   } finally {
     execution.createPromptCompletion = original;
     generator.generateResumePDF = originalRender;

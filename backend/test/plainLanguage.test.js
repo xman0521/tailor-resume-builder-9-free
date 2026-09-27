@@ -206,14 +206,27 @@ test('a resume that places every checklist term keeps every checklist term', () 
 
   // A model that obeys the prompt: every term in the summary or a bullet, and
   // nothing in the role description, which the prompt no longer offers.
+  //
+  // The bullets carry SEVERAL terms each, because the prompt asks for at most
+  // eight of them per role and the application enforces that - a fixture with
+  // one term per bullet would be testing a resume the prompt forbids, and would
+  // fail on the cap rather than on anything this test is about.
   const half = Math.ceil(checklist.length / 2);
+  const inBullets = checklist.slice(half);
+  const perBullet = Math.ceil(inBullets.length / 8);
+  const bullets = [];
+  for (let at = 0; at < inBullets.length; at += perBullet) {
+    bullets.push(`Work involving ${inBullets.slice(at, at + perBullet).join(', ')} on the platform.`);
+  }
+  assert.ok(bullets.length <= 8, `the fixture writes ${bullets.length} bullets, which the cap would trim`);
+
   const answer = JSON.stringify({
     title: 'Engineer',
     summary: `Engineer of 9 years. ${checklist.slice(0, half).join('. ')}.`,
     experience: [{
       ...person.experience[0],
       description: '',
-      achievements: checklist.slice(half).map((term) => `Work involving ${term} on the platform.`),
+      achievements: bullets,
     }],
     strengths: [],
     coverLetter: 'x',

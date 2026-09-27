@@ -12,6 +12,7 @@ import {
   sanitizePathSegment,
 } from './outputStorage';
 import { getOutputStorageSettings } from '../config/aiModelConfig';
+import { naturalRoleTitle } from '../services/utils/roleTitle';
 
 function getCurrentDateFolder(): string {
   const now = new Date();
@@ -62,7 +63,9 @@ export async function getGeneratedOutputPath(
     profileName: profile.name || 'unknown',
     companyName: companyName || 'unknown',
     rowNumber,
-    jobTitle: role || 'resume',
+    // The same title the resume is headlined with, so the file and the page
+    // agree - and so a file is not named after the advert's fine print.
+    jobTitle: naturalRoleTitle(role) || role || 'resume',
   };
   const companyFolderName = renderOutputFolderNameTemplate(
     profile.profileSettings?.companyFolderNameTemplate || DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE,

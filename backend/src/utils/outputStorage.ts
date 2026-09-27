@@ -5,8 +5,8 @@ import os from 'os';
 
 export const DEFAULT_GENERATED_RESUMES_DIR = path.join(__dirname, '..', '..', '..', 'generated');
 export const DEFAULT_OUTPUT_PATH_TEMPLATE = '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
-export const DEFAULT_RESUME_FILE_NAME_TEMPLATE = '{{profile name}}';
-export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_cover_letter';
+export const DEFAULT_RESUME_FILE_NAME_TEMPLATE = '{{profile name}}_{{target role title}}';
+export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_{{target role title}}_cover_letter';
 export const DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE = '{{row number}}_{{company name}}';
 
 export const OUTPUT_PATH_TOKENS = [
@@ -15,6 +15,7 @@ export const OUTPUT_PATH_TOKENS = [
   { token: '{{company name}}', description: 'Company name' },
   { token: '{{row number}}', description: 'Source Google Sheet row number' },
   { token: '{{job title}}', description: 'Role / job title' },
+  { token: '{{target role title}}', description: 'Role / job title (same value, named as the posting)' },
 ] as const;
 
 export type OutputTemplateVariables = {
@@ -37,6 +38,13 @@ const OUTPUT_TOKEN_ALIASES: Record<string, keyof OutputTemplateVariables> = {
   'source row': 'rowNumber',
   role: 'jobTitle',
   'job title': 'jobTitle',
+  // The same value under the name the operator uses for it. A token a template
+  // names but this table does not know renders as the literal text, so every
+  // spelling anybody writes has to resolve.
+  'target role title': 'jobTitle',
+  'target role': 'jobTitle',
+  'role title': 'jobTitle',
+  'target title': 'jobTitle',
 };
 
 /**
@@ -88,15 +96,24 @@ export function sanitizePathSegment(value: string): string {
   );
 }
 
+/**
+ * A file name of letters, digits and underscores, and nothing else.
+ *
+ * It used to remove only what Windows forbids, so a posting's own punctuation
+ * came through: "Leo_Wu_Software_Engineer,_Java_J2EE_AML_Applications.pdf" - a
+ * comma in a file name, which is legal, ugly, and awkward in every shell and
+ * spreadsheet it gets pasted into. The operator asked for underscores only.
+ *
+ * Letters are matched as LETTERS rather than as A-Z, so a name written in any
+ * alphabet survives; only punctuation and spaces become underscores.
+ */
 export function sanitizeFileNameStem(value: string): string {
   return escapeReservedName(
     value
       .trim()
-      .replace(/[<>:"|?*\x00-\x1F]+/g, '_')
-      .replace(/[/\\]+/g, '_')
-      .replace(/\s+/g, '_')
+      .replace(/[^\p{L}\p{N}_]+/gu, '_')
       .replace(/_+/g, '_')
-      .replace(/^[_. ]+|[_. ]+$/g, '')
+      .replace(/^_+|_+$/g, '')
   );
 }
 

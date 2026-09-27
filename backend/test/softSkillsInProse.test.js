@@ -63,9 +63,12 @@ test('every soft skill the posting named reaches the prompt', () => {
 test('the prompt says where they go, now that there is no section for them', () => {
   const prompt = require('../static/prompts/tailor-resume.json').content;
   assert.match(prompt, /SOFT SKILLS ARE PROSE, AND THEY ARE NOT OPTIONAL/);
-  // The two rules that decide whether a scanner finds them at all.
+  // The rules that decide whether a scanner finds them at all. "At least two in
+  // the summary" became "three or four" when 15 scanned resumes came back with
+  // soft skills as the weak band in every one.
   assert.match(prompt, /WRITE THE TERM ITSELF/);
-  assert.match(prompt, /At least two in the summary/);
+  assert.match(prompt, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);
+  assert.match(prompt, /Three or four in the summary/);
 });
 
 test('a soft skill that is also a banned word survives when the posting asked for it', () => {

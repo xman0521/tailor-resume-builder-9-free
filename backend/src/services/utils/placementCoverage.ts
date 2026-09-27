@@ -79,12 +79,19 @@ export function measurePlacement(prose: string, checklist: string[]): PlacementR
 /**
  * The floor the prompt states, so the two cannot drift apart.
  *
+ * ONE HUNDRED PER CENT, on the operator's instruction and the prompt says the
+ * same. It was 90%, which sounds close and is not: a checklist of forty terms
+ * left four of them off every resume, chosen by the model on the day, and the
+ * ones it dropped were the awkward ones - which are the specific ones, which
+ * are the ones worth the most. The only terms allowed to go missing now are the
+ * ones rule 3 forbids, and those are a decision rather than a shortfall.
+ *
  * Read from the environment for the same reason every other threshold here is:
  * an operator who wants to see how close a run really gets can lower it without
- * editing the source, and one who wants a stricter bar can raise it.
+ * editing the source.
  */
 export function placementFloor(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number.parseFloat(env.RESUME_KEYWORD_FLOOR || '');
-  if (!Number.isFinite(raw) || raw <= 0 || raw > 1) return 0.9;
+  if (!Number.isFinite(raw) || raw <= 0 || raw > 1) return 1;
   return raw;
 }

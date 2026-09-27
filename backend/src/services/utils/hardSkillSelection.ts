@@ -293,9 +293,54 @@ function lastWordOf(normalized: string): string {
  * Exported because the renderer applies the same test to profiles that are
  * rendered untailored, where nothing has been through the selection below.
  */
+/**
+ * The shapes a posting's abilities and categories actually take.
+ *
+ * The named lists below catch the concepts somebody thought of; these catch the
+ * ones the analyser invents. Measured on one posting's output: "observability
+ * tooling", "monitoring platforms", "AI evaluation frameworks", "enterprise
+ * scheduling tools", "automation pipelines", "policy enforcement", "identity
+ * propagation" and "dynamic policy engines" all reached a printed skills block
+ * because nothing recognised the SHAPE - a category noun or an activity noun
+ * at the end of a phrase - only the exact words.
+ *
+ * A single word is never matched this way: "Tooling" alone is not a skill
+ * either, but "Kubernetes" must not become a concept because something ends in
+ * "s". Two words or more, and the head noun is what decides.
+ */
+const CONCEPT_HEAD_NOUNS = new Set([
+  'tooling', 'platforms', 'platform', 'frameworks', 'tools', 'pipelines',
+  'practices', 'management', 'enforcement', 'propagation', 'architecture',
+  'engines', 'systems', 'solutions', 'capabilities', 'standards', 'processes',
+  'methodologies', 'disciplines', 'strategies', 'principles', 'techniques',
+  'fundamentals', 'concepts', 'approaches', 'models', 'workflows', 'reviews',
+]);
+
+/** Named ones that no shape rule would catch. */
+const CONCEPT_EXTRA = new Set([
+  'runbooks', 'internal tooling', 'root cause analysis', 'code review',
+  'design review', 'audit logging', 'identity propagation', 'policy enforcement',
+  'distributed tracing', 'observability', 'debugging', 'automated testing',
+  'test driven development', 'test-driven development', 'unit testing',
+  'functional testing', 'performance testing', 'load testing', 'partitioning',
+]);
+
 export function isConceptSkill(skill: string): boolean {
   const normalized = normalize(skill);
   if (!normalized) return true;
+  if (CONCEPT_EXTRA.has(normalized)) return true;
+
+  /*
+   * The shape rule, with the one exception that matters: a VENDOR's name in
+   * front makes it a product, not a category. "Azure Pipelines", "Google
+   * Workflows", "Azure API Management" and "Google Cloud Platform" all end in
+   * a category noun and all are things you buy; "automation pipelines",
+   * "enterprise scheduling tools" and "monitoring platforms" are not. The
+   * vendor list already exists here for the same reason.
+   */
+  const words = normalized.split(/\s+/).filter(Boolean);
+  const startsWithVendor = VENDOR_WORDS.has(words[0] ?? '');
+  if (!startsWithVendor && words.length > 1 && CONCEPT_HEAD_NOUNS.has(words[words.length - 1])) return true;
   const collapsed = collapseSpacing(normalized);
   if (CONCRETE_DESPITE_PATTERN.has(normalized)) return false;
   if (CONCRETE_DESPITE_PATTERN_COLLAPSED.has(collapsed)) return false;
@@ -321,6 +366,29 @@ export function isConceptSkill(skill: string): boolean {
  * somebody's resume.
  */
 const CONCEPT_TO_CONCRETE: Array<{ key: string; concrete: string[] }> = [
+  // Added from real output: each of these reached a printed skills block as a
+  // phrase, and each has an obvious tool behind it.
+  { key: 'distributed tracing', concrete: ['Jaeger', 'OpenTelemetry', 'Zipkin'] },
+  { key: 'vector database', concrete: ['Pinecone', 'pgvector', 'Weaviate'] },
+  { key: 'embeddings', concrete: ['pgvector', 'Pinecone', 'Hugging Face Transformers'] },
+  { key: 'schema management', concrete: ['Flyway', 'Liquibase', 'Alembic'] },
+  { key: 'schema migration', concrete: ['Flyway', 'Liquibase', 'Alembic'] },
+  { key: 'policy enforcement', concrete: ['Open Policy Agent', 'Kyverno'] },
+  { key: 'policy engine', concrete: ['Open Policy Agent', 'Kyverno'] },
+  { key: 'identity propagation', concrete: ['OAuth 2.0', 'OpenID Connect', 'Keycloak'] },
+  { key: 'code review', concrete: ['GitHub', 'GitLab', 'Gerrit'] },
+  { key: 'design review', concrete: ['Confluence', 'Miro'] },
+  { key: 'runbook', concrete: ['PagerDuty', 'Confluence'] },
+  { key: 'root cause analysis', concrete: ['Datadog', 'Sentry', 'Splunk'] },
+  { key: 'ai evaluation', concrete: ['LangSmith', 'Ragas', 'DeepEval'] },
+  { key: 'large language model', concrete: ['LangChain', 'OpenAI API', 'Hugging Face Transformers'] },
+  { key: 'audit logging', concrete: ['Splunk', 'Elasticsearch', 'CloudTrail'] },
+  { key: 'internal tooling', concrete: ['Python', 'TypeScript', 'Backstage'] },
+  { key: 'frontend architecture', concrete: ['React', 'TypeScript', 'Next.js'] },
+  { key: 'backend framework', concrete: ['Node.js', 'Django', 'Spring Boot'] },
+  { key: 'enterprise scheduling', concrete: ['Control-M', 'Apache Airflow', 'Autosys'] },
+  { key: 'delta lake', concrete: ['Delta Lake', 'Databricks', 'Apache Spark'] },
+  { key: 'debugging', concrete: ['Chrome DevTools', 'pdb', 'Sentry'] },
   { key: 'infrastructure as code', concrete: ['Terraform', 'Ansible', 'CloudFormation'] },
   { key: 'immutable infrastructure', concrete: ['Terraform', 'Docker'] },
   { key: 'infrastructure automation', concrete: ['Terraform', 'Ansible'] },

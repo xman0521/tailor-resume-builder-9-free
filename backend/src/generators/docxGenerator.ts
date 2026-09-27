@@ -75,6 +75,29 @@ function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>):
   <p style="font-size: 10pt; color: #1A1A1A; margin: 0 0 12pt 0; line-height: 1.35;">${esc(data.summary || '')}</p>
   <p style="margin: 0;"><br></p>
 
+  <!-- Education before skills and experience: the reading order the
+       operator asked for, and the same order the PDF prints in. -->
+  <p style="${sectionStyle}"><u>Education</u></p>
+  ${(data.education ?? [])
+    .map(
+      (edu: {
+        degree?: string;
+        institution?: string;
+        startDate?: string;
+        endDate?: string;
+        location?: string;
+      }) => {
+        const dates = [edu.startDate, edu.endDate].filter(Boolean).join(' – ');
+        const loc = edu.location ? ` • ${edu.location}` : '';
+        return `
+  <p style="font-weight: bold; font-size: 10pt; color: #1A1A1A;">${esc(edu.degree ?? '')}</p>
+  <p style="font-size: 9pt; color: #555555;">${esc(edu.institution ?? '')}${esc(loc)}</p>
+  <p style="font-size: 8pt; color: #555555;">${esc(dates)}</p>`;
+      }
+    )
+    .join('\n')}
+  <p style="margin: 0;"><br></p>
+
   <p style="${sectionStyle}"><u>Technical Skills</u></p>
   ${technicalSkillsHtml}
   <p style="margin: 0;"><br></p>
@@ -111,25 +134,6 @@ function buildHayatoStyleHTML(data: ReturnType<typeof prepareResumeRenderData>):
     .join('\n')}
   <p style="margin: 0;"><br></p>
 
-  <p style="${sectionStyle}"><u>Education</u></p>
-  ${(data.education ?? [])
-    .map(
-      (edu: {
-        degree?: string;
-        institution?: string;
-        startDate?: string;
-        endDate?: string;
-        location?: string;
-      }) => {
-        const dates = [edu.startDate, edu.endDate].filter(Boolean).join(' – ');
-        const loc = edu.location ? ` • ${edu.location}` : '';
-        return `
-  <p style="font-weight: bold; font-size: 10pt; color: #1A1A1A;">${esc(edu.degree ?? '')}</p>
-  <p style="font-size: 9pt; color: #555555;">${esc(edu.institution ?? '')}${esc(loc)}</p>
-  <p style="font-size: 8pt; color: #555555;">${esc(dates)}</p>`;
-      }
-    )
-    .join('\n')}
 </body>
 </html>`;
 

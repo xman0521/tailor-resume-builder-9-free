@@ -133,15 +133,30 @@ test('sanitizePathSegment escapes the device names Windows reserves', () => {
   assert.equal(sanitizePathSegment('Nuland'), 'nuland');
 });
 
-test('sanitizeFileNameStem escapes reserved names and Windows-illegal characters', () => {
-  // Windows matches the name before the FIRST dot, extension irrelevant.
-  assert.equal(sanitizeFileNameStem('nul.v2'), '_nul.v2');
-  assert.equal(sanitizeFileNameStem('PRN'), '_PRN');
+test('a file name is letters, digits and underscores, and nothing else', () => {
+  /*
+   * It used to remove only what Windows forbids, so a posting's own punctuation
+   * came through into the name on disk:
+   * "Leo_Wu_Software_Engineer,_Java_J2EE_AML_Applications.pdf". The operator
+   * asked for underscores only, so everything else - commas, dots, slashes,
+   * brackets, ampersands - becomes one.
+   */
+  assert.equal(sanitizeFileNameStem('Software Engineer, Java/J2EE AML Applications'),
+    'Software_Engineer_Java_J2EE_AML_Applications');
+  assert.equal(sanitizeFileNameStem('Sr DevOps Engineer - Remote (US) - Req #12345'),
+    'Sr_DevOps_Engineer_Remote_US_Req_12345');
   assert.equal(sanitizeFileNameStem('Acme: Inc <2026>'), 'Acme_Inc_2026');
   assert.equal(sanitizeFileNameStem('a/b\\c'), 'a_b_c');
-  // A trailing dot or space is silently stripped by Windows; strip it here so
-  // the name on disk is the name that was asked for.
   assert.equal(sanitizeFileNameStem('report. '), 'report');
+  assert.equal(sanitizeFileNameStem('nul.v2'), 'nul_v2');
+
+  // A name written in another alphabet is a name, not punctuation.
+  assert.equal(sanitizeFileNameStem('José Álvarez'), 'José_Álvarez');
+  assert.equal(sanitizeFileNameStem('张伟 Wang'), '张伟_Wang');
+
+  // The reserved names Windows still refuses, whatever the extension.
+  assert.equal(sanitizeFileNameStem('PRN'), '_PRN');
+  assert.equal(sanitizeFileNameStem('nul'), '_nul');
 });
 
 test('renderOutputPathTemplate produces a path that is legal on both platforms', () => {

@@ -5,7 +5,6 @@ const path = require('node:path');
 
 const { launchBrowser } = require('../dist/config/browser');
 const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
-const { withTargetTitle, titleDisciplines } = require('../dist/services/resumeService');
 const {
   measurePlacement, renderedProse, containsTerm, placementFloor,
 } = require('../dist/services/utils/placementCoverage');
@@ -83,239 +82,65 @@ test('the contact fields are separated by a real character, not a flex gap', asy
   }
 });
 
-// -------------------------------------------------------------------- title
+// ----------------------------------------------------------------- headline
 
-test('a title is reduced to the discipline it names', () => {
+test('the headline is the candidate\'s own title, and the posting is named elsewhere', () => {
   /*
-   * The version this replaced put the posting's WHOLE title in parentheses, and
-   * only when every meaningful word of it already appeared in the candidate's
-   * history. Across ten real resumes it fired zero times: a posting says
-   * "Mulesoft Integration Engineer" and a profile says "built integrations",
-   * which shares one word of three. A rule that never fires is a dead rule, not
-   * a careful one.
-   */
-  const cases = [
-    ['Mulesoft Integration Engineer', ['Integration']],
-    ['Senior Machine Learning Engineer', ['AI/ML']],
-    ['Full Stack Software Engineer (Node.js)', ['Full-Stack']],
-    ['Backend Engineer - AI Platform and Cloud Native Services', ['Backend', 'AI/ML', 'Cloud']],
-    ['AWS DevOps', ['DevOps']],
-    ['Senior Engineer I, DevOps', ['DevOps']],
-    ['Staff Data Engineer', ['Data Engineer']],
-  ];
-
-  for (const [title, expected] of cases) {
-    assert.deepEqual(titleDisciplines(title), expected, `"${title}" was read wrong`);
-  }
-});
-
-test('a cloud vendor does not make a job a cloud job', () => {
-  // "AWS DevOps" is a DevOps job that happens to run on AWS. Tagging it
-  // (Cloud, DevOps) would say something the posting did not.
-  assert.deepEqual(titleDisciplines('AWS DevOps'), ['DevOps']);
-  assert.deepEqual(titleDisciplines('Azure Data Engineer'), ['Data Engineer']);
-  // The word itself does mean it.
-  assert.ok(titleDisciplines('Cloud Native Services Engineer').includes('Cloud'));
-});
-
-test('the disciplines come out in the order the title names them', () => {
-  // A backend job with AI and cloud in it is a backend job first. Alphabetical
-  // order would call it an AI job.
-  assert.deepEqual(
-    titleDisciplines('Backend Engineer - AI Platform and Cloud Native Services'),
-    ['Backend', 'AI/ML', 'Cloud']
-  );
-});
-
-// A fixed list, so these do not depend on what an operator has added in Admin.
-const SKILLS = [
-  'Java', 'Python', 'Go', '.NET', 'C#', 'C', 'R', 'SQL', 'SQL Server', 'Ruby', 'Ruby on Rails',
-  'DevSecOps', 'MLOps', 'Node.js', 'PL/SQL', 'Aurora', 'Rocket', 'Echo', 'Spring', 'Engineering',
-];
-
-test('a title with no known field is tagged from the skill list or not at all', () => {
-  /*
-   * Every one of these reached a printed headline when the fallback took the
-   * first word left over: a company, a team, a rank, a level and an
-   * arrangement. None names a field or a skill, so none gets a tag. ("Senior
-   * Statistician", the job-noun case, now maps to Data Science.)
-   */
-  const untagged = [
-    'EverHealth - Senior Software Engineer (Remote - US)',
-    'Staff Software Engineer, Experience',
-    'Executive Director, Engineering (AA)',
-    'Software Engineer L4 (Remote)',
-    'Software Engineer (Part-time)',
-    'Part Time Software Engineer',
-    'Remote Software Engineer ($90-140/hour)',
-    'Senior Fraud Strategist',
-    'Senior Software Engineer',
-    '',
-  ];
-  for (const title of untagged) {
-    assert.deepEqual(titleDisciplines(title, SKILLS), [], `"${title}" should carry no tag`);
-  }
-
-  // A skill it does name comes out as the list spells it.
-  assert.deepEqual(titleDisciplines('Senior Software Engineer (.NET)', SKILLS), ['.NET']);
-  assert.deepEqual(titleDisciplines('SQL Programmer', SKILLS), ['SQL']);
-  assert.deepEqual(titleDisciplines('DevSecOps Engineer', SKILLS), ['DevSecOps']);
-  assert.deepEqual(titleDisciplines('Senior Software Engineer - Platform (MLOps)', SKILLS), ['MLOps']);
-  assert.deepEqual(titleDisciplines('Senior Software Engineer (Node.js, Python)', SKILLS), ['Node.js']);
-});
-
-test('the skill check prefers the longest name and splits paired skills', () => {
-  assert.deepEqual(titleDisciplines('Ruby on Rails Developer', SKILLS), ['Ruby on Rails']);
-  assert.deepEqual(titleDisciplines('Software Engineer (SQL Server)', SKILLS), ['SQL Server']);
-  assert.deepEqual(titleDisciplines('Java/Python Developer', SKILLS), ['Java']);
-  // One skill with a slash in its name stays whole.
-  assert.deepEqual(titleDisciplines('PL/SQL Developer', SKILLS), ['PL/SQL']);
-});
-
-test('skills that are also ordinary words do not tag a title', () => {
-  // "Aurora" here is a town and "Rocket" a company.
-  assert.deepEqual(titleDisciplines('L2 Field Engineer (Aurora)', SKILLS), []);
-  assert.deepEqual(titleDisciplines('Rocket Mobius Developer', SKILLS), []);
-  assert.deepEqual(titleDisciplines('Echo Team Engineer', SKILLS), []);
-  // A noise word that happens to be on the list is still noise.
-  assert.deepEqual(titleDisciplines('Engineering Lead', SKILLS), []);
-  // One letter is a language only with its marks.
-  assert.deepEqual(titleDisciplines('R&D Engineer', SKILLS), []);
-  assert.deepEqual(titleDisciplines('Software Engineer (C#)', SKILLS), ['C#']);
-  // "Go" the language, not "go" the verb.
-  assert.deepEqual(titleDisciplines('Senior Software Engineer (Go)', SKILLS), ['Go']);
-  assert.deepEqual(titleDisciplines('Go-To-Market Engineer', SKILLS), []);
-  assert.deepEqual(titleDisciplines('Engineer who will go far', SKILLS), []);
-});
-
-test('named products get a tag even where the skill list lacks or respells them', () => {
-  assert.deepEqual(titleDisciplines('Lead Software Engineer (Golang, TypeScript, React)', []), ['Go']);
-  assert.deepEqual(titleDisciplines('Senior ServiceNow Developer', []), ['ServiceNow']);
-  assert.deepEqual(titleDisciplines('SAP Data Conversion Engineer', []), ['SAP']);
-  assert.deepEqual(titleDisciplines('Oracle EBS Developer', []), ['Oracle']);
-  assert.deepEqual(titleDisciplines('Drupal Developer', []), ['Drupal']);
-});
-
-test('common titles that used to go untagged name their field', () => {
-  // Each taken from the untagged list of real titles.
-  const cases = [
-    ['Senior Software Test Engineer', ['QA']],
-    ['Test Engineering Lead', ['QA']],
-    ['Senior Software Quality Engineer', ['QA']],
-    ['Mobile Test Engineer', ['Mobile', 'QA']],
-    ['Senior Data Warehouse Engineer', ['Data Engineer']],
-    ['Staff Software Engineer, Data Lakehouse', ['Data Engineer']],
-    ['Agentic Engineer', ['AI/ML']],
-    ['RL Environment Software Engineer', ['AI/ML']],
-    ['Senior Data Analyst, Business Operations', ['Data Science']],
-    ['Senior Statistician', ['Data Science']],
-    ['Senior Build Engineer', ['DevOps']],
-    ['Build & Release Engineer', ['DevOps']],
-    ['Senior Fortinet Engineer', ['Security']],
-    ['API Engineering Lead', ['Backend']],
-  ];
-  for (const [title, expected] of cases) {
-    assert.deepEqual(titleDisciplines(title, []), expected, `"${title}" was read wrong`);
-  }
-  // "rl" in lower case is not reinforcement learning.
-  assert.deepEqual(titleDisciplines('Engineer, url routing', []), []);
-});
-
-test('IT is tagged only when the title says IT', () => {
-  assert.deepEqual(titleDisciplines('IT Engineer, First IT Hire', []), ['IT']);
-  assert.deepEqual(titleDisciplines('Service Desk Analyst', []), ['IT']);
-  // Support engineering is a different job, and "it" is an English word.
-  assert.deepEqual(titleDisciplines('Technical Support Engineer (Tier 1)', []), []);
-  assert.deepEqual(titleDisciplines('Product Support Engineer', []), []);
-  assert.deepEqual(titleDisciplines('Build & Release Support Engineer (CI/CD)', []), ['DevOps']);
-  assert.deepEqual(titleDisciplines('Engineer - Make it Happen', []), []);
-});
-
-test('the headline carries the discipline, and skips one it already states', () => {
-  const p = profile();
-  assert.equal(
-    withTargetTitle('Senior Software Engineer', analysisWithTitle('Mulesoft Integration Engineer'), p),
-    'Senior Software Engineer (Integration)'
-  );
-  assert.equal(
-    withTargetTitle('Senior Software Engineer', analysisWithTitle('Backend Engineer - AI Platform and Cloud Native'), p),
-    'Senior Software Engineer (Backend, AI/ML, Cloud)'
-  );
-
-  // Already said, so not said twice.
-  assert.equal(
-    withTargetTitle('Senior Data Engineer', analysisWithTitle('Staff Data Engineer'), p),
-    'Senior Data Engineer'
-  );
-  // Nothing to add.
-  assert.equal(
-    withTargetTitle('Senior Software Engineer', analysisWithTitle('Senior Software Engineer'), p),
-    'Senior Software Engineer'
-  );
-});
-
-test('the profile headline is printed unchanged, not rebuilt', () => {
-  /*
-   * The failure this pins, seen on a finished resume: a profile whose title is
-   * "Software Engineer" was printed as "Senior Software Engineer". The headline
-   * used to be rebuilt into a fixed `Senior <domain> Engineer` shape from
-   * whichever title could be found, which handed the candidate a promotion and,
-   * when the posting won, renamed them for the job - "Senior Mulesoft
-   * Integration Engineer".
+   * THE FIFTH SHAPE OF THIS LINE, and worth reading as a whole because each
+   * change was an answer to the last. It was rebuilt into a "Senior <domain>
+   * Engineer" shape, which renamed the candidate. Then their own title with the
+   * posting's discipline in parentheses, which the operator rejected. Then their
+   * own title alone, which scored nothing on a check a scanner runs directly:
+   * across 495 delivered resumes the posting's title appeared verbatim in 2% of
+   * them. Then the posting's title, which won that check and read as somebody
+   * else's job.
    *
-   * Reaching for `parseTailoredResumeContent` rather than the helper, because
-   * the helper was right last time and the pipeline threw its answer away.
+   * It is the candidate's own title, and the posting's role is named ONCE in the
+   * summary in the model's own words - "AI data engineering" for a posting
+   * called "Data & AI Engineer - AWS, Java & Python". The claim is smaller, the
+   * sentence is true, and the words are still on the page.
+   *
+   * Reaching for `parseTailoredResumeContent` rather than a helper, because the
+   * helper was right every previous time and the pipeline threw its answer away.
    */
-  const { parseTailoredResumeContent } = require('../dist/services/resumeService');
+  const { parseTailoredResumeContent, buildTailorResumePromptValues } = require('../dist/services/resumeService');
   const p = profile({ title: 'Software Engineer' });
+  const printed = (analysis) => parseTailoredResumeContent(
+    JSON.stringify({ title: 'Engineer', summary: 'S.', experience: p.experience, strengths: [], coverLetter: 'x' }),
+    p,
+    analysis
+  ).title;
 
+  // Whatever the posting is called, the headline is the profile's own line.
+  for (const posting of [
+    'Mulesoft Integration Engineer',
+    'Staff Data Engineer US Remote',
+    'Sr DevOps Engineer - Remote (US) - Req #12345',
+    'Data & AI Engineer - AWS, Java & Python',
+    '',
+  ]) {
+    assert.equal(printed(analysisWithTitle(posting)), 'Software Engineer', `posting: ${posting}`);
+  }
+  assert.equal(printed(undefined), 'Software Engineer');
+
+  // The model's own answer is never the headline either, and the work history
+  // is still the candidate's.
   const out = parseTailoredResumeContent(
     JSON.stringify({ title: 'Engineer', summary: 'S.', experience: p.experience, strengths: [], coverLetter: 'x' }),
     p,
-    analysisWithTitle('Mulesoft Integration Engineer')
+    analysisWithTitle('Staff Data Engineer')
   );
+  assert.equal(out.title, 'Software Engineer');
+  assert.equal(out.experience[0].title, p.experience[0].title);
+  assert.equal(out.experience[0].company, p.experience[0].company);
 
-  assert.equal(out.title, 'Software Engineer (Integration)');
-  assert.equal(
-    out.title.startsWith('Software Engineer'),
-    true,
-    'the candidate\'s own headline must survive verbatim'
-  );
-
-  // No posting at all leaves it exactly as written.
-  const plain = parseTailoredResumeContent(
-    JSON.stringify({ title: 'Engineer', summary: 'S.', experience: p.experience, strengths: [], coverLetter: 'x' }),
-    p,
-    undefined
-  );
-  assert.equal(plain.title, 'Software Engineer');
-});
-
-test('an abbreviated grade is not mistaken for a discipline', () => {
-  // "(Sr.)" reached a printed resume: the token was "Sr." and the noise list
-  // held "sr", so the two never met.
-  assert.deepEqual(titleDisciplines('Sr. Software Engineer'), []);
-  assert.deepEqual(titleDisciplines('Jr. Developer'), []);
-  // The grade going away must not take the discipline with it.
-  assert.deepEqual(titleDisciplines('Sr. DevOps Engineer'), ['DevOps']);
-});
-
-test('the headline stays a headline', () => {
-  const p = profile();
-  const long = withTargetTitle(
-    'Senior Distributed Systems and Platform Reliability Engineer',
-    analysisWithTitle('Backend Engineer - AI Platform and Cloud Native Services'),
-    p
-  );
-  assert.ok(long.length <= 72, `the headline ran to ${long.length} characters: ${long}`);
-});
-
-test('a headline that already says it is left alone', () => {
-  assert.equal(
-    withTargetTitle('Senior Software Engineer', analysisWithTitle('Senior Software Engineer'), profile()),
-    'Senior Software Engineer'
-  );
-  assert.equal(withTargetTitle('Senior Software Engineer', analysisWithTitle(''), profile()), 'Senior Software Engineer');
+  // And the role the summary is told to name: the head of the posting's title,
+  // in words a sentence can carry.
+  const values = (posting) => buildTailorResumePromptValues(p, analysisWithTitle(posting)).targetRoleTitle;
+  assert.equal(values('Data & AI Engineer - AWS, Java & Python'), 'Data & AI Engineer');
+  assert.equal(values('Software Engineer, Java/J2EE AML Applications'), 'Software Engineer');
+  assert.equal(values('Staff Data Engineer US Remote'), 'Staff Data Engineer');
+  assert.equal(values(''), '');
 });
 
 // ---------------------------------------------------------------- placement
@@ -359,8 +184,11 @@ test('an empty checklist is full coverage, not a division by zero', () => {
 });
 
 test('the floor matches the prompt, and a bad value falls back', () => {
-  assert.equal(placementFloor({}), 0.9);
+  // The prompt says every checklist term, so this says 1. It said 0.9, and 90%
+  // of forty terms is four missing from every resume - chosen by the model, and
+  // the ones it dropped were the awkward, specific, valuable ones.
+  assert.equal(placementFloor({}), 1);
   assert.equal(placementFloor({ RESUME_KEYWORD_FLOOR: '0.75' }), 0.75);
-  assert.equal(placementFloor({ RESUME_KEYWORD_FLOOR: '2' }), 0.9);
-  assert.equal(placementFloor({ RESUME_KEYWORD_FLOOR: 'most' }), 0.9);
+  assert.equal(placementFloor({ RESUME_KEYWORD_FLOOR: '2' }), 1);
+  assert.equal(placementFloor({ RESUME_KEYWORD_FLOOR: 'most' }), 1);
 });

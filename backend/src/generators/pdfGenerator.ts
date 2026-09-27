@@ -1625,8 +1625,22 @@ function groupRemainingSkillLoops(html: string): string {
  * WHY THESE SIX. Each separates the rows on a different axis - case, a rule,
  * a bar, tone, indent, or putting them on one line - and each is safe on any
  * template and in either colour scheme: nothing here names a colour, because
- * these templates run from white to dark navy. `currentColor` with an opacity
- * is the strongest thing any of them says.
+ * these templates run from white to dark navy. A mix of `currentColor` with
+ * transparent is the strongest thing any of them says - and it is a COLOUR,
+ * never `opacity`.
+ *
+ * WHY NEVER `opacity`. An element with opacity gets its own stacking context,
+ * and Chrome paints it after the normal-flow content around it - which
+ * reorders the PDF's TEXT STREAM without moving anything on the page.
+ * Measured on a finished resume: every group heading printed, then the
+ * education section, then all the skill lines, so a parser filing text under
+ * the heading above it read the skills as education. Three of the six looks
+ * did this. `color-mix` reads the same and paints in place.
+ *
+ * EVERY look separates the heading from its skills BY COLOUR as well as by
+ * whatever else it does: the heading at full strength, the skills a step
+ * softer. That is the difference a reader sees first, before they read a
+ * word, and it is what the operator asked for.
  *
  * The inline look is the one that needs room, so it asks for it: the block
  * becomes a container, and the one-line form applies only above 320px. In a
@@ -1643,19 +1657,21 @@ const SKILL_GROUP_LOOKS: Record<string, string> = {
   rule:
     '.skill-category-title{font-weight:700;font-size:0.9em;text-transform:uppercase;'
     + 'letter-spacing:0.04em;line-height:1.3;margin:0 0 2px 0;padding-bottom:1px;'
-    + 'border-bottom:0.5pt solid currentColor;opacity:0.95}'
+    + 'border-bottom:0.5pt solid color-mix(in srgb, currentColor 55%, transparent)}'
     + '.skill-category-skills{font-weight:400;line-height:1.35;margin:2px 0 0 0}',
 
   // A bar down the left of the group, with everything indented past it.
   bar:
     '.skill-category{padding-left:7px;border-left:2px solid currentColor}'
     + '.skill-category-title{font-weight:700;font-size:0.92em;letter-spacing:0.02em;margin:0 0 1px 0}'
-    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0;opacity:0.9}',
+    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0;'
+    + 'color:color-mix(in srgb, currentColor 80%, transparent)}',
 
   // Tone rather than weight: the heading at full strength, the skills stepped back.
   muted:
     '.skill-category-title{font-weight:700;font-size:0.95em;margin:0 0 1px 0}'
-    + '.skill-category-skills{font-weight:400;font-size:0.92em;line-height:1.35;margin:0;opacity:0.78}',
+    + '.skill-category-skills{font-weight:400;font-size:0.92em;line-height:1.35;margin:0;'
+    + 'color:color-mix(in srgb, currentColor 72%, transparent)}',
 
   // The skills hang under the heading, indented.
   hanging:
@@ -1663,18 +1679,40 @@ const SKILL_GROUP_LOOKS: Record<string, string> = {
     + 'letter-spacing:0.05em;margin:0}'
     + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0;padding-left:10px}',
 
-  // One line per group where there is room for one.
+  /*
+   * The heading on the same line as its skills, with a dot between them.
+   *
+   * TWO THINGS WENT WRONG HERE, and both are why this is now three plain rules.
+   *
+   * The first: it asked for `container-type: inline-size` on the group, which
+   * makes an element's inline size independent of its contents - so a group
+   * that was also a FLEX ITEM contributed no intrinsic width and was sized to
+   * ZERO. Nine templates put the skills block in a flex row, and on those the
+   * groups printed on top of each other, one word per line.
+   *
+   * The second was invisible under the first: the one-line form never applied
+   * at all. `@container` styles the container's DESCENDANTS, and the rule that
+   * turned the group into a row targeted the group itself - which is the
+   * container, not a descendant of it. So the query's other rules landed and
+   * that one never did, leaving a look that was simply the stacked form with
+   * its indent removed.
+   *
+   * `display:inline` needs neither: the heading and the skills flow as text,
+   * they sit on one line when there is room, and they wrap like any other
+   * sentence when there is not.
+   */
   inline:
-    '.skill-category{container-type:inline-size}'
-    + '.skill-category-title{font-weight:700;font-size:0.88em;text-transform:uppercase;'
-    + 'letter-spacing:0.05em;margin:0 0 1px 0}'
-    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0}'
-    + '@container (min-width:320px){'
-    + '.skill-category{display:flex;gap:6px;align-items:baseline}'
-    + '.skill-category-title{flex:0 0 auto;margin:0}'
-    + '.skill-category-title::after{content:"\\00b7";margin-left:6px;opacity:0.6}'
-    + '.skill-category-skills{flex:1 1 auto}'
-    + '}',
+    '.skill-category-title{font-weight:700;font-size:0.88em;text-transform:uppercase;'
+    + 'letter-spacing:0.05em;display:inline;margin:0}'
+    // The spaces are CHARACTERS, not margins: a margin is invisible to the PDF's
+    // text stream, so a dot spaced with one reads as "LANGUAGES·Go" and the
+    // group's first skill is lost to whatever parses it.
+    + '.skill-category-title::after{content:"\\00a0\\00b7\\00a0";'
+    + 'color:color-mix(in srgb, currentColor 60%, transparent)}'
+    // No indent on this one: the heading is beside the skills rather than above
+    // them, and the shared indent would read as a gap after the dot.
+    + '.skill-category-skills{font-weight:400;line-height:1.35;display:inline;'
+    + 'margin:0;padding-left:0}',
 };
 
 export const SKILL_GROUP_LOOK_NAMES = Object.keys(SKILL_GROUP_LOOKS);
@@ -1698,6 +1736,21 @@ function skillGroupCss(look: string): string {
   return (
     '<style id="resume-skill-groups" data-look="' + look + '">'
     + '.skill-category{margin:0 0 6px 0;break-inside:avoid}'
+    /*
+     * The colour difference every look shares, written BEFORE the look's own
+     * rules so a look that wants a different tone (muted, bar) overrides it.
+     * The heading keeps the template's text colour; the skills sit a step
+     * softer, which is what separates them at a glance on a white page and on
+     * a dark sidebar alike. A colour, never `opacity` - see above.
+     */
+    + '.skill-category-title{color:currentColor}'
+    /*
+     * And the indent every look shares: the skills sit a step in from their
+     * heading, so a block of six groups reads as six groups rather than as
+     * twelve lines. Written here rather than in each look, and before them, so
+     * a look that wants its own indent - `hanging` - still decides.
+     */
+    + '.skill-category-skills{color:color-mix(in srgb, currentColor 82%, transparent);padding-left:10px}'
     + rules
     // The other shape the grouped markup takes, where the heading is a <strong>
     // and the skills are the text after a <br> in the same list item. Nothing
@@ -1708,6 +1761,507 @@ function skillGroupCss(look: string): string {
   );
 }
 
+/**
+ * The order the sections are read in: summary, education, skills, experience.
+ *
+ * WHY IT IS DONE HERE. The operator asked for that order on every resume, and
+ * there are 38 templates - each one a hand-written HTML document with its
+ * sections in whatever order its author chose, several of them in two columns.
+ * Editing 38 files leaves the 39th wrong, so the order is imposed at render
+ * time, on the template's own markup, by the pass every resume already goes
+ * through. The preview and the PDF both come through here, so they agree.
+ *
+ * WHAT A SECTION IS. A block whose class list contains "section",
+ * "side-section" or "main-section" - the three wrappers these templates use -
+ * and which is not nested inside another one. Its kind is read from its own
+ * class ("section-education") where the author named it, and otherwise from the
+ * heading text inside it, because half the templates only say
+ * <div class="section"><div class="section-title">Education</div>.
+ *
+ * WHAT MOVES, AND WHAT DOES NOT. Sections are reordered among their OWN
+ * siblings; nothing is moved between containers, so a sidebar keeps its own
+ * contents and its own styling. A contact block stays at the top of whatever
+ * holds it, and a section this does not recognise - certifications, projects,
+ * awards - keeps its place relative to the others, after experience. A section
+ * wrapped in a handlebars conditional travels with its wrapper or stays put.
+ *
+ * TWO COLUMNS. Ordering siblings is not enough when experience is in one column
+ * and the summary in the other: the PDF's text stream reads the first column
+ * first, so a template with experience on the left reads experience first
+ * whatever its sidebar says. Where the two columns are flex or grid items they
+ * are swapped in the markup and given an explicit order, which leaves the page
+ * looking exactly as its author drew it while the stream reads in the asked-for
+ * order. Where the layout is not flex or grid - a float, an absolute position -
+ * nothing is swapped, because order would not hold the design together.
+ */
+type ResumeSectionKind = 'contact' | 'summary' | 'education' | 'skills' | 'experience' | 'other';
+
+const RESUME_SECTION_ORDER: Record<ResumeSectionKind, number> = {
+  contact: 0,
+  summary: 1,
+  education: 2,
+  skills: 3,
+  experience: 4,
+  other: 5,
+};
+
+/** The class tokens these templates wrap a section in. */
+const SECTION_WRAPPER_TOKENS = new Set(['section', 'side-section', 'main-section']);
+
+type TemplateSectionBlock = {
+  start: number;
+  end: number;
+  kind: ResumeSectionKind;
+  html: string;
+};
+
+/**
+ * Where an element ends, counting its own kind of tag.
+ *
+ * Returns the index just past the closing tag, or -1 when the markup does not
+ * close - in which case the caller leaves that block alone rather than guessing.
+ */
+function elementExtent(html: string, tagStart: number, tagName: string): number {
+  const openerEnd = html.indexOf('>', tagStart);
+  if (openerEnd === -1) return -1;
+  if (html.slice(tagStart, openerEnd + 1).endsWith('/>')) return openerEnd + 1;
+
+  const tagPattern = new RegExp('</?' + tagName + '\\b[^>]*>', 'gi');
+  tagPattern.lastIndex = tagStart;
+  let depth = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tagPattern.exec(html)) !== null) {
+    if (match[0].startsWith('</')) {
+      depth -= 1;
+      if (depth === 0) return tagPattern.lastIndex;
+    } else if (!match[0].endsWith('/>')) {
+      depth += 1;
+    }
+  }
+  return -1;
+}
+
+/** The kind of section this markup is: by its class first, its heading second. */
+function classifyResumeSection(classAttribute: string, inner: string): ResumeSectionKind {
+  const byClass = classAttribute.toLowerCase();
+  if (/\bsection-experience\b/.test(byClass)) return 'experience';
+  if (/\bsection-education\b/.test(byClass)) return 'education';
+  if (/\bsection-(?:soft-)?skills\b/.test(byClass)) return 'skills';
+  if (/\bsection-summary\b/.test(byClass)) return 'summary';
+  if (/\bsection-contact\b/.test(byClass)) return 'contact';
+  if (/\bsection-strengths\b/.test(byClass)) return 'other';
+
+  // The heading, which is all most templates give us: the first title-ish
+  // element, or failing that the first run of text in the block.
+  const heading = /<[a-z0-9]+\b[^>]*class="[^"]*(?:title|heading)[^"]*"[^>]*>\s*([^<]{2,80})/i.exec(inner)
+    || />\s*([A-Za-z][A-Za-z &/']{2,60}?)\s*</.exec(inner);
+  const text = (heading ? heading[1] : '').toLowerCase();
+  if (/experience|employment|work history|career/.test(text)) return 'experience';
+  if (/education|academic|degree/.test(text)) return 'education';
+  if (/skill|expertise|competenc|technolog|tech stack/.test(text)) return 'skills';
+  if (/summary|profile|about|objective|overview/.test(text)) return 'summary';
+  if (/contact|details/.test(text)) return 'contact';
+  return 'other';
+}
+
+/**
+ * The elements directly inside this markup, each with its opening tag.
+ *
+ * Empty when the markup holds anything else - text, a handlebars block - so a
+ * caller asking "is this only a wrapper" gets a straight no.
+ */
+function findDirectChildren(inner: string): Array<{ opener: string; html: string }> {
+  const children: Array<{ opener: string; html: string }> = [];
+  const openers = /<([a-z0-9]+)\b[^>]*>/gi;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  // A handlebars block around a child is not content: the soft-skills guard
+  // puts one there, and it must not stop this counting as a wrapper.
+  const HANDLEBARS_BLOCK = /\{\{[#/][^}]*\}\}/g;
+  const isEmptyGap = (gap: string) => !gap.replace(HANDLEBARS_BLOCK, '').trim();
+
+  while ((match = openers.exec(inner)) !== null) {
+    if (match.index < cursor) continue;
+    if (!isEmptyGap(inner.slice(cursor, match.index))) return [];
+    const end = elementExtent(inner, match.index, match[1]);
+    if (end === -1) return [];
+    children.push({ opener: match[0], html: inner.slice(match.index, end) });
+    cursor = end;
+    openers.lastIndex = end;
+  }
+
+  return isEmptyGap(inner.slice(cursor)) ? children : [];
+}
+
+/**
+ * A wrapper that holds nothing but sections counts as one of them.
+ *
+ * `.skills-row` is a two-column grid holding the technical and the soft skills
+ * blocks. Its sections are siblings of each other and of nothing else, so
+ * ordering siblings could never move them past the summary or education, which
+ * live outside it. The wrapper is ranked by the strongest thing inside it,
+ * which puts it in the same run as everything else.
+ */
+function sectionOnlyWrapper(inner: string): ResumeSectionKind | null {
+  const children = findDirectChildren(inner);
+  if (children.length === 0) return null;
+
+  // ONE KIND ONLY. A column is a wrapper of sections too - that is what a column
+  // is - and ranking one would reorder the COLUMNS here, without the `order`
+  // rule below that keeps the page looking the same, so the sidebar would change
+  // sides. True of a skills row, false of a column.
+  let only: ResumeSectionKind | null = null;
+  for (const child of children) {
+    const classMatch = /class="([^"]*)"/i.exec(child.opener);
+    const classAttribute = classMatch ? classMatch[1] : '';
+    const tokens = classAttribute.split(/\s+/).filter(Boolean);
+    if (!tokens.some((token) => SECTION_WRAPPER_TOKENS.has(token.toLowerCase()))) return null;
+    const kind = classifyResumeSection(classAttribute, child.html);
+    if (only && kind !== only) return null;
+    only = kind;
+  }
+  return only;
+}
+
+/**
+ * The start of the innermost element still open at this point in the markup.
+ *
+ * Counted rather than guessed. Reading back one tag lands on whichever element
+ * happens to end just there, and reading back two lands on the grandparent -
+ * which is what the column swap did, so it never fired on any template.
+ */
+function ancestorChain(html: string, index: number): number[] {
+  const VOID_TAGS = new Set(['br', 'hr', 'img', 'input', 'meta', 'link', 'source', 'col', 'area', 'base']);
+  const tags = /<(\/?)([a-z0-9]+)\b[^>]*?(\/?)>/gi;
+  const stack: Array<{ name: string; start: number }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = tags.exec(html)) !== null) {
+    if (match.index >= index) break;
+    const name = match[2].toLowerCase();
+    if (VOID_TAGS.has(name) || match[3]) continue;
+    if (match[1]) {
+      for (let depth = stack.length - 1; depth >= 0; depth -= 1) {
+        if (stack[depth].name === name) { stack.length = depth; break; }
+      }
+    } else {
+      stack.push({ name, start: match.index });
+    }
+  }
+
+  return stack.map((entry) => entry.start);
+}
+
+function openParentAt(html: string, index: number): number {
+  const chain = ancestorChain(html, index);
+  return chain.length ? chain[chain.length - 1] : -1;
+}
+/** Every section in the document, in order, never one inside another. */
+function findResumeSections(html: string): TemplateSectionBlock[] {
+  const blocks: TemplateSectionBlock[] = [];
+  const openers = /<(div|section)\b[^>]*class="([^"]*)"[^>]*>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = openers.exec(html)) !== null) {
+    const tokens = match[2].split(/\s+/).filter(Boolean);
+    if (!tokens.some((token) => SECTION_WRAPPER_TOKENS.has(token.toLowerCase()))) {
+      const wrapperEnd = elementExtent(html, match.index, match[1]);
+      if (wrapperEnd === -1) continue;
+      const innerStart = match.index + match[0].length;
+      const innerEnd = html.lastIndexOf('</', wrapperEnd);
+      if (innerEnd <= innerStart) continue;
+      const wrapperKind = sectionOnlyWrapper(html.slice(innerStart, innerEnd));
+      if (!wrapperKind) continue;
+      blocks.push({
+        start: match.index,
+        end: wrapperEnd,
+        kind: wrapperKind,
+        html: html.slice(match.index, wrapperEnd),
+      });
+      openers.lastIndex = wrapperEnd;
+      continue;
+    }
+
+    const end = elementExtent(html, match.index, match[1]);
+    if (end === -1) continue;
+
+    let start = match.index;
+    let blockEnd = end;
+    // A section inside a conditional moves with the conditional, or not at all.
+    const before = /\{\{#if\s+[^}]+\}\}\s*$/.exec(html.slice(0, start));
+    const after = /^\s*\{\{\/if\}\}/.exec(html.slice(end));
+    if (before && after) {
+      start -= before[0].length;
+      blockEnd += after[0].length;
+    } else if (before || after) {
+      openers.lastIndex = end;
+      continue;
+    }
+
+    blocks.push({
+      start,
+      end: blockEnd,
+      kind: classifyResumeSection(match[2], html.slice(match.index, end)),
+      html: html.slice(start, blockEnd),
+    });
+    openers.lastIndex = end;
+  }
+
+  return blocks;
+}
+
+/** Sections that sit next to each other with nothing but whitespace between. */
+function runsOfSiblingSections(html: string, blocks: TemplateSectionBlock[]): TemplateSectionBlock[][] {
+  const runs: TemplateSectionBlock[][] = [];
+  for (const block of blocks) {
+    const current = runs[runs.length - 1];
+    const previous = current ? current[current.length - 1] : undefined;
+    if (current && previous && !html.slice(previous.end, block.start).trim()) current.push(block);
+    else runs.push([block]);
+  }
+  return runs;
+}
+
+/** Every declaration this template writes for any class on this element. */
+function declarationsFor(template: string, openingTag: string): string {
+  const inline = /style="([^"]*)"/i.exec(openingTag);
+  let text = inline ? inline[1] : '';
+  const classMatch = /class="([^"]*)"/i.exec(openingTag);
+  const tokens = (classMatch ? classMatch[1] : '').split(/\s+/).filter(Boolean);
+
+  for (const token of tokens) {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, (character) => '\\' + character);
+    const rule = new RegExp('\\.' + escaped + '\\b[^{}]*\\{([^}]*)\\}', 'gi');
+    let match: RegExpExecArray | null;
+    while ((match = rule.exec(template)) !== null) text += ';' + match[1];
+  }
+  return text;
+}
+
+/**
+ * Whether giving this element an `order` would actually move it.
+ *
+ * `order` only means something to a flex or grid ITEM, and an item is made one
+ * by its PARENT. Asking the column itself was the bug: `.main-container` carries
+ * `display:flex` and `.left-column` carries `flex:1`, so the question has to be
+ * put to both - the parent's display, or the child's own flex or grid property.
+ */
+function respectsOrder(template: string, openingTag: string, parentTag: string): boolean {
+  if (/display\s*:\s*(?:flex|inline-flex|grid|inline-grid)/i.test(declarationsFor(template, parentTag))) return true;
+  return /(?:^|;)\s*(?:flex|flex-grow|flex-basis|grid-area|grid-column|grid-row)\s*:/i
+    .test(declarationsFor(template, openingTag));
+}
+
+/** Adds, or extends, this element's inline style with one more declaration. */
+function withInlineDeclaration(openingTag: string, declaration: string): string {
+  if (/\bstyle="/i.test(openingTag)) {
+    return openingTag.replace(/\bstyle="([^"]*)"/i, (_match, existing: string) =>
+      'style="' + existing.replace(/;\s*$/, '') + ';' + declaration + '"');
+  }
+  return openingTag.replace(/^<([a-z0-9]+)/i, '<$1 style="' + declaration + '"');
+}
+
+/**
+ * The parent's track list, reversed, when it is a grid of two named columns.
+ *
+ * A flex item carries its own width - `flex:1` moves with the sidebar - but a
+ * grid's widths belong to the parent, so swapping the children without swapping
+ * the tracks drops a narrow sidebar into a wide cell. Returns an empty string
+ * when there is nothing to reverse, which includes every flex layout.
+ */
+function reversedGridTracks(template: string, parentTag: string): string {
+  const parent = declarationsFor(template, parentTag);
+  if (!/display\s*:\s*(?:grid|inline-grid)/i.test(parent)) return '';
+
+  const tracks = /grid-template-columns\s*:\s*([^;}]+)/i.exec(parent);
+  if (!tracks) return '';
+  const parts = tracks[1].trim().split(/\s+(?![^(]*\))/).filter(Boolean);
+  if (parts.length !== 2) return '';
+  return 'grid-template-columns:' + parts[1] + ' ' + parts[0];
+}
+
+/**
+ * Moves the summary to the column that holds education and skills.
+ *
+ * Only for the shape described above - a summary sharing its column with
+ * experience while education or skills live in another one - and only ever to
+ * the head of that other column. Everything else is left alone.
+ */
+/**
+ * A section that changes column dresses for the column it arrives in.
+ *
+ * WHAT WENT WRONG. The summary has to join education and skills on six
+ * templates, or the page cannot read in the asked-for order. On
+ * `two-column-executive` that column is a dark navy sidebar, and the summary's
+ * colours are written for the white column it came from:
+ *
+ *   .sidebar      { background:#1c2b3a; color:#cbd5e1 }
+ *   .summary-text { color:#374151 }
+ *   .main-heading { color:#1c2b3a }
+ *
+ * `.summary-text` sets its colour on the element, so it beat the colour it now
+ * inherits from `.sidebar`: measured at 1.4:1 against its background, where
+ * 4.5:1 is the bar for body text and it had been 10.31:1 in the main column.
+ * The heading was navy on navy, which is 1:1 - not faint, absent.
+ *
+ * TWO CHANGES, BECAUSE THE PROBLEM HAS TWO HALVES. The wrapper and the heading
+ * take the destination's own classes, so the block is styled by the same rules
+ * as everything around it - a moved summary gets `.side-section` and
+ * `.side-heading`, and the sidebar's gold heading colour comes with them. The
+ * body text cannot be fixed that way, because its colour is on itself, so the
+ * block is marked and a render-time rule makes everything inside it inherit -
+ * everything except the heading, which has just been dressed deliberately.
+ */
+const RELOCATED_MARKER = 'data-resume-relocated';
+
+/** The class attribute of the first element in this markup. */
+function firstElementClass(html: string): string | null {
+  const opener = /<(?:div|section)\b[^>]*class="([^"]*)"[^>]*>/i.exec(html);
+  return opener ? opener[1] : null;
+}
+
+/** The class of the heading inside this section, if it names itself one. */
+function headingClass(html: string): string | null {
+  const heading = /<[a-z0-9]+\b[^>]*class="([^"]*(?:title|heading)[^"]*)"[^>]*>/i.exec(html);
+  return heading ? heading[1] : null;
+}
+
+/**
+ * Rewrites a moved section to wear the destination's classes, and marks it.
+ */
+function dressForDestination(sectionHtml: string, destinationHtml: string): string {
+  const destinationSection = firstElementClass(destinationHtml);
+  const destinationHeading = headingClass(destinationHtml);
+  const ownHeading = headingClass(sectionHtml);
+  let output = sectionHtml;
+
+  // The wrapper: the destination's section class, plus the marker.
+  output = output.replace(/<(div|section)\b([^>]*)class="([^"]*)"([^>]*)>/i,
+    (match, tag: string, before: string, own: string, after: string) => {
+      const wrapper = destinationSection && destinationSection !== own ? destinationSection : own;
+      return `<${tag}${before}class="${wrapper}" ${RELOCATED_MARKER}="1"${after}>`;
+    });
+
+  // The heading: the destination's heading class, where both name one.
+  if (destinationHeading && ownHeading && destinationHeading !== ownHeading) {
+    output = output.replace(`class="${ownHeading}"`, `class="${destinationHeading}"`);
+  }
+
+  return output;
+}
+
+function moveSummaryBesideEducation(html: string): string {
+  const runs = runsOfSiblingSections(html, findResumeSections(html));
+  const summaryRun = runs.find((run) => run.some((block) => block.kind === 'summary'));
+  if (!summaryRun || !summaryRun.some((block) => block.kind === 'experience')) return html;
+
+  const target = runs.find((run) => run !== summaryRun
+    && run.some((block) => block.kind === 'education' || block.kind === 'skills'));
+  if (!target) return html;
+
+  const summary = summaryRun.find((block) => block.kind === 'summary');
+  if (!summary) return html;
+
+  // Cut it out, then put it in front of the target run - which may sit below a
+  // contact block, and belongs after that rather than at the top of the column.
+  const cut = html.slice(0, summary.start) + html.slice(summary.end);
+  const shift = summary.end - summary.start;
+  const insertAt = target[0].start > summary.start ? target[0].start - shift : target[0].start;
+  const dressed = dressForDestination(summary.html, target[0].html);
+  return cut.slice(0, insertAt) + dressed + '\n' + cut.slice(insertAt);
+}
+
+/** Orders each set of sibling sections by the order the resume is read in. */
+function orderSiblingSections(html: string): string {
+  let output = html;
+
+  // Backwards, so that rewriting a run cannot move the offsets of a run not yet
+  // done.
+  const runs = runsOfSiblingSections(output, findResumeSections(output));
+  for (const run of [...runs].reverse()) {
+    if (run.length < 2) continue;
+    const ordered = [...run].sort((a, b) => RESUME_SECTION_ORDER[a.kind] - RESUME_SECTION_ORDER[b.kind]);
+    if (ordered.every((block, index) => block === run[index])) continue;
+
+    const separator = output.slice(run[0].end, run[1].start) || '\n';
+    output = output.slice(0, run[0].start)
+      + ordered.map((block) => block.html).join(separator)
+      + output.slice(run[run.length - 1].end);
+  }
+
+  return output;
+}
+
+export function reorderResumeSections(html: string, env: NodeJS.ProcessEnv = process.env): string {
+  // An operator who wants a template's own order back, and the measurement that
+  // says what this pass changed, both need a way to switch it off.
+  if (env.RESUME_SECTION_ORDER_OFF) return html;
+
+  let output = orderSiblingSections(html);
+
+  const moved = moveSummaryBesideEducation(output);
+  if (moved !== output) output = orderSiblingSections(moved);
+
+  // Last, the columns, for a template that prints experience first.
+  const columnRuns = runsOfSiblingSections(output, findResumeSections(output));
+  for (let index = 0; index < columnRuns.length - 1; index += 1) {
+    const first = new Set(columnRuns[index].map((block) => block.kind));
+    const second = new Set(columnRuns[index + 1].map((block) => block.kind));
+    const experienceLeads = first.has('experience')
+      && !first.has('summary')
+      && (second.has('summary') || second.has('education') || second.has('skills'));
+    if (!experienceLeads) continue;
+
+    // The two columns: the elements directly below the deepest ancestor the two
+    // runs share. Not "the parent of the first section" - that is the column for
+    // one run and the whole row for the other, because a column holding one
+    // section is itself ranked as a section by the wrapper rule above.
+    const leftChain = ancestorChain(output, columnRuns[index][0].start);
+    const rightChain = ancestorChain(output, columnRuns[index + 1][0].start);
+    let shared = 0;
+    while (shared < leftChain.length && shared < rightChain.length
+      && leftChain[shared] === rightChain[shared]) shared += 1;
+    const leftStart = shared < leftChain.length ? leftChain[shared] : columnRuns[index][0].start;
+    const rightStart = shared < rightChain.length ? rightChain[shared] : columnRuns[index + 1][0].start;
+    if (leftStart < 0 || rightStart < 0 || rightStart <= leftStart) continue;
+
+    const leftTag = output.slice(leftStart, output.indexOf('>', leftStart) + 1);
+    const rightTag = output.slice(rightStart, output.indexOf('>', rightStart) + 1);
+    const leftName = /^<([a-z0-9]+)/i.exec(leftTag);
+    const rightName = /^<([a-z0-9]+)/i.exec(rightTag);
+    if (!leftName || !rightName) continue;
+
+    const leftEnd = elementExtent(output, leftStart, leftName[1]);
+    const rightEnd = elementExtent(output, rightStart, rightName[1]);
+    if (leftEnd === -1 || rightEnd === -1 || leftEnd > rightStart) continue;
+    const parentStart = openParentAt(output, leftStart);
+    const parentTag = parentStart >= 0
+      ? output.slice(parentStart, output.indexOf('>', parentStart) + 1)
+      : '';
+    if (!respectsOrder(html, leftTag, parentTag) && !respectsOrder(html, rightTag, parentTag)) continue;
+
+    const left = output.slice(leftStart, leftEnd);
+    const right = output.slice(rightStart, rightEnd);
+    const between = output.slice(leftEnd, rightStart);
+    // The columns change sides, because that is what changes the reading order.
+    // Each keeps its own width; a grid's widths are the parent's, so its track
+    // list is reversed to match.
+    const tracks = reversedGridTracks(html, parentTag);
+    const swappedColumns = right + between + left;
+    output = output.slice(0, leftStart) + swappedColumns + output.slice(rightEnd);
+    if (tracks && parentStart >= 0) {
+      const newParentTag = withInlineDeclaration(parentTag, tracks);
+      output = output.slice(0, parentStart)
+        + newParentTag
+        + output.slice(parentStart + parentTag.length);
+    }
+    break;
+  }
+
+  return output;
+}
+
 function normalizeTemplateSkillsSections(html: string): string {
   // Soft skills are rendered, not stripped. The pipeline has always produced
   // them - matched against the skill library, merged with the job analysis and
@@ -1716,7 +2270,7 @@ function normalizeTemplateSkillsSections(html: string): string {
   //
   // Templates that have no such block are unaffected: there is nothing to
   // guard, and `softSkills` simply goes unread.
-  let output = guardSoftSkillsSection(html);
+  let output = reorderResumeSections(guardSoftSkillsSection(html));
   output = stripTemplateSectionByClass(output, 'section-strengths');
   // The specific rules below run first, because each preserves the author's
   // own item markup for the flat layout. `groupRemainingSkillLoops` then
@@ -1835,6 +2389,119 @@ function compileTemplate(template: Template) {
   return Handlebars.compile(normalizeTemplateSkillsSections(template.htmlContent));
 }
 
+/**
+ * Two words a reader sees apart and a parser reads as one.
+ *
+ * WHAT WAS WRONG. A role header puts the title on the left and the dates on the
+ * right with `justify-content:space-between`, and the two sit in adjacent
+ * elements with nothing between them in the source. A gap produced by layout is
+ * not a character, so the PDF's text stream has none: "Software Engineer04/2022
+ * - Present", "GoogleREMOTE", "PwCREMOTE", "Bachelor's degree, Computer
+ * Engineering2012 - 2016", "02SKILLS". Measured over 495 delivered resumes,
+ * title-and-date ran together in 99-100% of three profiles' resumes and
+ * company-and-location in 68-100% of every profile's. A scanner reading
+ * "GoogleREMOTE" has no employer and no location, and its job-title and
+ * work-date checks fail on a page where both are plainly printed.
+ *
+ * WHY IT IS MEASURED HERE RATHER THAN SELECTED IN CSS. The same defect was
+ * fixed once for the contact line, by naming the classes that line uses. There
+ * are 38 templates and they call this row `company-line`, `job-header`,
+ * `job-meta`, `entry-subline`, `exp-title-company`, `edu-header` and a dozen
+ * other things, so a list of names is a list that will be out of date. Geometry
+ * is the actual question - are these two boxes on the same line with a gap
+ * between them and no whitespace in between - and the browser can answer it for
+ * every template at once, including the ones nobody has written yet.
+ *
+ * WHY A NON-BREAKING SPACE, AND WHY INSIDE THE LEFT ELEMENT. Appended INSIDE,
+ * because a text node BETWEEN two flex items becomes a third flex item and
+ * would move the row; inside, it widens the left box by a few points, which
+ * `space-between` absorbs. Non-breaking, so it cannot collapse away or become a
+ * line break, and every parser reads it as a space.
+ */
+const SEPARATE_GLUED_RUNS_SCRIPT = `(() => {
+  const SEPARATOR = '\\u00a0\\u00a0';
+  let added = 0;
+
+  for (const parent of Array.from(document.querySelectorAll('body *'))) {
+    const children = Array.from(parent.children);
+    if (children.length < 2) continue;
+
+    for (let index = 0; index < children.length - 1; index += 1) {
+      const left = children[index];
+      const right = children[index + 1];
+      const leftText = left.textContent || '';
+      const rightText = right.textContent || '';
+      if (!leftText.trim() || !rightText.trim()) continue;
+
+      // Already separated in the source, or by content the author wrote.
+      const between = left.nextSibling;
+      if (between && between !== right && between.nodeType === 3
+        && /[\\s\\u00a0]/.test(between.textContent || '')) continue;
+      if (/[\\s\\u00a0]$/.test(leftText)) continue;
+      if (/^[\\s\\u00a0]/.test(rightText)) continue;
+
+      // A flex or grid box would turn the separator into a child item of its
+      // own and move what is inside it, so those are left alone.
+      const display = getComputedStyle(left).display;
+      if (display.indexOf('flex') !== -1 || display.indexOf('grid') !== -1) continue;
+
+      const a = left.getBoundingClientRect();
+      const b = right.getBoundingClientRect();
+      if (!a.width || !b.width || !a.height || !b.height) continue;
+
+      // Same visual line, and the right box really is to the right: two boxes
+      // stacked in a column already read as separate lines.
+      const shared = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      if (shared < Math.min(a.height, b.height) * 0.5) continue;
+      if (b.left < a.right - 1) continue;
+
+      left.appendChild(document.createTextNode(SEPARATOR));
+      added += 1;
+    }
+  }
+
+  // Generated content, which has no node to sit beside. A stylesheet that
+  // numbers the headings - content: counter(resume-section) - prints "02" hard
+  // against "SKILLS", and the number is a box the document does not contain, so
+  // the separator goes inside the heading's own first child instead: that keeps
+  // it out of the flex row, where a text node would become an item of its own
+  // and move the heading sideways by the row's gap.
+  const printed = (element, which) => {
+    const content = getComputedStyle(element, which).content;
+    // A letter or a digit is text a reader reads. The contact separator this
+    // file also injects is a non-breaking space and has neither, so it is not
+    // mistaken for a word that needs separating.
+    return !!content && content !== 'none' && content !== 'normal'
+      && /[A-Za-z0-9]/.test(content);
+  };
+
+  for (const element of Array.from(document.querySelectorAll('body *'))) {
+    const first = element.firstElementChild;
+    const text = first ? (first.textContent || '') : '';
+    if (!first || !text.trim()) continue;
+    const opening = text.charCodeAt(0);
+    if (opening === 32 || opening === 9 || opening === 10 || opening === 160) continue;
+    if (!printed(element, '::before')) continue;
+    const box = element.getBoundingClientRect();
+    const inner = first.getBoundingClientRect();
+    // Only when the generated text shares the heading line, which is what
+    // makes the two read as one word.
+    if (!box.height || !inner.height) continue;
+    if (Math.min(box.bottom, inner.bottom) - Math.max(box.top, inner.top) < inner.height * 0.5) continue;
+    first.insertBefore(document.createTextNode(SEPARATOR), first.firstChild);
+    added += 1;
+  }
+
+  return added;
+})()`;
+
+export async function separateGluedTextRuns(
+  page: { evaluate: (script: string) => Promise<unknown> }
+): Promise<number> {
+  const added = await page.evaluate(SEPARATE_GLUED_RUNS_SCRIPT);
+  return typeof added === 'number' ? added : 0;
+}
+
 export async function generateResumePDF(
   profile: Profile,
   template: Template,
@@ -1884,6 +2551,8 @@ export async function generateResumePDF(
       await activePage.emulateMediaType('print');
     });
     await timePdfStage('HTML load', () => activePage.setContent(fullHtml, { waitUntil: 'load' }));
+    // After layout, because it asks the page where things ended up.
+    await timePdfStage('separate glued runs', () => separateGluedTextRuns(activePage));
 
     const pdfFilename = getResumeOutputFilename(pathInfo, 'pdf');
     const relativePath = `${pathInfo.storagePathBase}/${pdfFilename}`;
@@ -2096,6 +2765,23 @@ function renderTemplateBody(template: Template, renderData: unknown): string {
  * U+00A0 survives all of it, is invisible next to an existing 14px gap, and
  * needs no template edited - which matters, because 33 of them have this.
  */
+/**
+ * Everything inside a relocated block inherits its new column's text colour.
+ *
+ * The heading is left out: `dressForDestination` has just given it the
+ * destination's own heading class, so it is already wearing the right colour,
+ * and this would flatten it back to body text.
+ *
+ * `!important` because the colour this overrides is on the element itself -
+ * `.summary-text{color:#374151}` - which a rule of equal specificity written
+ * before the template's own stylesheet cannot beat.
+ */
+const RELOCATED_SECTION_CSS =
+  '<style id="resume-relocated-section">'
+  + '[data-resume-relocated] *:not([class*="head"]):not([class*="title"])'
+  + '{color:inherit !important}'
+  + '</style>';
+
 const CONTACT_SEPARATOR_CSS =
   '<style id="resume-contact-separator">' +
   '.contact>*::after,.contact-row>*::after,.contact-item::after,' +
@@ -2157,6 +2843,7 @@ function renderTimeCss(): string {
   return (
     '<style id="resume-no-ligatures">*,*::before,*::after{font-variant-ligatures:none}</style>'
     + CONTACT_SEPARATOR_CSS
+    + RELOCATED_SECTION_CSS
     + SKILLS_ROW_CSS
     // Chosen per document, which is why this is a function and not a constant.
     + skillGroupCss(pickSkillGroupLook())
