@@ -4,6 +4,7 @@ export type PromptResponseFormat = 'json' | 'text';
 export type PromptFeatureKey =
   | 'analyze-job-description'
   | 'tailor-resume'
+  | 'revise-resume-coverage'
   | 'generate-cover-letter'
   | 'extract-template-from-pdf'
   | 'extract-profile-from-resume'

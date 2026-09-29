@@ -671,9 +671,22 @@ export const SOFT_SKILL_GROUP_HEADING_NAMES = [...SOFT_SKILL_GROUP_HEADINGS];
  */
 type CoverageGap = {
   missingTerms: string[];
+  /** The missing terms that are worth a second model call on their own. */
+  missingImportant: string[];
   figures: number;
   short: boolean;
+  reason: string;
 };
+
+/**
+ * How many ordinary terms have to be missing before the call is worth making.
+ *
+ * MEASURED, not guessed. The first version revised whenever ANYTHING was
+ * missing, and with the keyword floor at 100% of a 25-45 term checklist that is
+ * nearly every resume: a batch of 500 went from 0.84 hours of working time to
+ * 2.21. One stray term is worth a fraction of a point and cost a whole call.
+ */
+const REVISION_MISSING_FLOOR = 3;
 
 function measureCoverageGap(
   content: TailoredContent,
@@ -686,58 +699,118 @@ function measureCoverageGap(
   ]);
   const missingTerms = wanted.filter((term) => !containsTerm(prose, term));
   const figures = countFigures(content);
-  return { missingTerms, figures, short: missingTerms.length > 0 || figures < FIGURE_FLOOR };
+
+  /*
+   * The terms a missing one of which is worth the call by itself: the five this
+   * posting leans on, and the concepts - which is the class a scan reported
+   * twenty-two of missing at once. Everything else has to reach a count.
+   */
+  const important = new Set(
+    normalizeSkillsList([...focusSkills(jobAnalysis), ...getConceptKeywords(jobAnalysis)])
+      .map((term) => term.toLowerCase())
+  );
+  const missingImportant = missingTerms.filter((term) => important.has(term.toLowerCase()));
+
+  const reasons: string[] = [];
+  if (missingImportant.length > 0) {
+    reasons.push(`${missingImportant.length} of the posting's leading terms missing`);
+  }
+  if (missingTerms.length >= REVISION_MISSING_FLOOR) {
+    reasons.push(`${missingTerms.length} checklist terms missing`);
+  }
+  if (figures < FIGURE_FLOOR) {
+    reasons.push(`${figures} figure(s) against a floor of ${FIGURE_FLOOR}`);
+  }
+
+  return {
+    missingTerms,
+    missingImportant,
+    figures,
+    short: reasons.length > 0,
+    reason: reasons.join(', '),
+  };
 }
 
-function coverageRevisionInstruction(content: TailoredContent, gap: CoverageGap): string {
-  const bullets = (content.experience ?? []).flatMap((role) => role.achievements ?? []).length;
-  const parts: string[] = ['REVISION - COVERAGE:', ''];
+/** The prompt the revision call uses: its own, short one. */
+const RESUME_REVISION_PROMPT_ID = 'revise-resume-coverage';
 
-  if (gap.missingTerms.length > 0) {
-    parts.push(
-      `These terms are on this posting's checklist and are NOT in the draft you just returned. `
-      + `A scanner counts each one, and each is a point this resume is throwing away:`,
-      '',
-      gap.missingTerms.map((term) => `  - ${term}`).join('\n'),
-      '',
-      'Work each of them into the summary or a bullet, spelled EXACTLY as written above - same '
-      + 'words, same order, same singular or plural. Attach each to work the draft already '
-      + 'describes: a capability like "full-stack development" or "artificial intelligence" goes '
-      + 'inside a sentence about something that was actually built, never as a list and never as '
-      + '"experienced in". Prefer widening a bullet that is already there to adding a new one.',
-      '',
-      'THE EXCEPTION, and it is the only one: a term naming an INDUSTRY this candidate has not '
-      + 'worked in - a clinical, legal, defence or trading practice on somebody who has never '
-      + 'worked in that field - stays out. Leave those missing rather than claiming them.',
-      ''
-    );
+/**
+ * What the revision is sent: the draft's own sentences, and nothing else.
+ *
+ * Every call here opens a FRESH conversation, so a follow-up has to carry its
+ * own context - which is why the first version re-sent the whole tailoring
+ * prompt, all 36,853 characters of rules, and asked for the whole resume back.
+ * It does not need the rules. It needs the sentences it is rewriting.
+ */
+function revisionPromptValues(content: TailoredContent, gap: CoverageGap): Record<string, string> {
+  const draft = {
+    summary: content.summary ?? '',
+    experience: (content.experience ?? []).map((role) => ({
+      company: role.company ?? '',
+      title: role.title ?? '',
+      achievements: role.achievements ?? [],
+    })),
+  };
+
+  const figuresNote = gap.figures < FIGURE_FLOOR
+    ? `THE DRAFT ALSO NEEDS MORE FIGURES. It carries ${gap.figures} and this resume needs at least `
+      + `${FIGURE_FLOOR}: a page under that reads as a list of duties and fails a scanner's `
+      + `measurable-results check. Add figures to enough bullets to reach ${FIGURE_FLOOR}, spread `
+      + `across roles, at most one per bullet. Use the number the work itself implies - how many `
+      + `services a change covered, how many engineers a review involved, how often a release went `
+      + `out, how long a job took before and after - small, ordinary and defensible, and prefer a `
+      + `before-and-after ("40 minutes to 6") to a lone percentage.`
+    : 'The draft carries enough figures. Do not add more.';
+
+  return {
+    draftJson: promptJson(draft),
+    missingTermsJson: promptJson(gap.missingTerms),
+    figuresNote,
+  };
+}
+
+/**
+ * The draft with the revision's sentences in it, and nothing else touched.
+ *
+ * The revision returns only what it changed - the summary, and the roles whose
+ * bullets it rewrote - and everything else is taken from the draft this
+ * application already holds. That is what keeps the employers, dates, skills
+ * block and cover letter safe by construction rather than by instruction: the
+ * old shape asked for the whole object back and a model told "do not touch the
+ * cover letter" would sometimes return it without one, which sent the route off
+ * to write a new letter with a THIRD model call.
+ */
+function mergeRevision(draft: TailoredContent, patch: unknown): TailoredContent | null {
+  if (!patch || typeof patch !== 'object') return null;
+  const revision = patch as {
+    summary?: unknown;
+    experience?: Array<{ company?: unknown; title?: unknown; achievements?: unknown }>;
+  };
+
+  const rewritten = Array.isArray(revision.experience) ? revision.experience : [];
+  const key = (company: unknown, title: unknown) =>
+    `${String(company ?? '').trim().toLowerCase()}|${String(title ?? '').trim().toLowerCase()}`;
+  const byRole = new Map<string, string[]>();
+  for (const role of rewritten) {
+    const bullets = Array.isArray(role.achievements)
+      ? role.achievements.filter((line): line is string => typeof line === 'string' && line.trim().length > 0)
+      : [];
+    if (bullets.length > 0) byRole.set(key(role.company, role.title), bullets);
   }
 
-  if (gap.figures < FIGURE_FLOOR) {
-    parts.push(
-      `The draft also carries only ${gap.figures} figure(s) across ${bullets} bullet(s), and this `
-      + `resume needs at least ${FIGURE_FLOOR}: a page under that reads as a list of duties and `
-      + `fails a scanner's measurable-results check. Add a figure to enough bullets to reach `
-      + `${FIGURE_FLOOR}, spread across different roles, at most one per bullet. Use the number the `
-      + `work itself implies - how many services a change covered, how many engineers a review `
-      + `involved, how often a release went out, how long a job took before and after - small, `
-      + `ordinary and defensible, and prefer a before-and-after ("40 minutes to 6") to a lone `
-      + `percentage.`,
-      ''
-    );
-  }
+  const summary = typeof revision.summary === 'string' && revision.summary.trim()
+    ? revision.summary.trim()
+    : draft.summary;
+  if (summary === draft.summary && byRole.size === 0) return null;
 
-  parts.push(
-    'Return the SAME JSON object again, with the same structure. Everything not named above stays '
-    + 'exactly as you wrote it: the same skillGroups, the same employers, titles, dates and '
-    + 'locations, the same bullets in the same order saying the same things, and no more than '
-    + `${MAX_BULLETS_PER_ROLE} bullets under any role. Do not add a project, a client, an employer `
-    + 'or an outcome that is not already in the draft, and do not touch the cover letter.',
-    '',
-    'Return only the JSON object.'
-  );
-
-  return parts.join('\n');
+  return {
+    ...draft,
+    summary,
+    experience: (draft.experience ?? []).map((role) => {
+      const bullets = byRole.get(key(role.company, role.title));
+      return bullets ? { ...role, achievements: bullets } : role;
+    }),
+  };
 }
 
 /** Off switch for the revision call, for an operator watching the bill. */
@@ -3392,39 +3465,71 @@ export async function tailorResume(
   }
 
   /*
-   * The floors, enforced rather than requested.
+   * The floors, enforced rather than requested - but only where the call pays
+   * for itself.
    *
-   * One extra call, and only for a draft that came back short with bullets to
-   * put things in. If the revision fails, parses badly, or covers no more than
-   * the draft did, the draft stands: a thin resume is worth more than no resume.
+   * WHAT THIS COST BEFORE THE GATE. The first version asked again whenever
+   * anything at all was missing, which with a 100% floor over a 25-45 term
+   * checklist is nearly every resume: a batch of 500 went from 0.84 hours of
+   * working time to 2.21. Now a stray ordinary term is reported and left; a
+   * missing FOCUS skill or concept, three or more missing terms, or a page
+   * under the figure floor is what buys a call.
+   *
+   * And the call is a small one: its own short prompt, the draft's sentences,
+   * and a patch back - not the whole 36,853-character tailoring prompt and the
+   * whole resume, which is what made the second call cost as much as the first.
+   *
+   * If the revision fails, parses badly, or covers no more than the draft did,
+   * the draft stands: a thin resume is worth more than no resume.
    */
   const gap = measureCoverageGap(tailored, jobAnalysis);
   const hasBullets = (tailored.experience ?? []).some((role) => (role.achievements ?? []).length > 0);
-  if (!gap.short || !hasBullets || !coverageRevisionEnabled()) return tailored;
+  if (!gap.short || !hasBullets || !coverageRevisionEnabled()) {
+    if (gap.missingTerms.length > 0) {
+      console.log(
+        `[Resume coverage] ${profile.name}: ${gap.missingTerms.length} checklist term(s) missing, `
+          + `not enough to pay for a revision. Missing: ${gap.missingTerms.slice(0, 8).join(', ')}`
+      );
+    }
+    return tailored;
+  }
 
-  console.log(
-    `[Resume coverage] ${profile.name}: ${gap.missingTerms.length} checklist term(s) missing`
-      + `${gap.figures < FIGURE_FLOOR ? ` and ${gap.figures} figure(s) against a floor of ${FIGURE_FLOOR}` : ''}`
-      + ` - asking for a revision.`
-  );
+  console.log(`[Resume coverage] ${profile.name}: ${gap.reason} - asking for a revision.`);
   try {
     const revisedText = await createPromptCompletion({
-      promptId,
-      callSite: DEFAULT_RESUME_PROMPT_ID,
-      promptValues,
+      promptId: RESUME_REVISION_PROMPT_ID,
+      callSite: RESUME_REVISION_PROMPT_ID,
+      promptValues: revisionPromptValues(tailored, gap),
       fallbackProvider: provider,
       fallbackModelName: modelName,
       effort: choice.effort,
       thinking: choice.thinking,
       route: choice.route,
-      maxTokens: 11000,
+      // A patch, not a resume: the summary and the bullets of the roles it
+      // touched. A tenth of what the tailoring call has to produce.
+      maxTokens: 2500,
       temperature: 0.2,
       responseFormat: 'json',
       useExactPromptId: true,
-      appendToUserBody: `${finalSkillOverride(promptValues.softSkillGroupHeading)}\n\n${coverageRevisionInstruction(tailored, gap)}`,
       signal,
     });
-    const revised = parseTailoredResumeContent(revisedText, profile, jobAnalysis);
+
+    const merged = mergeRevision(tailored, JSON.parse(extractJSON(revisedText)));
+    if (!merged) {
+      console.warn(`[Resume coverage] ${profile.name}: the revision changed nothing. Keeping the draft.`);
+      return tailored;
+    }
+
+    // Back through the same normalisation the draft went through: the bullet
+    // cap, the plain-language pass and the reports all apply to a revised
+    // sentence exactly as they did to the first one.
+    const revised = parseTailoredResumeContent(JSON.stringify({
+      title: merged.title,
+      summary: merged.summary,
+      experience: merged.experience,
+      skillGroups: merged.skillGroups,
+      coverLetter: merged.coverLetter,
+    }), profile, jobAnalysis);
     const after = measureCoverageGap(revised, jobAnalysis);
     // Better on either axis, worse on neither: a revision that places three
     // terms by dropping two figures has not helped.

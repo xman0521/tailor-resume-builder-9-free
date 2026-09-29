@@ -207,6 +207,47 @@ Preferred: GraphQL, Kubernetes, Terraform, CI/CD, and experience in fast-paced s
     ],
   },
   {
+    key: 'revise-resume-coverage',
+    label: 'Revise Resume Coverage',
+    id: 'revise-resume-coverage',
+    name: 'Revise Resume Coverage',
+    description:
+      'Works the checklist terms a finished draft is missing into its own sentences, and adds figures '
+      + 'when the page is under the floor. Returns only what it changed.',
+    usage:
+      'Second pass after Tailor Resume, and only when the draft is short enough to be worth another '
+      + 'call: a missing focus skill or concept, three or more missing terms, or too few figures. Kept '
+      + 'short on purpose - every call opens a fresh conversation, so re-sending the whole tailoring '
+      + 'prompt and asking for the whole resume back is what doubled a 500-resume batch.',
+    responseFormat: 'json',
+    allowedVariables: [
+      {
+        name: 'draftJson',
+        description: "The draft's summary and each role with its bullets - the sentences being revised.",
+        sampleValue: `{
+  "summary": "Engineer of 9 years on payment platforms.",
+  "experience": [
+    {
+      "company": "Acme",
+      "title": "Senior Software Engineer",
+      "achievements": ["Built settlement services for the payments path."]
+    }
+  ]
+}`,
+      },
+      {
+        name: 'missingTermsJson',
+        description: 'The checklist terms the draft does not carry, spelled as the posting spells them.',
+        sampleValue: '["Artificial intelligence", "Full-stack development", "Kubernetes"]',
+      },
+      {
+        name: 'figuresNote',
+        description: 'What to do about figures: how many more are needed, or that there are enough.',
+        sampleValue: 'The draft carries enough figures. Do not add more.',
+      },
+    ],
+  },
+  {
     key: 'generate-cover-letter',
     label: 'Generate Cover Letter',
     id: 'generate-cover-letter',
