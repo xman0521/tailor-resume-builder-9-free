@@ -167,6 +167,64 @@ test('the heading and its skills differ in COLOUR in every look', () => {
   assert.ok(looks.length >= 6, `expected the six looks, saw ${looks.join(', ')}`);
 });
 
+test('no look draws a full-width line under a category', async (t) => {
+  /*
+   * WHAT THIS PINS, from a screenshot of a delivered resume. One of the six
+   * looks underlined each category heading with a border-bottom, and a
+   * border-bottom on a block element runs the whole width of the column - which
+   * is exactly what the SECTION heading above it does. The page showed
+   * "TECHNICAL SKILLS" over a full-width rule and then "LANGUAGES", "BACKEND &
+   * RUNTIME" and six more over the same rule, so nothing told a category from a
+   * section: eight lines that each looked like the start of something.
+   *
+   * The look uses a marker in front of the heading now. A bottom border is not
+   * forbidden for all time - but one the width of the column is, and anything
+   * narrower has to be deliberate enough to come and change this test.
+   */
+  const dir = path.join(__dirname, '..', 'static', 'templates');
+  const browser = await launchBrowser();
+  const underlined = [];
+  const pinned = process.env.SKILL_GROUP_STYLE;
+
+  try {
+    const page = await browser.newPage();
+    for (const look of SKILL_GROUP_LOOK_NAMES) {
+      process.env.SKILL_GROUP_STYLE = look;
+      for (const file of TEMPLATES) {
+        const template = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+        await page.setContent(await generatePreviewHTML(profile, template, tailored), { waitUntil: 'load' });
+
+        const measured = await page.evaluate(`(() => {
+          const title = document.querySelector('.skill-category-title');
+          const group = document.querySelector('.skill-category');
+          if (!title || !group) return null;
+          const style = getComputedStyle(title);
+          return JSON.stringify({
+            border: parseFloat(style.borderBottomWidth) || 0,
+            width: Math.round(title.getBoundingClientRect().width),
+            groupWidth: Math.round(group.getBoundingClientRect().width),
+          });
+        })()`);
+        if (!measured) continue;
+        const { border, width, groupWidth } = JSON.parse(measured);
+
+        // A line is "full width" when it spans the group it belongs to, which is
+        // what makes it read as a divider rather than as decoration.
+        if (border > 0 && width >= groupWidth - 2) {
+          underlined.push(`${look}/${file}: ${border}px line across the whole ${groupWidth}px column`);
+        }
+      }
+    }
+  } finally {
+    if (pinned === undefined) delete process.env.SKILL_GROUP_STYLE;
+    else process.env.SKILL_GROUP_STYLE = pinned;
+    await browser.close();
+  }
+
+  t.diagnostic(`${SKILL_GROUP_LOOK_NAMES.length} looks x ${TEMPLATES.length} templates`);
+  assert.deepEqual(underlined, [], underlined.join('\n'));
+});
+
 test('the skills sit a step in from their heading', async (t) => {
   /*
    * Also asked for: an indent under the category, so a block of six groups

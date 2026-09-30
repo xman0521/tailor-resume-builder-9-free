@@ -1307,19 +1307,33 @@ function getResumeTitle(profile: Profile, tailoredContent?: TailoredContent): st
  * everything else, which quietly undid the discipline tag: "Senior Software
  * Engineer (Backend, AI/ML, Cloud)" came out as "Senior Software Engineer
  * Backend AI ML Cloud" - and "Full-Stack" as "Full Stack". Those four are the
- * punctuation an ordinary job title is written with, so they stay; brackets,
- * quotes and the symbol soup do not.
+ * punctuation an ordinary job title is written with, so they stay.
+ *
+ * AND SO DO THE PIPE, THE BRACKETS AND THE AMPERSAND, which this used to strip
+ * as symbol soup. That was written when the MODEL wrote the headline and the
+ * risk was punctuation copied out of a posting. The headline is composed here
+ * now - the candidate's own title, a separator, the kind of role - in one of six
+ * shapes, and three of them used exactly those characters: a delivered resume
+ * read "Senior Software Engineer Full-Stack Engineer" with nothing between the
+ * two, because the separator was removed after the line was built. "Data & AI
+ * Engineer" as somebody's own profile title lost its ampersand the same way.
+ *
+ * What still goes: quotes, braces, angle brackets, and the arithmetic and
+ * currency symbols nobody writes a job title with.
  */
 function sanitizeTitleForATS(title: string): string {
   return title
-    .replace(/[;:'"\[\]\\@#$%&*+=<>|{}~^]/g, ' ')
+    .replace(/[;:'"\\@#$%*+=<>{}~^]/g, ' ')
     .replace(/\s+/g, ' ')
     // A space before a closing bracket or a comma is the mark of something
     // having been removed from inside it.
-    .replace(/\s+([),])/g, '$1')
-    .replace(/\(\s+/g, '(')
+    .replace(/\s+([)\],])/g, '$1')
+    .replace(/([([])\s+/g, '$1')
     // An empty pair is what is left when everything inside it was stripped.
     .replace(/\(\s*\)/g, '')
+    .replace(/\[\s*\]/g, '')
+    // A separator with nothing after it, for the same reason.
+    .replace(/\s*[|&]\s*$/, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -1653,12 +1667,26 @@ const SKILL_GROUP_LOOKS: Record<string, string> = {
     + 'letter-spacing:0.06em;line-height:1.3;margin:0 0 1px 0}'
     + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0}',
 
-  // A hairline under the heading, drawn in the text colour at low strength.
-  rule:
+  /*
+   * A small square in front of the heading.
+   *
+   * WHAT THIS REPLACED. It used to be a hairline UNDER the heading, and a
+   * border-bottom on a block element runs the whole width of the column - which
+   * is exactly what the section heading above it does. On the page "TECHNICAL
+   * SKILLS" sat over a full-width rule and so did "LANGUAGES", "BACKEND &
+   * RUNTIME" and every other category, so a reader could not tell a category
+   * from a section: eight lines that all looked like the start of something.
+   *
+   * A marker is the same job done at the width of one character. The space
+   * after it is a REAL non-breaking space rather than a margin, so the PDF's
+   * text stream reads "- LANGUAGES" instead of running the two together.
+   */
+  marker:
     '.skill-category-title{font-weight:700;font-size:0.9em;text-transform:uppercase;'
-    + 'letter-spacing:0.04em;line-height:1.3;margin:0 0 2px 0;padding-bottom:1px;'
-    + 'border-bottom:0.5pt solid color-mix(in srgb, currentColor 55%, transparent)}'
-    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:2px 0 0 0}',
+    + 'letter-spacing:0.04em;line-height:1.3;margin:0 0 1px 0}'
+    + '.skill-category-title::before{content:"\\25aa\\00a0";'
+    + 'color:color-mix(in srgb, currentColor 65%, transparent)}'
+    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0}',
 
   // A bar down the left of the group, with everything indented past it.
   bar:
@@ -2088,69 +2116,69 @@ function reversedGridTracks(template: string, parentTag: string): string {
  * experience while education or skills live in another one - and only ever to
  * the head of that other column. Everything else is left alone.
  */
-/**
- * A section that changes column dresses for the column it arrives in.
- *
- * WHAT WENT WRONG. The summary has to join education and skills on six
- * templates, or the page cannot read in the asked-for order. On
- * `two-column-executive` that column is a dark navy sidebar, and the summary's
- * colours are written for the white column it came from:
- *
- *   .sidebar      { background:#1c2b3a; color:#cbd5e1 }
- *   .summary-text { color:#374151 }
- *   .main-heading { color:#1c2b3a }
- *
- * `.summary-text` sets its colour on the element, so it beat the colour it now
- * inherits from `.sidebar`: measured at 1.4:1 against its background, where
- * 4.5:1 is the bar for body text and it had been 10.31:1 in the main column.
- * The heading was navy on navy, which is 1:1 - not faint, absent.
- *
- * TWO CHANGES, BECAUSE THE PROBLEM HAS TWO HALVES. The wrapper and the heading
- * take the destination's own classes, so the block is styled by the same rules
- * as everything around it - a moved summary gets `.side-section` and
- * `.side-heading`, and the sidebar's gold heading colour comes with them. The
- * body text cannot be fixed that way, because its colour is on itself, so the
- * block is marked and a render-time rule makes everything inside it inherit -
- * everything except the heading, which has just been dressed deliberately.
- */
-const RELOCATED_MARKER = 'data-resume-relocated';
-
-/** The class attribute of the first element in this markup. */
-function firstElementClass(html: string): string | null {
-  const opener = /<(?:div|section)\b[^>]*class="([^"]*)"[^>]*>/i.exec(html);
-  return opener ? opener[1] : null;
-}
-
-/** The class of the heading inside this section, if it names itself one. */
-function headingClass(html: string): string | null {
-  const heading = /<[a-z0-9]+\b[^>]*class="([^"]*(?:title|heading)[^"]*)"[^>]*>/i.exec(html);
-  return heading ? heading[1] : null;
-}
-
-/**
- * Rewrites a moved section to wear the destination's classes, and marks it.
- */
-function dressForDestination(sectionHtml: string, destinationHtml: string): string {
-  const destinationSection = firstElementClass(destinationHtml);
-  const destinationHeading = headingClass(destinationHtml);
-  const ownHeading = headingClass(sectionHtml);
-  let output = sectionHtml;
-
-  // The wrapper: the destination's section class, plus the marker.
-  output = output.replace(/<(div|section)\b([^>]*)class="([^"]*)"([^>]*)>/i,
-    (match, tag: string, before: string, own: string, after: string) => {
-      const wrapper = destinationSection && destinationSection !== own ? destinationSection : own;
-      return `<${tag}${before}class="${wrapper}" ${RELOCATED_MARKER}="1"${after}>`;
-    });
-
-  // The heading: the destination's heading class, where both name one.
-  if (destinationHeading && ownHeading && destinationHeading !== ownHeading) {
-    output = output.replace(`class="${ownHeading}"`, `class="${destinationHeading}"`);
-  }
-
-  return output;
-}
-
+/**
+ * A section that changes column dresses for the column it arrives in.
+ *
+ * WHAT WENT WRONG. The summary has to join education and skills on six
+ * templates, or the page cannot read in the asked-for order. On
+ * `two-column-executive` that column is a dark navy sidebar, and the summary's
+ * colours are written for the white column it came from:
+ *
+ *   .sidebar      { background:#1c2b3a; color:#cbd5e1 }
+ *   .summary-text { color:#374151 }
+ *   .main-heading { color:#1c2b3a }
+ *
+ * `.summary-text` sets its colour on the element, so it beat the colour it now
+ * inherits from `.sidebar`: measured at 1.4:1 against its background, where
+ * 4.5:1 is the bar for body text and it had been 10.31:1 in the main column.
+ * The heading was navy on navy, which is 1:1 - not faint, absent.
+ *
+ * TWO CHANGES, BECAUSE THE PROBLEM HAS TWO HALVES. The wrapper and the heading
+ * take the destination's own classes, so the block is styled by the same rules
+ * as everything around it - a moved summary gets `.side-section` and
+ * `.side-heading`, and the sidebar's gold heading colour comes with them. The
+ * body text cannot be fixed that way, because its colour is on itself, so the
+ * block is marked and a render-time rule makes everything inside it inherit -
+ * everything except the heading, which has just been dressed deliberately.
+ */
+const RELOCATED_MARKER = 'data-resume-relocated';
+
+/** The class attribute of the first element in this markup. */
+function firstElementClass(html: string): string | null {
+  const opener = /<(?:div|section)\b[^>]*class="([^"]*)"[^>]*>/i.exec(html);
+  return opener ? opener[1] : null;
+}
+
+/** The class of the heading inside this section, if it names itself one. */
+function headingClass(html: string): string | null {
+  const heading = /<[a-z0-9]+\b[^>]*class="([^"]*(?:title|heading)[^"]*)"[^>]*>/i.exec(html);
+  return heading ? heading[1] : null;
+}
+
+/**
+ * Rewrites a moved section to wear the destination's classes, and marks it.
+ */
+function dressForDestination(sectionHtml: string, destinationHtml: string): string {
+  const destinationSection = firstElementClass(destinationHtml);
+  const destinationHeading = headingClass(destinationHtml);
+  const ownHeading = headingClass(sectionHtml);
+  let output = sectionHtml;
+
+  // The wrapper: the destination's section class, plus the marker.
+  output = output.replace(/<(div|section)\b([^>]*)class="([^"]*)"([^>]*)>/i,
+    (match, tag: string, before: string, own: string, after: string) => {
+      const wrapper = destinationSection && destinationSection !== own ? destinationSection : own;
+      return `<${tag}${before}class="${wrapper}" ${RELOCATED_MARKER}="1"${after}>`;
+    });
+
+  // The heading: the destination's heading class, where both name one.
+  if (destinationHeading && ownHeading && destinationHeading !== ownHeading) {
+    output = output.replace(`class="${ownHeading}"`, `class="${destinationHeading}"`);
+  }
+
+  return output;
+}
+
 function moveSummaryBesideEducation(html: string): string {
   const runs = runsOfSiblingSections(html, findResumeSections(html));
   const summaryRun = runs.find((run) => run.some((block) => block.kind === 'summary'));

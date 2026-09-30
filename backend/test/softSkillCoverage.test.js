@@ -87,8 +87,13 @@ test('both prompts ask for the work, in the copies that actually run', () => {
   const tailor = running('tailor-resume');
   assert.match(tailor, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);
   assert.match(tailor, /Three or four in the summary/);
-  // The headline is the candidate's own again, and the role moved to the summary.
+  // The summary names the role in the model's own words, and the headline is
+  // built by the application - the candidate's own title plus the kind of role -
+  // so the model is told to write its identity and add no discipline itself.
   assert.match(tailor, /TARGET ROLE\. This resume is aimed at: \[\[targetRoleTitle\]\]/);
-  assert.match(tailor, /Never the target job title, and never role-targeted/);
+  assert.match(tailor, /Never the target job title: the headline says who this person is/);
+  // Matched across the wrap: these prompts are hard-wrapped, so a phrase that
+  // spans a line break has a newline in the middle of it.
+  assert.match(tailor, /It\s+appends the KIND of role this application is for/);
   assert.doesNotMatch(tailor, /the headline on the page is this posting's\s*\n?own job title/);
 });

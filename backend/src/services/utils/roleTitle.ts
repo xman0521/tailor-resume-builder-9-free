@@ -175,3 +175,123 @@ export function shortRoleTitle(raw: string | undefined): string {
   const lastSpace = cut.lastIndexOf(' ');
   return (lastSpace > 20 ? cut.slice(0, lastSpace) : cut).trim();
 }
+
+/**
+ * The kind of engineer a posting is looking for, in two or three words.
+ *
+ * WHAT IT IS FOR. File names. A posting's own title makes a long and useless
+ * one - "Weitian_Wu_DevOps_Engineer_III_AI_Business_Automation.pdf",
+ * "Weitian_Wu_Senior_Cloud_Engineer_Observability.pdf" - where what the operator
+ * wants to see in a folder listing is which KIND of role it was: DevOps, Cloud,
+ * Backend, AI/ML. The full title still names the folder, so nothing is lost.
+ *
+ * HOW IT DECIDES. On the HEAD of the title, before any comma or dash, because
+ * that is the role and what follows is the team or the stack: "DevOps Engineer
+ * III - AI Business Automation" is a DevOps job on an AI team, and matching the
+ * whole string would call it AI/ML. The first pattern that matches wins, so the
+ * order below is the ranking: a title that says several things is filed under
+ * the most specific one it says.
+ *
+ * It answers "Software Engineer" when it recognises nothing, which is true of
+ * most postings that do not say otherwise.
+ */
+const ROLE_FAMILIES: Array<{ family: string; pattern: RegExp }> = [
+  { family: 'AI/ML Engineer', pattern: /\b(?:machine learning|\bml\b|mlops|deep learning|\bnlp\b|computer vision|generative ai|gen ?ai|\bai\b|\bllms?\b|artificial intelligence)\b/i },
+  { family: 'Data Engineer', pattern: /\b(?:data engineer|data engineering|analytics engineer|\betl\b|big data|data platform|data pipeline)\b/i },
+  { family: 'Data Scientist', pattern: /\b(?:data scientist|data science)\b/i },
+  { family: 'DevOps Engineer', pattern: /\b(?:devops|dev ?sec ?ops|ci\/cd|build and release|release engineer)\b/i },
+  { family: 'Site Reliability Engineer', pattern: /\b(?:site reliability|\bsre\b|reliability engineer)\b/i },
+  // Security before cloud and platform: "Senior Infrastructure Security
+  // Engineer" is a security job that happens to name infrastructure, and the
+  // more specific discipline is the one worth putting in the file name.
+  { family: 'Security Engineer', pattern: /\b(?:security|appsec|infosec|cyber|cryptograph)\b/i },
+  { family: 'Cloud Engineer', pattern: /\b(?:cloud|aws|azure|gcp|kubernetes)\b/i },
+  { family: 'Platform Engineer', pattern: /\b(?:platform|infrastructure|systems engineer)\b/i },
+  { family: 'QA Engineer', pattern: /\b(?:\bqa\b|quality assurance|quality engineer|test engineer|testing|\bsdet\b|automation engineer)\b/i },
+  { family: 'Mobile Engineer', pattern: /\b(?:mobile|\bios\b|android|react native|flutter)\b/i },
+  { family: 'Full-Stack Engineer', pattern: /\bfull[ -]?stack\b/i },
+  { family: 'Frontend Engineer', pattern: /\b(?:front[ -]?end|\bui\b|\bux\b|react|angular|vue|javascript developer|web developer)\b/i },
+  { family: 'Backend Engineer', pattern: /\b(?:back[ -]?end|server[ -]?side|\bapi\b|microservices|java developer|python developer|\.net developer|golang)\b/i },
+  { family: 'Integration Engineer', pattern: /\b(?:integration|mulesoft|middleware|\besb\b|solutions? engineer)\b/i },
+  { family: 'Embedded Engineer', pattern: /\b(?:embedded|firmware|\brtos\b)\b/i },
+  { family: 'Database Engineer', pattern: /\b(?:database|\bdba\b|\bsql\b|oracle|postgres)\b/i },
+  { family: 'Engineering Manager', pattern: /\b(?:engineering manager|development manager|head of engineering|director of engineering|\bvp\b)\b/i },
+  { family: 'Software Architect', pattern: /\barchitect\b/i },
+];
+
+/** What a posting is called when nothing in it names a discipline. */
+const DEFAULT_ROLE_FAMILY = 'Software Engineer';
+
+export function roleFamily(raw: string | undefined): string {
+  const head = shortRoleTitle(raw);
+  if (!head) return '';
+
+  for (const { family, pattern } of ROLE_FAMILIES) {
+    if (pattern.test(head)) return family;
+  }
+
+  // Nothing in the head, so try the whole title before giving up: a posting
+  // that says "Engineer II - Backend Services" keeps its discipline in the tail.
+  const whole = naturalRoleTitle(raw);
+  for (const { family, pattern } of ROLE_FAMILIES) {
+    if (pattern.test(whole)) return family;
+  }
+
+  return DEFAULT_ROLE_FAMILY;
+}
+
+/**
+ * The headline with the target role after it, in one of six shapes.
+ *
+ * WHY IT IS BACK, AND WHY IT VARIES. A scanner scores the headline against the
+ * posting - measured over 495 delivered resumes, the posting's title appeared
+ * verbatim in 2% of them - and the candidate's own title alone scores nothing
+ * there. The line has been through every shape in between: rebuilt from the
+ * posting (which renamed the person), the posting's title alone (which read as
+ * somebody else's job), and the profile's title alone. This is the middle: the
+ * candidate's own title, and after it the KIND of role this application is for.
+ *
+ * The separator is drawn per resume because a batch of 500 resumes all reading
+ * "Title (Discipline)" is a pattern anyone holding two of them can see, and the
+ * separator is the one part of the line that can vary without changing what it
+ * says.
+ *
+ * NOTHING IS SAID TWICE. A data engineer applying for a data engineering job
+ * keeps their own line: "Senior Data Engineer | Data Engineer" is the machine
+ * showing its working.
+ */
+const HEADLINE_STYLES: Record<string, (own: string, role: string) => string> = {
+  pipe: (own, role) => `${own} | ${role}`,
+  dash: (own, role) => `${own} - ${role}`,
+  parens: (own, role) => `${own} (${role})`,
+  emdash: (own, role) => `${own} — ${role}`,
+  bracket: (own, role) => `${own} [${role}]`,
+  amp: (own, role) => `${own} & ${role}`,
+};
+
+export const HEADLINE_STYLE_NAMES = Object.keys(HEADLINE_STYLES);
+
+/** The shape this resume's headline takes: the pinned one, or a random one. */
+export function pickHeadlineStyle(env: NodeJS.ProcessEnv = process.env): string {
+  const pinned = (env.RESUME_HEADLINE_STYLE ?? '').trim().toLowerCase();
+  if (pinned && HEADLINE_STYLE_NAMES.includes(pinned)) return pinned;
+  return HEADLINE_STYLE_NAMES[Math.floor(Math.random() * HEADLINE_STYLE_NAMES.length)];
+}
+
+export function headlineWithTargetRole(
+  ownTitle: string,
+  postingTitle: string | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const own = (ownTitle ?? '').trim().replace(/\s+/g, ' ');
+  const role = roleFamily(postingTitle);
+  if (!own || !role) return own;
+
+  // Already said: every word of the role is in the candidate's own title.
+  const spoken = own.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  const words = role.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (words.every((word) => spoken.includes(word))) return own;
+
+  const composed = HEADLINE_STYLES[pickHeadlineStyle(env)](own, role);
+  return composed.length <= MAX_TITLE_LENGTH ? composed : own;
+}

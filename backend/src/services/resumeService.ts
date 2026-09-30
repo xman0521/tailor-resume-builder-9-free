@@ -22,7 +22,7 @@ import { removeDuplicateSubstrings, ensureMinTechSkills } from './utils/resumeBu
 import { collectJobKeywords, findUncoveredKeywords } from './utils/keywordCoverage';
 import { conceptToolOptions } from './utils/hardSkillSelection';
 import { normalizeDashes } from './utils/dashes';
-import { shortRoleTitle } from './utils/roleTitle';
+import { headlineWithTargetRole, shortRoleTitle } from './utils/roleTitle';
 import { bannedTermsIn, plainLanguage } from './utils/plainLanguage';
 import {
   containsTerm,
@@ -2631,7 +2631,7 @@ function recapitalizeSentences(text: string): string {
  */
 function buildResumeHeadline(
   contentTitle: string | undefined,
-  _jobAnalysis: JobAnalysis | undefined,
+  jobAnalysis: JobAnalysis | undefined,
   profile?: Profile
 ): string {
   const candidates = [
@@ -2642,7 +2642,12 @@ function buildResumeHeadline(
 
   for (const candidate of candidates) {
     const trimmed = (candidate ?? '').trim().replace(/\s+/g, ' ');
-    if (trimmed) return trimmed;
+    // The candidate's own line, and after it the kind of role this application
+    // is for - in one of six shapes, drawn per resume. See
+    // `headlineWithTargetRole`: the separator is the one part of the line that
+    // can vary without changing what it says, and a batch where every headline
+    // takes the same shape is a pattern anyone holding two of them can see.
+    if (trimmed) return headlineWithTargetRole(trimmed, getJobAnalysisTitle(jobAnalysis));
   }
   return 'Professional';
 }
@@ -2899,21 +2904,49 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
    * So the operator took the decision away from the library. The tailor call
    * already has the profile and the posting in front of it, and it now returns
    * the finished block, grouped under its own headings. Nothing here reorders
-   * it, dedupes it, filters it or tops it up: a rule worth keeping is stated in
-   * the prompt, where the model can act on it, rather than applied afterwards
-   * to an answer this file did not write.
+   * it, filters it or tops it up: a rule worth keeping is stated in the prompt,
+   * where the model can act on it, rather than applied afterwards to an answer
+   * this file did not write.
+   *
+   * THE ONE EXCEPTION IS THE SAME STRING TWICE, and it is an exception because
+   * there is no judgement in it. Measured over a batch: a third of resumes
+   * printed an identical entry twice - "python, sql, rest, postgresql, dbt, aws,
+   * git" all doubled on one of them - usually because the same tool belongs in
+   * two of the model's own groups and it wrote it in both. Removing the second
+   * copy cannot be wrong and cannot be argued with; anything subtler than that
+   * - "Spring" against "Spring Framework" - is a judgement, stays in the prompt,
+   * and stays out of here.
    *
    * The flat list is kept in step because templates, the DOCX writer and the
    * keyword measurement all read `hardSkills`.
    */
+  const seenSkills = new Map<string, string>();
+  const droppedSkills: string[] = [];
   const modelSkillGroups = (content.skillGroups ?? [])
     .map((group) => ({
       category: String(group?.category ?? '').trim(),
       skills: (Array.isArray(group?.skills) ? group.skills : [])
-        .map((skill) => String(skill ?? '').trim())
-        .filter(Boolean),
+        .map((skill) => String(skill ?? '').trim().replace(/\s+/g, ' '))
+        .filter(Boolean)
+        .filter((skill) => {
+          const key = skill.toLowerCase();
+          if (seenSkills.has(key)) {
+            droppedSkills.push(skill);
+            return false;
+          }
+          seenSkills.set(key, skill);
+          return true;
+        }),
     }))
     .filter((group) => group.category && group.skills.length > 0);
+
+  if (droppedSkills.length > 0) {
+    console.log(
+      `[Resume skills] ${profile?.name ?? 'resume'}: removed ${droppedSkills.length} repeated `
+        + `entr${droppedSkills.length === 1 ? 'y' : 'ies'} from the block - ${droppedSkills.slice(0, 8).join(', ')}`
+        + `${droppedSkills.length > 8 ? ', ...' : ''}`
+    );
+  }
 
   const hardSkills = modelSkillGroups.length > 0
     ? modelSkillGroups.flatMap((group) => group.skills)

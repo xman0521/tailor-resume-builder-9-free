@@ -5,9 +5,113 @@ import os from 'os';
 
 export const DEFAULT_GENERATED_RESUMES_DIR = path.join(__dirname, '..', '..', '..', 'generated');
 export const DEFAULT_OUTPUT_PATH_TEMPLATE = '/{{profile name}}/{{date}}/{{company name}}/{{job title}}';
-export const DEFAULT_RESUME_FILE_NAME_TEMPLATE = '{{profile name}}_{{target role title}}';
-export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_{{target role title}}_cover_letter';
+export const DEFAULT_RESUME_FILE_NAME_TEMPLATE = '{{profile name}}_{{role family}}';
+export const DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE = '{{profile name}}_{{role family}}_cover_letter';
 export const DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE = '{{row number}}_{{company name}}';
+
+/**
+ * The shapes a pair of file names can take, one drawn per application.
+ *
+ * WHY. Five hundred files named to one pattern is the same tell as five hundred
+ * resumes laid out to one pattern, and this app already varies the skills
+ * block's look and the headline's separator for exactly that reason.
+ *
+ * WHAT VARIES: the order of the parts, the label ("Resume", "CL", nothing), and
+ * the joining and case. What does NOT vary: every name starts with the
+ * candidate, so a listing still sorts by person and a recruiter reads the name
+ * first; and both files of one application take the SAME shape, because a
+ * folder holding "Weitian_Wu_DevOps_Engineer.pdf" beside
+ * "devops_engineer_weitian_wu_cl.pdf" reads as two different people's work.
+ *
+ * `transform` is for the shapes a template cannot express: camel joins the
+ * words of each value, lower folds the finished name.
+ */
+export type FileNameStyle = {
+  name: string;
+  resume: string;
+  coverLetter: string;
+  transform?: 'camel' | 'lower';
+};
+
+export const FILE_NAME_STYLES: FileNameStyle[] = [
+  {
+    name: 'plain',
+    resume: '{{profile name}}_{{role family}}',
+    coverLetter: '{{profile name}}_{{role family}}_cover_letter',
+  },
+  {
+    name: 'labelled',
+    resume: '{{profile name}}_Resume_{{role family}}',
+    coverLetter: '{{profile name}}_Cover_Letter_{{role family}}',
+  },
+  {
+    name: 'suffixed',
+    resume: '{{profile name}}_{{role family}}_Resume',
+    coverLetter: '{{profile name}}_{{role family}}_Cover_Letter',
+  },
+  {
+    name: 'camel',
+    resume: '{{profile name}}_{{role family}}',
+    coverLetter: '{{profile name}}_{{role family}}_CoverLetter',
+    transform: 'camel',
+  },
+  {
+    name: 'company',
+    resume: '{{profile name}}_{{company name}}_{{role family}}',
+    coverLetter: '{{profile name}}_{{company name}}_{{role family}}_CL',
+  },
+  {
+    name: 'lower',
+    resume: '{{profile name}}_{{role family}}',
+    coverLetter: '{{profile name}}_{{role family}}_cover_letter',
+    transform: 'lower',
+  },
+];
+
+export const FILE_NAME_STYLE_NAMES = FILE_NAME_STYLES.map((style) => style.name);
+
+/** The shape this application's files take: the pinned one, or a random one. */
+export function pickFileNameStyle(env: NodeJS.ProcessEnv = process.env): FileNameStyle {
+  const pinned = (env.RESUME_FILE_NAME_STYLE ?? '').trim().toLowerCase();
+  const match = FILE_NAME_STYLES.find((style) => style.name === pinned);
+  if (match) return match;
+  return FILE_NAME_STYLES[Math.floor(Math.random() * FILE_NAME_STYLES.length)];
+}
+
+/** "Weitian Wu" as "WeitianWu", "AI/ML Engineer" as "AIMLEngineer". */
+function camelJoin(value: string): string {
+  return value
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .map((word) => (/^[A-Z0-9]+$/.test(word) ? word : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join('');
+}
+
+/** Both names for one application, in one shape. */
+export function renderStyledFileNames(
+  style: FileNameStyle,
+  variables: OutputTemplateVariables
+): { resume: string; coverLetter: string } {
+  const values: OutputTemplateVariables = style.transform === 'camel'
+    ? {
+      ...variables,
+      profileName: camelJoin(variables.profileName),
+      companyName: camelJoin(variables.companyName),
+      jobTitle: camelJoin(variables.jobTitle),
+      roleFamily: variables.roleFamily ? camelJoin(variables.roleFamily) : variables.roleFamily,
+    }
+    : variables;
+
+  const render = (template: string, fallback: string) => {
+    const name = renderOutputFileNameTemplate(template, values, fallback);
+    return style.transform === 'lower' ? name.toLowerCase() : name;
+  };
+
+  return {
+    resume: render(style.resume, DEFAULT_RESUME_FILE_NAME_TEMPLATE),
+    coverLetter: render(style.coverLetter, DEFAULT_COVER_LETTER_FILE_NAME_TEMPLATE),
+  };
+}
 
 export const OUTPUT_PATH_TOKENS = [
   { token: '{{date}}', description: 'Current date as YYYY-MM-DD' },
@@ -16,6 +120,10 @@ export const OUTPUT_PATH_TOKENS = [
   { token: '{{row number}}', description: 'Source Google Sheet row number' },
   { token: '{{job title}}', description: 'Role / job title' },
   { token: '{{target role title}}', description: 'Role / job title (same value, named as the posting)' },
+  {
+    token: '{{role family}}',
+    description: 'The kind of role in two or three words: DevOps Engineer, Cloud Engineer, AI/ML Engineer',
+  },
 ] as const;
 
 export type OutputTemplateVariables = {
@@ -24,6 +132,14 @@ export type OutputTemplateVariables = {
   companyName: string;
   rowNumber?: string;
   jobTitle: string;
+  /**
+   * The discipline the posting is for, rather than what it called itself.
+   *
+   * A file name wants "DevOps Engineer", not "DevOps Engineer III - AI Business
+   * Automation": the folder already carries the full title, and what an operator
+   * reads in a listing is which KIND of role each resume was written for.
+   */
+  roleFamily?: string;
 };
 
 const OUTPUT_TOKEN_ALIASES: Record<string, keyof OutputTemplateVariables> = {
@@ -45,6 +161,12 @@ const OUTPUT_TOKEN_ALIASES: Record<string, keyof OutputTemplateVariables> = {
   'target role': 'jobTitle',
   'role title': 'jobTitle',
   'target title': 'jobTitle',
+  // The discipline rather than the posting's own words, for file names.
+  'role family': 'roleFamily',
+  'role type': 'roleFamily',
+  'simple role': 'roleFamily',
+  'simple role title': 'roleFamily',
+  discipline: 'roleFamily',
 };
 
 /**
@@ -62,6 +184,7 @@ const TOKEN_FALLBACKS: Record<keyof OutputTemplateVariables, string> = {
   companyName: 'unknown_company',
   rowNumber: 'no_row',
   jobTitle: 'unknown_job_title',
+  roleFamily: 'unknown_role',
 };
 
 /**

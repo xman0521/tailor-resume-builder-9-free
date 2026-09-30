@@ -10,15 +10,16 @@ const { useTempStorage } = require('./helpers');
 /**
  * The headline, checked through the route the sheet import actually calls.
  *
- * The headline is the CANDIDATE's own title, whatever the posting is called;
- * the posting's role is named in the summary instead, in the model's own words.
- * Every earlier version of this line was checked one piece at a time, each
- * piece was right, and the printed resume was wrong anyway - which is why this
- * drives the real route rather than the helper.
+ * The headline is the candidate's own title with the KIND of role this
+ * application is for after it. What makes it worth driving the real route is
+ * WHICH title arrives: the sheet sends the role in its own column, the analyser
+ * writes its own guess, and they are not always the same. Every earlier version
+ * of this line was checked one piece at a time, each piece was right, and the
+ * printed resume was wrong anyway.
  *
- * The two postings below name fields this candidate's headline does not, and
- * the analyser's own title is deliberately blank, so anything leaking from
- * either would show up here.
+ * The analyser's own title is deliberately blank below, so what reaches the
+ * renderer can only have come from the sheet's job-title column - and the
+ * separator is pinned, because it is drawn at random per resume.
  */
 
 const analysisWithBlankTitle = () => ({
@@ -29,8 +30,11 @@ const analysisWithBlankTitle = () => ({
   keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
 });
 
-test('the headline reaches the renderer as the profile wrote it, whatever the posting is called', async (t) => {
+test('the headline reaches the renderer carrying the sheet\'s own role', async (t) => {
   useTempStorage('headline-e2e');
+
+  const pinnedStyle = process.env.RESUME_HEADLINE_STYLE;
+  process.env.RESUME_HEADLINE_STYLE = 'pipe';
 
   const execution = require('../dist/services/ai/promptExecution');
   const original = execution.createPromptCompletion;
@@ -115,7 +119,10 @@ test('the headline reaches the renderer as the profile wrote it, whatever the po
     assert.equal(response.status, 200);
     assert.equal(body.failed, 0);
 
-    assert.deepEqual(printed.sort(), ['Software Engineer', 'Software Engineer']);
+    assert.deepEqual(printed.sort(), [
+      'Software Engineer | DevOps Engineer',
+      'Software Engineer | Integration Engineer',
+    ]);
 
     // The on-screen preview has to agree with the file that gets saved.
     const preview = await fetch(`http://127.0.0.1:${server.address().port}/api/resume/preview`, {
@@ -131,7 +138,7 @@ test('the headline reaches the renderer as the profile wrote it, whatever the po
     });
     const shown = await preview.json();
     assert.equal(preview.status, 200, JSON.stringify(shown).slice(0, 300));
-    assert.equal(shown.html, '<p>Software Engineer</p>');
+    assert.equal(shown.html, '<p>Software Engineer | AI/ML Engineer</p>');
   } finally {
     execution.createPromptCompletion = original;
     generator.generateResumePDF = originalRender;
@@ -140,5 +147,7 @@ test('the headline reaches the renderer as the profile wrote it, whatever the po
     templates.getTemplateById = originalTemplate;
     server?.close();
     fs.rmSync(outDir, { recursive: true, force: true });
+    if (pinnedStyle === undefined) delete process.env.RESUME_HEADLINE_STYLE;
+    else process.env.RESUME_HEADLINE_STYLE = pinnedStyle;
   }
 });

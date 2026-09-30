@@ -71,6 +71,87 @@ test('the groups come through exactly as the model returned them', () => {
   assert.deepEqual(out.skills, out.hardSkills);
 });
 
+test('the same string is not printed twice, and nothing subtler is touched', () => {
+  /*
+   * THE ONE THING CODE TAKES OUT of a block it otherwise prints verbatim, and
+   * it is here because there is no judgement in it. Measured over a batch: a
+   * third of resumes printed an identical entry twice - one carried "python,
+   * sql, rest, postgresql, dbt, aws, git" all doubled - usually because a tool
+   * belongs under two of the model's own headings and it wrote it under both.
+   *
+   * What is NOT taken out is anything that needs an opinion: "Spring" beside
+   * "Spring Framework", "CI/CD" beside "CI/CD tools", "CSS" beside "SCSS". Which
+   * form to keep is a decision about the posting, so it lives in the prompt, and
+   * the losing forms go into the prose where a scanner reads them just as well.
+   */
+  const out = parseTailoredResumeContent(
+    answer([
+      { category: 'Languages', skills: ['Python', 'SQL', 'python'] },
+      { category: 'Cloud', skills: ['AWS', 'Docker', 'Terraform'] },
+      { category: 'DevOps', skills: ['Docker', 'Terraform', 'GitHub Actions'] },
+    ]),
+    profile(),
+    analysis()
+  );
+
+  // First occurrence wins, in the model's own order, and the later copies go.
+  assert.deepEqual(out.skillGroups, [
+    { category: 'Languages', skills: ['Python', 'SQL'] },
+    { category: 'Cloud', skills: ['AWS', 'Docker', 'Terraform'] },
+    { category: 'DevOps', skills: ['GitHub Actions'] },
+  ]);
+  assert.deepEqual(out.hardSkills, ['Python', 'SQL', 'AWS', 'Docker', 'Terraform', 'GitHub Actions']);
+
+  // A group left empty by the removal is dropped rather than printed headless.
+  const emptied = parseTailoredResumeContent(
+    answer([
+      { category: 'Cloud', skills: ['AWS', 'Terraform'] },
+      { category: 'Infrastructure', skills: ['aws', 'TERRAFORM'] },
+    ]),
+    profile(),
+    analysis()
+  );
+  assert.deepEqual(emptied.skillGroups, [{ category: 'Cloud', skills: ['AWS', 'Terraform'] }]);
+
+  // And the judgement cases survive untouched: this is not a synonym filter.
+  const keptApart = parseTailoredResumeContent(
+    answer([
+      { category: 'Web', skills: ['CSS', 'SCSS', 'HTTP', 'HTTPS'] },
+      { category: 'Delivery', skills: ['CI/CD', 'CI/CD tools', 'Spring', 'Spring Framework'] },
+    ]),
+    profile(),
+    analysis()
+  );
+  assert.deepEqual(keptApart.skillGroups, [
+    { category: 'Web', skills: ['CSS', 'SCSS', 'HTTP', 'HTTPS'] },
+    { category: 'Delivery', skills: ['CI/CD', 'CI/CD tools', 'Spring', 'Spring Framework'] },
+  ]);
+});
+
+test('the prompt decides which FORM of a thing the block shows', () => {
+  /*
+   * The other half, and the reason the code half stays narrow. The analyser is
+   * told to emit both forms of every short name - a scanner matches literally,
+   * so "LLMs" and "Large Language Models" both have to be on the page - and the
+   * block, with a floor of about thirty entries, is the cheapest place to dump
+   * them. The prompt now says the block shows one form and the prose carries
+   * the rest, which is where they read like something that happened.
+   */
+  const { getStoredPrompt } = require('../dist/database/promptRepository');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const running = getStoredPrompt('tailor-resume')?.content
+    ?? JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'static', 'prompts', 'tailor-resume.json'), 'utf8')).content;
+
+  assert.match(running, /ONE FORM OF A THING IN THE BLOCK, THE OTHERS IN THE PROSE/);
+  assert.match(running, /THE BLOCK GETS ONE/);
+  assert.match(running, /THE SENTENCES GET THE OTHERS/);
+  // The rule that every other rule here needed before it held.
+  assert.match(running, /BEFORE YOU RETURN, READ THE BLOCK AS A LIST OF STRINGS/);
+  // And the same tool under two headings, which is what code now removes anyway.
+  assert.match(running, /The same skill in two groups/);
+});
+
 test('nothing from the skill library is added to the block', () => {
   // The old selection topped a thin block up from the library and padded each
   // heading to a minimum. Three skills stay three skills.

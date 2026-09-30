@@ -111,17 +111,38 @@ test('the headline is the candidate\'s own title, and the posting is named elsew
     analysis
   ).title;
 
-  // Whatever the posting is called, the headline is the profile's own line.
-  for (const posting of [
-    'Mulesoft Integration Engineer',
-    'Staff Data Engineer US Remote',
-    'Sr DevOps Engineer - Remote (US) - Req #12345',
-    'Data & AI Engineer - AWS, Java & Python',
-    '',
-  ]) {
-    assert.equal(printed(analysisWithTitle(posting)), 'Software Engineer', `posting: ${posting}`);
+  // The profile's own line, and after it the KIND of role this application is
+  // for. Pinned to one separator here; the six shapes have their own test.
+  const pinned = process.env.RESUME_HEADLINE_STYLE;
+  process.env.RESUME_HEADLINE_STYLE = 'pipe';
+  try {
+    assert.equal(
+      printed(analysisWithTitle('Mulesoft Integration Engineer')),
+      'Software Engineer | Integration Engineer'
+    );
+    assert.equal(
+      printed(analysisWithTitle('Staff Data Engineer US Remote')),
+      'Software Engineer | Data Engineer'
+    );
+    assert.equal(
+      printed(analysisWithTitle('Sr DevOps Engineer - Remote (US) - Req #12345')),
+      'Software Engineer | DevOps Engineer'
+    );
+    assert.equal(
+      printed(analysisWithTitle('Data & AI Engineer - AWS, Java & Python')),
+      'Software Engineer | AI/ML Engineer'
+    );
+
+    // Nothing is said twice: a posting that names what the candidate already
+    // calls themselves leaves the line alone.
+    assert.equal(printed(analysisWithTitle('Senior Software Engineer II')), 'Software Engineer');
+    // And with no posting there is nothing to append.
+    assert.equal(printed(analysisWithTitle('')), 'Software Engineer');
+    assert.equal(printed(undefined), 'Software Engineer');
+  } finally {
+    if (pinned === undefined) delete process.env.RESUME_HEADLINE_STYLE;
+    else process.env.RESUME_HEADLINE_STYLE = pinned;
   }
-  assert.equal(printed(undefined), 'Software Engineer');
 
   // The model's own answer is never the headline either, and the work history
   // is still the candidate's.
@@ -130,7 +151,8 @@ test('the headline is the candidate\'s own title, and the posting is named elsew
     p,
     analysisWithTitle('Staff Data Engineer')
   );
-  assert.equal(out.title, 'Software Engineer');
+  assert.ok(out.title.startsWith('Software Engineer'), out.title);
+  assert.ok(!out.title.includes('Engineer, Engineer'), out.title);
   assert.equal(out.experience[0].title, p.experience[0].title);
   assert.equal(out.experience[0].company, p.experience[0].company);
 
