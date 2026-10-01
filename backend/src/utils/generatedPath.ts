@@ -84,7 +84,7 @@ export async function getGeneratedOutputPath(
   };
   const relativeBase = renderOutputPathTemplate(outputPathTemplate, pathTemplateVariables);
   /*
-   * The two file names, in one of six shapes drawn per application.
+   * The two file names, in one of the shapes drawn per application.
    *
    * A PROFILE THAT NAMES ITS OWN TEMPLATE PINS ITSELF. The pool is what a
    * profile gets when it has not said otherwise, so an operator who wants every

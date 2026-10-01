@@ -23,14 +23,17 @@ export const DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE = '{{row number}}_{{company na
  * folder holding "Weitian_Wu_DevOps_Engineer.pdf" beside
  * "devops_engineer_weitian_wu_cl.pdf" reads as two different people's work.
  *
- * `transform` is for the shapes a template cannot express: camel joins the
- * words of each value, lower folds the finished name.
+ * `transform` is for the shapes a template cannot express: camel joins the words
+ * of each value, lower folds the finished name, hyphen swaps every underscore
+ * for a dash. Hyphen is applied to the FINISHED name rather than written into
+ * the template, so a value with a dash of its own - "Full-Stack Engineer" -
+ * cannot produce a name that is half dashes and half underscores.
  */
 export type FileNameStyle = {
   name: string;
   resume: string;
   coverLetter: string;
-  transform?: 'camel' | 'lower';
+  transform?: 'camel' | 'lower' | 'hyphen';
 };
 
 export const FILE_NAME_STYLES: FileNameStyle[] = [
@@ -39,26 +42,24 @@ export const FILE_NAME_STYLES: FileNameStyle[] = [
     resume: '{{profile name}}_{{role family}}',
     coverLetter: '{{profile name}}_{{role family}}_cover_letter',
   },
-  {
-    name: 'labelled',
-    resume: '{{profile name}}_Resume_{{role family}}',
-    coverLetter: '{{profile name}}_Cover_Letter_{{role family}}',
-  },
-  {
-    name: 'suffixed',
-    resume: '{{profile name}}_{{role family}}_Resume',
-    coverLetter: '{{profile name}}_{{role family}}_Cover_Letter',
-  },
+  // THE RESUME DOES NOT SAY "RESUME". Two shapes carried that word - one with
+  // it in the middle, "Weitian_Wu_Resume_DevOps_Engineer", one at the end - and
+  // the operator cut both. A resume file is named after the person and the role;
+  // the reader can see what it is.
   {
     name: 'camel',
     resume: '{{profile name}}_{{role family}}',
     coverLetter: '{{profile name}}_{{role family}}_CoverLetter',
     transform: 'camel',
   },
+  // And no shape names the company: the folder above the file already does, and
+  // "Weitian_Wu_KeyCorp_DevOps_Engineer" was the operator's second cut from this
+  // pool. A name carries the candidate and the role, and nothing else.
   {
-    name: 'company',
-    resume: '{{profile name}}_{{company name}}_{{role family}}',
-    coverLetter: '{{profile name}}_{{company name}}_{{role family}}_CL',
+    name: 'hyphen',
+    resume: '{{profile name}}_{{role family}}',
+    coverLetter: '{{profile name}}_{{role family}}_cover_letter',
+    transform: 'hyphen',
   },
   {
     name: 'lower',
@@ -104,7 +105,12 @@ export function renderStyledFileNames(
 
   const render = (template: string, fallback: string) => {
     const name = renderOutputFileNameTemplate(template, values, fallback);
-    return style.transform === 'lower' ? name.toLowerCase() : name;
+    if (style.transform === 'lower') return name.toLowerCase();
+    // Applied to the finished name, so every joint in it is a dash - including
+    // the one inside "Full-Stack Engineer", which the sanitizer has already
+    // turned into an underscore by this point.
+    if (style.transform === 'hyphen') return name.replace(/_/g, '-');
+    return name;
   };
 
   return {

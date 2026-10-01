@@ -153,7 +153,7 @@ test('the file name carries the KIND of role, not the posting\'s own words', () 
   );
 });
 
-test('the pair of file names takes one of six shapes, and takes it together', () => {
+test('the pair of file names takes one shape, and takes it together', () => {
   /*
    * Five hundred files named to one pattern is the same tell as five hundred
    * resumes laid out to one pattern, which is why the skills block's look and
@@ -174,20 +174,47 @@ test('the pair of file names takes one of six shapes, and takes it together', ()
   const rendered = FILE_NAME_STYLES.map((style) => renderStyledFileNames(style, variables));
   assert.deepEqual(rendered, [
     { resume: 'Weitian_Wu_DevOps_Engineer', coverLetter: 'Weitian_Wu_DevOps_Engineer_cover_letter' },
-    { resume: 'Weitian_Wu_Resume_DevOps_Engineer', coverLetter: 'Weitian_Wu_Cover_Letter_DevOps_Engineer' },
-    { resume: 'Weitian_Wu_DevOps_Engineer_Resume', coverLetter: 'Weitian_Wu_DevOps_Engineer_Cover_Letter' },
     { resume: 'WeitianWu_DevOpsEngineer', coverLetter: 'WeitianWu_DevOpsEngineer_CoverLetter' },
-    { resume: 'Weitian_Wu_KeyCorp_DevOps_Engineer', coverLetter: 'Weitian_Wu_KeyCorp_DevOps_Engineer_CL' },
+    { resume: 'Weitian-Wu-DevOps-Engineer', coverLetter: 'Weitian-Wu-DevOps-Engineer-cover-letter' },
     { resume: 'weitian_wu_devops_engineer', coverLetter: 'weitian_wu_devops_engineer_cover_letter' },
   ]);
+
+  // A name joins with ONE character. The hyphen shape is applied to the finished
+  // name rather than written into its template, so a role with a dash of its own
+  // - "Full-Stack Engineer" - cannot produce "Weitian-Wu-Full_Stack-Engineer".
+  const hyphenated = renderStyledFileNames(
+    FILE_NAME_STYLES.find((style) => style.name === 'hyphen'),
+    { ...variables, roleFamily: 'Full-Stack Engineer' }
+  );
+  assert.equal(hyphenated.resume, 'Weitian-Wu-Full-Stack-Engineer');
+  assert.doesNotMatch(hyphenated.resume, /_/);
+  for (const { resume, coverLetter } of rendered) {
+    for (const name of [resume, coverLetter]) {
+      assert.ok(!(name.includes('_') && name.includes('-')), `${name} mixes joiners`);
+    }
+  }
+
+  // No shape names the company: the folder above the file already does.
+  for (const { resume, coverLetter } of rendered) {
+    for (const name of [resume, coverLetter]) {
+      assert.doesNotMatch(name, /keycorp/i, `${name} names the company`);
+    }
+  }
+
+  // A RESUME FILE DOES NOT SAY "RESUME". Two shapes carried the word - one in
+  // the middle of the name, one at the end - and both were cut. The letter still
+  // says what it is, because a folder holding two files has to tell them apart.
+  for (const { resume } of rendered) {
+    assert.doesNotMatch(resume, /resume/i, `${resume} says "resume"`);
+  }
 
   // Every shape leads with the candidate, so a listing still sorts by person
   // and a recruiter reads the name first.
   for (const { resume, coverLetter } of rendered) {
-    for (const name of [resume, coverLetter]) assert.match(name, /^(?:Weitian_?Wu|weitian_wu)/, name);
-    // The letter says it is one - the label moves around between shapes, so
-    // this asks whether it is there rather than where.
-    assert.match(coverLetter.toLowerCase(), /cover_?letter|_cl$/, coverLetter);
+    for (const name of [resume, coverLetter]) assert.match(name, /^Weitian[_-]?Wu|^weitian_wu/, name);
+    // The letter says it is one - the joiner differs between shapes, so this
+    // asks whether the words are there rather than how they are joined.
+    assert.match(coverLetter.toLowerCase(), /cover[_-]?letter/, coverLetter);
     // And the pair shares its case convention: a lowercase resume beside a
     // Title_Case letter is the tell this whole thing exists to avoid.
     assert.equal(
@@ -197,9 +224,10 @@ test('the pair of file names takes one of six shapes, and takes it together', ()
     );
   }
 
-  // Underscores only, as the operator asked: no spaces, no punctuation.
+  // Letters, digits and ONE joiner - an underscore, or a dash in the hyphen
+  // shape the operator asked for. No spaces, no other punctuation.
   for (const { resume, coverLetter } of rendered) {
-    for (const name of [resume, coverLetter]) assert.match(name, /^[A-Za-z0-9_]+$/, name);
+    for (const name of [resume, coverLetter]) assert.match(name, /^[A-Za-z0-9_-]+$/, name);
   }
 
   // Drawn per application, and pinnable for a batch that should look the same.
