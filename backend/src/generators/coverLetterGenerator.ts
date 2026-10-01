@@ -385,6 +385,38 @@ function buildCoverLetterHTMLForDocx(content: string, profileName: string): stri
 }
 
 /**
+ * The letter as flowing text, one line per paragraph.
+ *
+ * WHY IT IS WRITTEN AT ALL. A PDF has no paragraphs - it has glyphs at
+ * coordinates - so copying one out gives a line break at the end of every
+ * RENDERED line, mid-sentence: "...reliability depends on careful / infra-
+ * structure, useful / service signals...". Measured on a delivered letter, the
+ * file itself is right: its text layer is uniform full-width lines and its
+ * structure tree carries one `/P` per paragraph, so a structure-aware reader
+ * copies it properly. A plain text extractor - which is what most "select all,
+ * copy" does - cannot, and no change to the PDF fixes that.
+ *
+ * So the letter is also written as text, where a paragraph is one line and
+ * whatever it is pasted into does its own wrapping. It costs about two
+ * kilobytes and it is the file to copy from.
+ */
+function coverLetterAsText(content: string, profileName: string): string {
+  const body = normalizeDashes(content).trim()
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim().replace(/\s*\n\s*/g, ' '))
+    .filter(Boolean);
+
+  return [
+    getCoverLetterGreeting(),
+    '',
+    ...body.flatMap((paragraph) => [paragraph, '']),
+    'Best regards,',
+    profileName.trim(),
+    '',
+  ].join('\r\n');
+}
+
+/**
  * Save cover letter as PDF in the same directory as the resume.
  * Path: {profile}/{count+1}_{company}/{role}/{profile}_cover_letter.pdf
  */
@@ -424,6 +456,15 @@ export async function saveCoverLetter(
 
     await fs.mkdir(path.dirname(filepath), { recursive: true });
     await fs.writeFile(filepath, Buffer.from(pdfBuffer));
+
+    // And the same letter as text, beside it, for pasting into an application
+    // form or an email. See `coverLetterAsText`: a PDF cannot be copied out
+    // without a break at the end of every rendered line.
+    const textPath = path.join(
+      pathInfo.absoluteDir,
+      `${getCoverLetterOutputFilename(pathInfo, 'pdf').replace(/\.pdf$/i, '')}.txt`
+    );
+    await fs.writeFile(textPath, coverLetterAsText(content.trim(), profile.name), 'utf8');
 
     return relativePath;
   } finally {
