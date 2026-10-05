@@ -7,6 +7,7 @@ import {
   AdminAppSettings,
   AdminAppSettingsUpdate,
   BrowserChatEndpoint,
+  BrowserCloseReport,
   ChatHistoryClearReport,
   DebugBrowserReport,
   AIProvider,
@@ -237,6 +238,8 @@ export default function AdminSettingsPage() {
   const [isChecking, setIsChecking] = useState(false);
   const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [historyReport, setHistoryReport] = useState<ChatHistoryClearReport | null>(null);
+  const [isClosingBrowsers, setIsClosingBrowsers] = useState(false);
+  const [closeReport, setCloseReport] = useState<BrowserCloseReport | null>(null);
   const [newBrowserSite, setNewBrowserSite] = useState<AIProvider>('claude-web');
   const [newBrowserPort, setNewBrowserPort] = useState('');
   const [isBrowsingDirectory, setIsBrowsingDirectory] = useState(false);
@@ -481,6 +484,38 @@ export default function AdminSettingsPage() {
       setDebugError(err instanceof Error ? err.message : 'Could not delete the chat history');
     } finally {
       setIsClearingHistory(false);
+    }
+  };
+
+  /**
+   * Quits every registered account browser.
+   *
+   * Asked first, but not in the same tone as the history button: nothing is
+   * deleted and nothing is signed out, so the worst case is reopening them.
+   * What is worth warning about is a batch in flight.
+   */
+  const closeBrowsers = async () => {
+    if (!form || form.browserChatEndpoints.length === 0) return;
+    const count = form.browserChatEndpoints.length;
+    const confirmed = window.confirm(
+      `Close ${count} registered account browser${count === 1 ? '' : 's'}?\n\n` +
+        'Each window quits with its profile intact, so the accounts stay signed in and nothing is ' +
+        'deleted.\n\n' +
+        'A browser that is answering a request right now is left open.'
+    );
+    if (!confirmed) return;
+
+    setIsClosingBrowsers(true);
+    setCloseReport(null);
+    setDebugError('');
+    try {
+      setCloseReport(await adminApi.closeAccountBrowsers());
+      // The status list on this page is now describing windows that have gone.
+      await refreshDebugBrowsers();
+    } catch (err) {
+      setDebugError(err instanceof Error ? err.message : 'Could not close the account browsers');
+    } finally {
+      setIsClosingBrowsers(false);
     }
   };
 
@@ -753,6 +788,15 @@ export default function AdminSettingsPage() {
             </button>
             <button
               type="button"
+              onClick={() => void closeBrowsers()}
+              disabled={isClosingBrowsers || savingSection !== null || form.browserChatEndpoints.length === 0}
+              title="Quits every registered account browser. Nothing is signed out or deleted."
+              className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {isClosingBrowsers ? 'Closing browsers...' : 'Close all browsers'}
+            </button>
+            <button
+              type="button"
               onClick={() => void clearChatHistory()}
               disabled={isClearingHistory || savingSection !== null || form.browserChatEndpoints.length === 0}
               title="Deletes every conversation in every registered account browser"
@@ -879,6 +923,37 @@ npm run browser:debug
           </div>
 
           {debugError ? <p className="text-sm text-red-600">{debugError}</p> : null}
+
+          {isClosingBrowsers ? (
+            <p className="text-sm text-gray-600">Closing every registered browser.</p>
+          ) : null}
+
+          {/* One line per browser, same as the history report below: a browser
+              that was already closed, or busy with a call, is worth seeing
+              rather than folding into a total that looks complete. */}
+          {closeReport ? (
+            <div className="rounded-md border border-gray-200 p-3">
+              <p className="text-sm font-medium text-gray-900">
+                Closed {closeReport.closed} of {closeReport.results.length} browser
+                {closeReport.results.length === 1 ? '' : 's'}.
+              </p>
+              <ul className="mt-2 space-y-1">
+                {closeReport.results.map((row) => (
+                  <li key={row.port} className="flex flex-wrap gap-x-3 text-sm">
+                    <span className="min-w-[9rem] text-gray-900">{getAIProviderLabel(row.siteId)}</span>
+                    <span className="text-gray-600">port {row.port}</span>
+                    {row.error ? (
+                      <span className="text-red-600">could not close: {row.error}</span>
+                    ) : row.note ? (
+                      <span className="text-amber-700">{row.note}</span>
+                    ) : (
+                      <span className="text-green-700">closed</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           {isClearingHistory ? (
             <p className="text-sm text-gray-600">

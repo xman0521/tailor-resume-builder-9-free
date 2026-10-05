@@ -12,7 +12,7 @@ import {
 import { getProviderLabel } from '../config/providerCatalog';
 import { fetchGoogleSheetsRange, GoogleSheetsRequestError, updateGoogleSheetsRange } from '../integrations/googleSheets';
 import { probeDebugBrowser } from '../services/debugBrowser';
-import { clearAllChatHistory } from '../services/ai';
+import { clearAllChatHistory, closeAllAccountBrowsers } from '../services/ai';
 import { getTabPoolStats } from '../services/ai/providers/browserChat/pool';
 import { openNativeDirectoryPicker } from '../utils/nativeDirectoryPicker';
 
@@ -184,6 +184,31 @@ router.post('/browser/clear-history', authMiddleware, async (_req: Request, res:
   } catch (error) {
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Could not clear the chat history',
+    });
+  }
+});
+
+/**
+ * Quits every registered account browser.
+ *
+ * The counterpart to the sweep above, and the same rules: only ever reached
+ * from a button on the Settings page, works through the list that page shows,
+ * and leaves a browser that is answering a request alone. Nothing is signed out
+ * and nothing is deleted - a browser quits with its profile, so the accounts are
+ * still signed in the next time the operator opens them.
+ *
+ * This router still cannot START a browser. See the note on `/browser/debug`.
+ */
+router.post('/browser/close', authMiddleware, async (_req: Request, res: Response) => {
+  try {
+    const results = await closeAllAccountBrowsers();
+    res.json({
+      results,
+      closed: results.filter((row) => row.closed).length,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Could not close the account browsers',
     });
   }
 });

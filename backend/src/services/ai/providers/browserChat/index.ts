@@ -26,7 +26,7 @@ import type {
   ProviderHealth,
 } from '../../types';
 import { type HistoryClearResult } from './history';
-import { BrowserChatSession, BrowserSessionError, debugEndpoint } from './session';
+import { BrowserChatSession, BrowserSessionError, closeBrowserAt, debugEndpoint } from './session';
 import { readChatSite, type ChatSiteId } from './sites';
 import { ChatTurnError } from './tab';
 
@@ -768,6 +768,107 @@ export function createBrowserChatAdapter(
       }
     },
   };
+}
+
+/** What one browser's shutdown did. */
+export type EndpointClose = {
+  endpoint: string;
+  port: number;
+  siteId: ChatSiteId;
+  closed: boolean;
+  note?: string;
+  error?: string;
+};
+
+export type CloseBrowsersOptions = {
+  /** For tests: the browsers to close, instead of the registered ones. */
+  browsers?: Array<{ port: number; siteId: ChatSiteId }>;
+  /** For tests: what to do with each browser. */
+  close?: (endpoint: string) => Promise<void>;
+  /** For tests: whether a browser is mid-call. */
+  leased?: (endpoint: string) => boolean;
+  /** For tests: dropping this process's cached handles afterwards. */
+  forget?: () => void;
+  env?: NodeJS.ProcessEnv;
+  log?: (message: string) => void;
+};
+
+/** Browsers closed at once. Quitting is quick; this is politeness, not throughput. */
+const CLOSE_CONCURRENCY = 4;
+
+/**
+ * Quits every registered account browser. On request only.
+ *
+ * WHY IT EXISTS. A run needs as many signed-in windows as there are accounts,
+ * and when the run is over they are fifty Chrome windows holding memory on the
+ * operator's machine. Closing them by hand is the job this button replaces, and
+ * it is the counterpart to the chat-history button beside it: both act on the
+ * list of browsers the Settings page shows.
+ *
+ * WHAT IT DOES NOT DO. Start anything, sign anything out, or delete anything.
+ * A browser quits with its profile intact, so the accounts are still signed in
+ * the next time `npm run browser:debug` opens them.
+ *
+ * A BROWSER IN THE MIDDLE OF A CALL IS SKIPPED, not waited for. Closing the
+ * window a turn is reading from would fail that turn, and the button can be
+ * pressed while a batch is running - the same rule the history sweep follows,
+ * for the same reason.
+ *
+ * Cached handles are dropped at the end whatever happened: a connection to a
+ * browser that has quit is not reusable, and reusing one is how a driver
+ * reports healthy while answering nothing.
+ */
+export async function closeAllAccountBrowsers(
+  options: CloseBrowsersOptions = {}
+): Promise<EndpointClose[]> {
+  const env = options.env ?? process.env;
+  const log = options.log ?? ((message: string) => console.log(message));
+  const leased = options.leased ?? isEndpointLeased;
+  const forget = options.forget ?? resetBrowserChatSession;
+
+  const browsers =
+    options.browsers ?? ((await getBrowserChatEndpoints()) as Array<{ port: number; siteId: ChatSiteId }>);
+  if (browsers.length === 0) return [];
+
+  const explicit = (env.AI_WEB_CDP_URL ?? '').trim();
+  const close = options.close ?? ((endpoint: string) => closeBrowserAt(endpoint));
+
+  const outcomes = await mapWithConcurrency(browsers, CLOSE_CONCURRENCY, async (browser) => {
+    const endpoint = explicit || endpointUrl(browser.port);
+    const row = { endpoint, port: browser.port, siteId: browser.siteId };
+    if (leased(endpoint)) {
+      return { ...row, closed: false, note: 'busy with a call, left alone' };
+    }
+    try {
+      await close(endpoint);
+      return { ...row, closed: true };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      // A browser that is not running is the state this was asked for, not a
+      // failure to report in red.
+      if (/Could not reach|ECONNREFUSED|connect ECONN|fetch failed/i.test(detail)) {
+        return { ...row, closed: false, note: 'was not running' };
+      }
+      return { ...row, closed: false, error: detail };
+    }
+  });
+
+  // The worker catches its own failures, so every slot is a value.
+  const results = outcomes.map((outcome) => (outcome.ok ? outcome.value : null)).filter(
+    (row): row is EndpointClose => row !== null
+  );
+
+  forget();
+
+  const closed = results.filter((row) => row.closed).length;
+  const problems = results.filter((row) => row.error || row.note);
+  log(
+    `[ai] account browsers: ${closed} of ${results.length} closed.` +
+      problems
+        .map((row) => ` ${portOf(row.endpoint)} (${row.siteId}): ${row.error ?? row.note}.`)
+        .join('')
+  );
+  return results;
 }
 
 /** What one browser's cleanup did. */

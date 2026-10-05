@@ -967,6 +967,24 @@ export interface ChatHistoryClearReport {
   deleted: number;
 }
 
+/** One account browser's result from "Close all browsers". */
+export interface BrowserCloseRow {
+  endpoint: string;
+  port: number;
+  siteId: AIProvider;
+  /** The browser quit. */
+  closed: boolean;
+  /** Why it did not: busy with a call, or it was not running to begin with. */
+  note?: string;
+  /** It was running and refused to close. */
+  error?: string;
+}
+
+export interface BrowserCloseReport {
+  results: BrowserCloseRow[];
+  closed: number;
+}
+
 export interface BrowseOutputDirectoryResponse {
   selectedPath: string | null;
 }
@@ -1131,6 +1149,10 @@ export const adminApi = {
   /** Deletes every conversation in every registered account browser. Irreversible. */
   clearBrowserChatHistory: () =>
     apiFetch<ChatHistoryClearReport>('/admin/browser/clear-history', { method: 'POST' }),
+
+  /** Quits every registered account browser. Nothing is signed out or deleted. */
+  closeAccountBrowsers: () =>
+    apiFetch<BrowserCloseReport>('/admin/browser/close', { method: 'POST' }),
 
   browseOutputDirectory: (currentPath?: string) =>
     apiFetch<BrowseOutputDirectoryResponse>('/admin/browse-output-directory', {

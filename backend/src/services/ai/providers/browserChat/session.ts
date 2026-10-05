@@ -63,6 +63,46 @@ export function debugEndpoint(env: NodeJS.ProcessEnv = process.env): string {
   return `http://127.0.0.1:${Number.isFinite(port) && port > 0 ? port : DEFAULT_DEBUG_PORT}`;
 }
 
+/**
+ * Quits the browser listening on this endpoint.
+ *
+ * A connection, a `Browser.close`, and nothing else - no tab is driven and no
+ * page is read, so this is as safe to call on a signed-out or wedged browser as
+ * on a working one. A browser that is not running cannot be connected to, and
+ * says so through the error rather than through a silent success.
+ *
+ * The caller is responsible for dropping cached sessions afterwards: handles to
+ * a browser that has quit are not reusable, and reusing one is how a driver
+ * reports healthy while answering nothing.
+ */
+export async function closeBrowserAt(endpoint: string): Promise<void> {
+  let browser: Browser | null = null;
+  try {
+    browser = await puppeteer.connect({
+      browserURL: endpoint,
+      defaultViewport: null,
+      protocolTimeout: PROTOCOL_TIMEOUT_MS,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new BrowserSessionError(
+      `Could not reach a debug browser at ${endpoint}: ${detail}`,
+      startupHint(endpoint)
+    );
+  }
+
+  try {
+    await browser.close();
+  } catch (error) {
+    // The window may already be gone, in which case the close fails and the
+    // outcome is the one that was asked for. Disconnect so this process is not
+    // left holding a socket to it either way.
+    await browser.disconnect().catch(() => undefined);
+    const detail = error instanceof Error ? error.message : String(error);
+    if (!/closed|disconnected|Target.*not found|Session closed/i.test(detail)) throw error;
+  }
+}
+
 function startupHint(endpoint: string): string {
   // Parsed defensively: this runs inside the catch that exists to EXPLAIN a
   // bad endpoint, and a malformed AI_WEB_CDP_URL is the likeliest reason to be
