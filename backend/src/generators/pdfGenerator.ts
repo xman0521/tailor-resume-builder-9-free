@@ -431,8 +431,10 @@ async function getSharedPdfBrowser(): Promise<Browser> {
   }
 
   sharedPdfBrowserLaunch = launchBrowser({
+    // `--disable-features=FirstPartySets` used to be passed here and only here.
+    // It is in the shared launch args now, because the file it stops Chrome
+    // writing is the one that locked a cover letter's scratch profile.
     userDataDir: PDF_BROWSER_USER_DATA_DIR,
-    args: ['--disable-features=FirstPartySets'],
   }).then((browser) => {
     sharedPdfBrowser = browser;
     sharedPdfBrowserLaunch = null;

@@ -95,7 +95,20 @@ test('a running browser is found, and its open tabs are matched to sites', async
         // already gone
       }
     }
-    fs.rmSync(profile, { recursive: true, force: true });
+    /*
+     * The same race the product's own close had to learn to tolerate: Chrome's
+     * handles on its profile outlive the kill signal by a moment on Windows, so
+     * an immediate delete loses and this test failed on its own cleanup -
+     * EPERM on a temp directory, after every assertion above had passed.
+     *
+     * `rmSync` retries EPERM and EBUSY when asked to, and a leftover directory
+     * in TEMP is not a test failure either way.
+     */
+    try {
+      fs.rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+    } catch {
+      // Still held. The operating system's own temp cleaning gets it.
+    }
   }
 });
 

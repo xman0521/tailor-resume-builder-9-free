@@ -331,6 +331,19 @@ const SHARED_LAUNCH_ARGS = [
   '--disable-backgrounding-occluded-windows',
   '--disable-renderer-backgrounding',
   '--disable-background-timer-throttling',
+  /*
+   * First-Party Sets is a database Chrome writes into its profile and keeps
+   * open a moment past exit. On Windows that outlives the exit long enough to
+   * beat puppeteer's deletion of its own scratch profile:
+   *
+   *   EBUSY: resource busy or locked, unlink
+   *   '...\\puppeteer_dev_chrome_profile-rGh3Db\\first_party_sets.db-journal'
+   *
+   * The PDF renderer passed this for itself and nothing else did, so the error
+   * belonged to whichever path started Chrome - and the cover letter path
+   * starts one per letter. Nothing rendered here needs the feature.
+   */
+  '--disable-features=FirstPartySets',
 ];
 
 /**
@@ -360,6 +373,76 @@ export async function launchBrowser(options: LaunchOptions = {}): Promise<Browse
         `${detail}\n\n${describeMissingBrowser(defaultDeps)}`,
       { cause: error }
     );
+  }
+}
+
+/**
+ * How many times the leftover profile directory is swept, and how far apart.
+ *
+ * Chrome lets go of its own files within a moment of exiting; three tries a
+ * quarter-second apart covers that without keeping anything waiting - the sweep
+ * is not awaited by the caller anyway.
+ */
+const PROFILE_SWEEP_ATTEMPTS = 3;
+const PROFILE_SWEEP_DELAY_MS = 250;
+
+/** The scratch directory puppeteer makes for a launch, named out of its own error. */
+function temporaryProfileDirIn(detail: string): string | null {
+  const match = /([A-Za-z]:\\[^'"\n]*?puppeteer_dev_chrome_profile-[A-Za-z0-9]+|\/[^'"\n]*?puppeteer_dev_chrome_profile-[A-Za-z0-9]+)/.exec(detail);
+  if (!match) return null;
+  const dir = match[1];
+  // Only ever a puppeteer scratch profile, and only ever inside the temp
+  // directory: this runs from a catch block on a path that handles failure, and
+  // deleting anything else from here would be unrecoverable.
+  const temp = path.resolve(os.tmpdir());
+  return path.resolve(dir).startsWith(temp) ? dir : null;
+}
+
+/**
+ * Closes a browser this process launched, and does not fail over the cleanup.
+ *
+ * WHAT THIS IS FOR, measured on Windows:
+ *
+ *   EBUSY: resource busy or locked, unlink
+ *   'C:\\Users\\...\\Temp\\puppeteer_dev_chrome_profile-rGh3Db\\first_party_sets.db-journal'
+ *
+ * A launch with no `userDataDir` gets a scratch profile from puppeteer, and
+ * `close()` deletes that directory after the process exits. On Windows the
+ * handles outlive the exit by a moment, so the delete races it and loses - and
+ * because our closes sit in `finally` blocks, that rejection replaced the real
+ * result of the work: a cover letter that had already rendered came back as a
+ * failed build over a scratch file nobody will ever read.
+ *
+ * THE BROWSER IS CLOSED in that case. What failed is housekeeping, so it is
+ * swept again in the background and otherwise let go. Anything that is NOT a
+ * file-system error on that directory still throws: a browser that would not
+ * close is a real problem and this must not hide it.
+ */
+export async function closeBrowser(browser: Pick<Browser, 'close'>): Promise<void> {
+  try {
+    await browser.close();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const dir = temporaryProfileDirIn(detail);
+    if (!dir || !/\b(EBUSY|EPERM|ENOTEMPTY|ENOENT|EACCES)\b/.test(detail)) throw error;
+
+    void sweepTemporaryProfile(dir);
+  }
+}
+
+/** Best effort, never awaited, never throws: the browser has already closed. */
+async function sweepTemporaryProfile(dir: string): Promise<void> {
+  for (let attempt = 0; attempt < PROFILE_SWEEP_ATTEMPTS; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, PROFILE_SWEEP_DELAY_MS));
+    try {
+      // `fs` here is the callback API - the promise one hangs off it.
+      await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 2 });
+      return;
+    } catch {
+      // Still held. The next run of the sweep, or the operating system's own
+      // temp cleaning, gets it; a few megabytes in TEMP is not worth a log line
+      // on every render.
+    }
   }
 }
 

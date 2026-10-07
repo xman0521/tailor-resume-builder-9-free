@@ -1,5 +1,5 @@
 import pdf from 'pdf-parse';
-import { launchBrowser } from '../config/browser';
+import { closeBrowser, launchBrowser } from '../config/browser';
 
 const MAX_HTML_BYTES = 2_000_000;
 const FETCH_TIMEOUT_MS = 20_000;
@@ -109,7 +109,7 @@ async function extractHtmlViaPuppeteer(url: string): Promise<string> {
     });
     return normalizeWhitespace(text);
   } finally {
-    await browser.close();
+    await closeBrowser(browser);
   }
 }
 

@@ -1,4 +1,4 @@
-import { launchBrowser } from '../config/browser';
+import { closeBrowser, launchBrowser } from '../config/browser';
 import fs from 'fs/promises';
 import path from 'path';
 /// <reference path="../types/html-to-docx.d.ts" />
@@ -468,7 +468,7 @@ export async function saveCoverLetter(
 
     return relativePath;
   } finally {
-    await browser.close();
+    await closeBrowser(browser);
   }
   });
 }
