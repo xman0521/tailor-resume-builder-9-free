@@ -985,6 +985,25 @@ export interface BrowserCloseReport {
   closed: number;
 }
 
+/**
+ * What an armed run did at the end: "Turn off computer after complete".
+ *
+ * The report is written first and the browsers closed next, so a run that got
+ * as far as scheduling the shutdown has already done both - which is why these
+ * are reported together rather than as three separate calls.
+ */
+export interface ShutdownReport {
+  /** Where the failed-profiles file landed, or null if it could not be written. */
+  reportPath: string | null;
+  browsersClosed: number;
+  /** False when the shutdown command itself refused; the machine stays on. */
+  scheduled: boolean;
+  /** Epoch ms the machine goes off, for the countdown on the banner. */
+  shutdownAt: number | null;
+  graceSeconds: number;
+  note?: string;
+}
+
 export interface BrowseOutputDirectoryResponse {
   selectedPath: string | null;
 }
@@ -2034,6 +2053,7 @@ export const resumeApi = {
         profileId: string;
         profileName: string;
         companyName: string;
+        sourceRowNumber?: number;
         error: string;
       }>;
       failedCompanies: string[];
@@ -2082,6 +2102,17 @@ export const resumeApi = {
     return () => source.close();
   },
 
+  /**
+   * Calls off a shutdown an armed run scheduled. The same thing `shutdown /a`
+   * does, and safe to call when nothing is pending.
+   *
+   * Beside the call that arms it rather than under `adminApi`: the page that
+   * starts a run has no admin session, and a machine that can arm its own
+   * shutdown must not then need a password to be stopped.
+   */
+  abortShutdown: () =>
+    apiFetch<{ aborted: boolean; note?: string }>('/resume/shutdown/abort', { method: 'POST' }),
+
   generateMultiJob: (data: {
     templateId?: string;
     jobs: Array<{
@@ -2099,6 +2130,15 @@ export const resumeApi = {
     includeCoverLetterDocx?: boolean;
     /** Ties this run to a `watchBatchProgress` stream. */
     progressId?: string;
+    /**
+     * "Turn off computer after complete": the server writes the failure
+     * report, closes the account browsers and schedules the shutdown once this
+     * run is done. Per run, never remembered - a long batch is started and
+     * walked away from, and the next one may not be.
+     */
+    shutdownAfterComplete?: boolean;
+    /** Jobs lost at ANALYSIS, which this request would otherwise never hear about. */
+    priorFailures?: Array<{ companyName: string; sourceRowNumber?: number; error: string }>;
   }) =>
     apiFetch<{
       generated: number;
@@ -2123,6 +2163,8 @@ export const resumeApi = {
       tailored: boolean;
       unconfirmedHardSkills?: string[];
       unconfirmedSoftSkills?: string[];
+      /** Present only when the run was armed to turn the machine off. */
+      shutdown?: ShutdownReport;
     }>('/resume/generate-multi-job', {
       method: 'POST',
       body: JSON.stringify(data),

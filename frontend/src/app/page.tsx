@@ -14,6 +14,7 @@ import {
   Group,
   JobAnalysis,
   TailoredContent,
+  ShutdownReport,
 } from '@/lib/api';
 import AppTopNav from '@/components/AppTopNav';
 import GenerationProgress, { type GenerationProgressState } from '@/components/GenerationProgress';
@@ -94,12 +95,59 @@ export default function Home() {
   const [autoGenerate, setAutoGenerate] = useState(false);
   const [isSheetsImportOpen, setIsSheetsImportOpen] = useState(false);
 
+  /*
+   * "Turn off computer after complete", and what came of it.
+   *
+   * Per run and never remembered: a batch of 500 is started and walked away
+   * from, and the next one is often watched. A remembered tick is a machine that
+   * turns itself off on a run nobody meant to arm.
+   */
+  const [shutdownAfterComplete, setShutdownAfterComplete] = useState(false);
+  const [shutdownReport, setShutdownReport] = useState<ShutdownReport | null>(null);
+  const [isCancellingShutdown, setIsCancellingShutdown] = useState(false);
+
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationStep, setGenerationStep] = useState('');
   const [generationProgress, setGenerationProgress] = useState<GenerationProgressState | null>(null);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+
+  /*
+   * Seconds left before the machine goes off, ticked locally against the moment
+   * the SERVER named. A countdown counted in the page would drift from the one
+   * Windows is running, and the two disagreeing about a shutdown is the kind of
+   * disagreement that gets noticed at the wrong moment.
+   */
+  const [secondsToShutdown, setSecondsToShutdown] = useState<number | null>(null);
+  useEffect(() => {
+    const at = shutdownReport?.shutdownAt;
+    if (!at) {
+      setSecondsToShutdown(null);
+      return;
+    }
+    const tick = () => setSecondsToShutdown(Math.max(0, Math.round((at - Date.now()) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [shutdownReport?.shutdownAt]);
+
+  const cancelShutdown = async () => {
+    setIsCancellingShutdown(true);
+    try {
+      const result = await resumeApi.abortShutdown();
+      // Either way the machine is staying on - a refusal from `shutdown /a`
+      // means there was nothing scheduled to begin with.
+      setShutdownReport((report) => (report ? { ...report, scheduled: false, shutdownAt: null } : report));
+      if (!result.aborted && result.note) {
+        setSuccessMessage('The shutdown is not pending any more. The computer stays on.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not cancel the shutdown');
+    } finally {
+      setIsCancellingShutdown(false);
+    }
+  };
 
   useEffect(() => {
     loadInitialData();
@@ -476,6 +524,14 @@ export default function Home() {
         failedBuilds += selectedProfiles.length;
         failures.push(`${failure.companyName}: ${failure.error}`);
       }
+      // Kept in their own shape as well, for the report an armed run writes: the
+      // build call never hears about a job that died at analysis, and a report
+      // missing them describes a shorter run than the one that happened.
+      const analysisFailures = analysisResponse.failures.map((failure) => ({
+        companyName: failure.companyName,
+        sourceRowNumber: failure.sourceRowNumber,
+        error: failure.error,
+      }));
 
       if (analysisResponse.analyses.length > 0) {
         setJobAnalysis(analysisResponse.analyses[0].analysis);
@@ -551,6 +607,8 @@ export default function Home() {
             jobs: buildableJobs,
             profileIds: selectedProfiles.map((profile) => profile.id),
             progressId,
+            shutdownAfterComplete,
+            priorFailures: analysisFailures,
           });
         } finally {
           stopWatching();
@@ -564,6 +622,10 @@ export default function Home() {
 
         setUnconfirmedHardSkills(toUnconfirmedItems(result.unconfirmedHardSkills ?? []));
         setUnconfirmedSoftSkills(toUnconfirmedItems(result.unconfirmedSoftSkills ?? []));
+        // The server has already written the report and closed the browsers by
+        // the time this arrives; the banner below is the countdown and the way
+        // back out of it.
+        if (result.shutdown) setShutdownReport(result.shutdown);
       }
 
       updateGenerationProgress(
@@ -1430,6 +1492,53 @@ export default function Home() {
       <main className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-6">Generate Resumes</h1>
 
+        {shutdownReport && (
+          <div
+            className={`mb-6 rounded-lg border px-4 py-3 ${
+              shutdownReport.shutdownAt
+                ? 'border-amber-300 bg-amber-50 text-amber-900'
+                : 'border-gray-200 bg-gray-50 text-gray-700'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="text-sm">
+                <p className="font-semibold">
+                  {shutdownReport.shutdownAt
+                    ? `This computer turns off in ${secondsToShutdown ?? shutdownReport.graceSeconds}s.`
+                    : shutdownReport.scheduled
+                      ? 'Shutdown cancelled. The computer stays on.'
+                      : 'The computer could not be turned off, so it stays on.'}
+                </p>
+                <p className="mt-1">
+                  {shutdownReport.reportPath
+                    ? `Failed profiles written to ${shutdownReport.reportPath}.`
+                    : 'The failure report could not be written.'}
+                  {` ${shutdownReport.browsersClosed} AI account browser(s) closed.`}
+                </p>
+                {shutdownReport.note && <p className="mt-1 text-xs opacity-80">{shutdownReport.note}</p>}
+              </div>
+              {shutdownReport.shutdownAt ? (
+                <button
+                  type="button"
+                  onClick={cancelShutdown}
+                  disabled={isCancellingShutdown}
+                  className="shrink-0 rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-amber-400"
+                >
+                  {isCancellingShutdown ? 'Cancelling...' : 'Cancel shutdown'}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShutdownReport(null)}
+                  className="shrink-0 font-bold text-gray-500 hover:text-gray-700"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {error && (
           <div className="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex justify-between items-center">
             <span>{error}</span>
@@ -1855,6 +1964,24 @@ export default function Home() {
                 Save at least one Google Sheet in the Admin Google Sheets panel before importing jobs here.
               </div>
             )}
+
+            <label className="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={shutdownAfterComplete}
+                onChange={(e) => setShutdownAfterComplete(e.target.checked)}
+                disabled={isGenerating}
+                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm">
+                <span className="font-medium text-gray-900">Turn off computer after complete</span>
+                <span className="mt-0.5 block text-gray-500">
+                  Writes a text file of the failed profiles and their sheet rows into the output
+                  folder, closes the AI account browsers, then shuts down after a short
+                  countdown you can still cancel.
+                </span>
+              </span>
+            </label>
 
             <button
               type="button"

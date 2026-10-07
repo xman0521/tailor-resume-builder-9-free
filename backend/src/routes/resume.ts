@@ -28,6 +28,13 @@ import {
   startBatch,
   watchBatch,
 } from '../services/batchProgress';
+import {
+  abortPendingShutdown,
+  groupFailures,
+  pendingShutdown,
+  shutdownAfterRun,
+  type RunFailure,
+} from '../services/shutdownAfterRun';
 import { describeFailure, sendAiError } from '../middleware/aiErrors';
 import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
@@ -146,7 +153,7 @@ function withResolvedTitle<T extends import('../types/template').JobAnalysis | u
  * different responses, and separating them is most of the value here.
  */
 function logFailedJobsByProfile(
-  failures: Array<{ profileName: string; sourceRowNumber?: number; companyName: string }>,
+  failures: RunFailure[],
   totalUnits: number,
   profileCount: number
 ): void {
@@ -155,43 +162,24 @@ function logFailedJobsByProfile(
     return;
   }
 
-  const rowsByProfile = new Map<string, Set<number | string>>();
-  const profilesByRow = new Map<number | string, Set<string>>();
-
-  for (const failure of failures) {
-    // A job imported without a row number is named by its company instead,
-    // which is the only other handle there is.
-    const row = failure.sourceRowNumber ?? `"${failure.companyName}"`;
-    if (!rowsByProfile.has(failure.profileName)) rowsByProfile.set(failure.profileName, new Set());
-    (rowsByProfile.get(failure.profileName) as Set<number | string>).add(row);
-    if (!profilesByRow.has(row)) profilesByRow.set(row, new Set());
-    (profilesByRow.get(row) as Set<string>).add(failure.profileName);
-  }
-
-  const order = (values: Array<number | string>): Array<number | string> =>
-    [...values].sort((a, b) =>
-      typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b))
-    );
+  // Grouped by `groupFailures`, which the text report an armed run writes uses
+  // as well: the console and that file disagreeing about which rows failed would
+  // be worse than either being wrong alone. The DETAIL section is the file's
+  // alone - 76 lines is a record, not a summary.
+  const { rowsByProfile, failedForEveryProfile } = groupFailures(failures, profileCount);
 
   console.log(
     `[Resume batch] ${failures.length} of ${totalUnits} build(s) failed. Failed jobs by profile:`
   );
   const width = Math.max(...[...rowsByProfile.keys()].map((name) => name.length));
   for (const [profileName, rows] of rowsByProfile) {
-    console.log(
-      `  ${profileName.padEnd(width)}  ${rows.size} job(s): row ${order([...rows]).join(', ')}`
-    );
+    console.log(`  ${profileName.padEnd(width)}  ${rows.length} job(s): row ${rows.join(', ')}`);
   }
 
-  const everyProfile = order(
-    [...profilesByRow.entries()]
-      .filter(([, names]) => names.size >= profileCount && profileCount > 0)
-      .map(([row]) => row)
-  );
-  if (everyProfile.length > 0) {
+  if (failedForEveryProfile.length > 0) {
     console.log(
       `[Resume batch] Failed for EVERY profile, so look at the job rather than the run: ` +
-        `row ${everyProfile.join(', ')}`
+        `row ${failedForEveryProfile.join(', ')}`
     );
   }
 }
@@ -326,6 +314,29 @@ router.post('/analyze-prompt-test', async (req: Request, res: Response) => {
  * The id is chosen by the client and passed to the batch call, so the page can
  * start listening before it starts the work and miss nothing.
  */
+/**
+ * Calls off a shutdown an armed run scheduled. The Cancel button on the banner.
+ *
+ * WHY THERE IS A WAY BACK AT ALL. "Turn off computer after complete" is ticked
+ * when a run is started and acted on hours later, by which time the person who
+ * ticked it may be sitting at the machine. So the run leaves a countdown rather
+ * than going off at once, and this stops it - the same thing `shutdown /a` does.
+ *
+ * ON THIS ROUTER, not behind the admin login, deliberately: the request that
+ * SCHEDULES the shutdown is on this router and unauthenticated, so putting the
+ * way out behind a password would mean a machine that can arm itself and then
+ * refuse to be stopped by the person watching it. Everything this can do is in
+ * the safe direction - it only ever leaves the machine on.
+ */
+router.post('/shutdown/abort', async (_req: Request, res: Response) => {
+  res.json(await abortPendingShutdown());
+});
+
+/** What the banner counts down against, for a page that reloaded mid-countdown. */
+router.get('/shutdown', (_req: Request, res: Response) => {
+  res.json({ pending: pendingShutdown() });
+});
+
 router.get('/batch-progress/:id', (req: Request<{ id: string }>, res: Response) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -792,6 +803,8 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       format = 'both',
       includeCoverLetterDocx,
       progressId,
+      shutdownAfterComplete,
+      priorFailures,
     } = req.body as {
       templateId?: string;
       jobs?: Array<{
@@ -806,6 +819,14 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       format?: 'pdf' | 'docx' | 'both';
       includeCoverLetterDocx?: boolean;
       progressId?: string;
+      /** The operator ticked "Turn off computer after complete" for this run. */
+      shutdownAfterComplete?: boolean;
+      /**
+       * Jobs that failed ANALYSIS, so no profile ever reached a build here.
+       * Sent by the page because this request never hears about them, and a
+       * report that leaves them out is a report of a run that did not happen.
+       */
+      priorFailures?: Array<{ companyName?: string; sourceRowNumber?: number; error?: string }>;
     };
 
     const aiOverrides = readAiOverrides(req.body);
@@ -1014,6 +1035,32 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
     // a run that blew up does not leave a bar turning forever.
     if (progressId) finishBatch(progressId);
 
+    /*
+     * "Turn off computer after complete".
+     *
+     * AWAITED, BEFORE THE RESPONSE. The record of what failed has to be on disk
+     * before the machine can go off, and the response is what tells the page
+     * where that file is and when the countdown ends - so it waits for all of
+     * it. The grace period is long enough that the response lands first by a
+     * wide margin.
+     *
+     * Only ever because this request asked for it. There is no setting that
+     * arms it quietly.
+     */
+    let shutdown: Awaited<ReturnType<typeof shutdownAfterRun>> | undefined;
+    if (shutdownAfterComplete === true) {
+      shutdown = await shutdownAfterRun({
+        totalUnits: units.length,
+        profileCount: profiles.length,
+        failures,
+        priorFailures: (Array.isArray(priorFailures) ? priorFailures : []).map((failure) => ({
+          companyName: failure.companyName?.trim() || 'unknown',
+          sourceRowNumber: failure.sourceRowNumber,
+          error: failure.error?.trim() || 'Job analysis failed',
+        })),
+      });
+    }
+
     res.json({
       generated: results.length,
       failed: failures.length,
@@ -1023,6 +1070,7 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       tailored: normalizedJobs.some((job) => Boolean(job.analysis)),
       unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
       unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
+      shutdown,
     });
   } catch (error) {
     const { progressId } = req.body as { progressId?: string };

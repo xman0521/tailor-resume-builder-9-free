@@ -2812,6 +2812,31 @@ const RELOCATED_SECTION_CSS =
   + '{color:inherit !important}'
   + '</style>';
 
+/**
+ * The candidate's name, printed the way the profile spells it.
+ *
+ * Six templates set `text-transform:uppercase` on `.name`, so a profile that
+ * reads "Jordan Bracken" printed as "JORDAN BRACKEN" - and text-transform is
+ * applied when the page is painted, so it is the capitals that go into the
+ * PDF's text stream, not just the picture. The operator does not want the name
+ * shouted on any resume.
+ *
+ * Done here as well as in those six files because templates are editable and
+ * importable: the files are only the ones installed today, while this is every
+ * resume this server prints. `.name` is the person's name in all 41 of them and
+ * is used for nothing else - checked, exactly one element per template - so
+ * naming the class is safe.
+ *
+ * `!important` because this stylesheet is written BEFORE the template's own, so
+ * a rule of equal specificity would lose. The aliases cost nothing and cover a
+ * template that arrives later under a different class.
+ */
+const NAME_CASE_CSS =
+  '<style id="resume-name-case">'
+  + '.name,.full-name,.header-name,.candidate-name,#name'
+  + '{text-transform:none !important}'
+  + '</style>';
+
 const CONTACT_SEPARATOR_CSS =
   '<style id="resume-contact-separator">' +
   '.contact>*::after,.contact-row>*::after,.contact-item::after,' +
@@ -2873,6 +2898,7 @@ function renderTimeCss(): string {
   return (
     '<style id="resume-no-ligatures">*,*::before,*::after{font-variant-ligatures:none}</style>'
     + CONTACT_SEPARATOR_CSS
+    + NAME_CASE_CSS
     + RELOCATED_SECTION_CSS
     + SKILLS_ROW_CSS
     // Chosen per document, which is why this is a function and not a constant.
