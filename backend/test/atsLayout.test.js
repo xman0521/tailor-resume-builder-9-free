@@ -115,8 +115,29 @@ test('every template reads summary, education, skills, experience', async (t) =>
           if (SECTION_MARKS[name].test(line) && !seen.includes(name)) seen.push(name);
         }
       }
+      /*
+       * BOTH that the headings were found AND that they came in this order.
+       *
+       * Order alone passed a template whose headings a parser could not read at
+       * all: nothing matched, so `seen` was empty, and an empty list is in
+       * order. The template that exposed it printed
+       * "E D U C AT I O NBS, Computer Science" - a tracked label in a narrow
+       * grid track, which Chrome places glyph by glyph.
+       *
+       * SUMMARY IS NOT REQUIRED, because two templates print that paragraph
+       * with no label at all, under the contact block, which is an ordinary
+       * thing for a resume to do. The other three always carry a heading, so a
+       * missing one there means the heading did not survive being printed.
+       */
+      const REQUIRED = ['education', 'skills', 'experience'];
+      const missing = REQUIRED.filter((name) => !seen.includes(name));
       const expected = ASKED_FOR.filter((name) => seen.includes(name));
-      if (seen.join(',') !== expected.join(',')) wrong.push(`${file}: ${seen.join(' -> ')}`);
+      if (missing.length || seen.join(',') !== expected.join(',')) {
+        wrong.push(
+          `${file}: ${seen.join(' -> ') || '(no headings read)'}`
+            + (missing.length ? ` [unreadable: ${missing.join(', ')}]` : '')
+        );
+      }
     }
   } finally {
     await browser.close();

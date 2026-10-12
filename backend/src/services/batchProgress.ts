@@ -22,6 +22,27 @@ export type BatchProgress = {
   /** What finished most recently, for the line under the bar. */
   profileName?: string;
   companyName?: string;
+  /**
+   * Why the most recent failure failed.
+   *
+   * WITHOUT THIS the page can say ten of fifteen are done and nothing about
+   * why none of them produced a file. That was reported as "the progress bar
+   * shows 10/15 but no one generated, I don't know why" - and the answer was
+   * sitting in the server's own log the whole time. The batch's response
+   * carries every failure, but it does not arrive until the last item is
+   * done, which on a long run is an hour after the first one went wrong.
+   */
+  lastError?: string;
+  /**
+   * What is being worked on RIGHT NOW.
+   *
+   * WHY A COUNT OF FINISHED ITEMS IS NOT ENOUGH. A free chat browser answers
+   * at reading speed and a long tailoring prompt has a five-minute budget, so
+   * the first item of a run can take minutes to land. Until it did, the page
+   * showed "0 / 5" and "preparing resume generation" - a bar with nothing
+   * moving and no names on it, which reads as a hang. It was reported as one.
+   */
+  inFlight?: string[];
   done: boolean;
 };
 
@@ -72,10 +93,33 @@ export function startBatch(id: string, total: number, phase: string, now: number
   publish(entry);
 }
 
+/**
+ * One unit has STARTED. Reported so the page has something to show during
+ * the minutes before the first one finishes.
+ */
+export function beginBatchUnit(
+  id: string,
+  unit: { profileName?: string; companyName?: string },
+  now: number = Date.now()
+): void {
+  const entry = runs.get(id);
+  if (!entry) return;
+  const label = labelFor(unit);
+  entry.progress = {
+    ...entry.progress,
+    inFlight: [...(entry.progress.inFlight ?? []), label],
+  };
+  entry.expiresAt = now + IDLE_TTL_MS;
+  publish(entry);
+}
+
+const labelFor = (unit: { profileName?: string; companyName?: string }): string =>
+  [unit.profileName, unit.companyName].filter(Boolean).join(' - ') || 'a resume';
+
 /** One unit finished, for better or worse. */
 export function advanceBatch(
   id: string,
-  outcome: { ok: boolean; profileName?: string; companyName?: string },
+  outcome: { ok: boolean; profileName?: string; companyName?: string; error?: string },
   now: number = Date.now()
 ): void {
   const entry = runs.get(id);
@@ -86,6 +130,10 @@ export function advanceBatch(
     failed: entry.progress.failed + (outcome.ok ? 0 : 1),
     profileName: outcome.profileName,
     companyName: outcome.companyName,
+    // Kept from the previous failure when this item succeeded: the reason a
+    // run is producing nothing should not blink out because one item worked.
+    lastError: outcome.ok ? entry.progress.lastError : (outcome.error || entry.progress.lastError),
+    inFlight: dropOne(entry.progress.inFlight, labelFor(outcome)),
   };
   entry.expiresAt = now + IDLE_TTL_MS;
   publish(entry);
@@ -109,9 +157,17 @@ export function setBatchPhase(id: string, phase: string, now: number = Date.now(
 export function finishBatch(id: string, now: number = Date.now()): void {
   const entry = runs.get(id);
   if (!entry) return;
-  entry.progress = { ...entry.progress, done: true };
+  entry.progress = { ...entry.progress, done: true, inFlight: [] };
   entry.expiresAt = now + 30_000;
   publish(entry);
+}
+
+/** Removes one occurrence, not every match: two profiles can share a company. */
+function dropOne(labels: string[] | undefined, label: string): string[] {
+  const next = [...(labels ?? [])];
+  const at = next.indexOf(label);
+  if (at >= 0) next.splice(at, 1);
+  return next;
 }
 
 function publish(entry: Entry): void {

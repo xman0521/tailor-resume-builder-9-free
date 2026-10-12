@@ -2628,13 +2628,22 @@ function recapitalizeSentences(text: string): string {
  *
  * The fallbacks are for a profile with no headline at all, and go to the
  * candidate's own most recent role before anything else.
+ *
+ * A PROFILE MAY SAY ITS OWN. `profileSettings.headerTitle` comes first when it
+ * is set, and `appendTargetRole: false` prints it alone. Both exist because the
+ * Title field is doing four jobs at once - it is printed, sent to the model as
+ * who this person is, scanned for the skills they already claim, and used in
+ * the fallback summary - so editing it to fix the printed line moved the other
+ * three as well. These move only the printed line.
  */
 function buildResumeHeadline(
   contentTitle: string | undefined,
   jobAnalysis: JobAnalysis | undefined,
   profile?: Profile
 ): string {
+  const settings = profile?.profileSettings;
   const candidates = [
+    settings?.headerTitle,
     profile?.title,
     contentTitle,
     profile?.experience?.[0]?.title,
@@ -2642,12 +2651,17 @@ function buildResumeHeadline(
 
   for (const candidate of candidates) {
     const trimmed = (candidate ?? '').trim().replace(/\s+/g, ' ');
+    if (!trimmed) continue;
+    // Off is a deliberate choice and is obeyed whatever the headline came from:
+    // a profile whose own wording already names the discipline reads as a
+    // stutter with the posting's kind of role after it.
+    if (settings?.appendTargetRole === false) return trimmed;
     // The candidate's own line, and after it the kind of role this application
     // is for - in one of six shapes, drawn per resume. See
     // `headlineWithTargetRole`: the separator is the one part of the line that
     // can vary without changing what it says, and a batch where every headline
     // takes the same shape is a pattern anyone holding two of them can see.
-    if (trimmed) return headlineWithTargetRole(trimmed, getJobAnalysisTitle(jobAnalysis));
+    return headlineWithTargetRole(trimmed, getJobAnalysisTitle(jobAnalysis));
   }
   return 'Professional';
 }

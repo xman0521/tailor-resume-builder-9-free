@@ -55,6 +55,9 @@ interface ManualProfileFormData {
   education: Education[];
 }
 
+/** The server trims to this too; stopping here means nothing typed is lost on save. */
+const MAX_HEADER_TITLE_LENGTH = 72;
+
 const DEFAULT_PROFILE_SETTINGS: Required<ProfileSettings> = {
   resumePromptId: 'tailor-resume',
   analyzeJobPromptId: 'analyze-job-description',
@@ -63,6 +66,10 @@ const DEFAULT_PROFILE_SETTINGS: Required<ProfileSettings> = {
   coverLetterFileNameTemplate: '{{profile name}}_cover_letter',
   companyFolderNameTemplate: '{{row number}}_{{company name}}',
   hardSkillOrdering: 'library',
+  // Blank means the profile's own Title field is printed, which is what every
+  // profile did before this field existed.
+  headerTitle: '',
+  appendTargetRole: true,
   technicalSkillsLayout: 'flat',
   // Empty means every field inherits the app default, which is what a profile
   // that has never chosen should do.
@@ -197,6 +204,10 @@ function getInitialProfileSettings(profile?: Profile): Required<ProfileSettings>
       profile?.profileSettings?.companyFolderNameTemplate ||
       DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
     hardSkillOrdering: normalizeHardSkillOrdering(profile?.profileSettings?.hardSkillOrdering),
+    headerTitle: profile?.profileSettings?.headerTitle ?? DEFAULT_PROFILE_SETTINGS.headerTitle,
+    // Only an explicit false turns it off, so a profile stored before this
+    // existed keeps appending the role, as it always did.
+    appendTargetRole: profile?.profileSettings?.appendTargetRole !== false,
     technicalSkillsLayout: normalizeTechnicalSkillsLayout(
       profile?.profileSettings?.technicalSkillsLayout
     ),
@@ -286,7 +297,12 @@ export default function ProfileForm({
   const resumePrompts = prompts.filter((prompt) => prompt.featureKey === 'tailor-resume');
   const analyzeJobPrompts = prompts.filter((prompt) => prompt.featureKey === 'analyze-job-description');
 
-  const updateProfileSetting = (field: keyof Required<ProfileSettings>, value: string) => {
+  // What the head section will actually say, shown under the control: the two
+  // fields interact, and reading one without the other does not tell you.
+  const headerTitlePreview =
+    formData.profileSettings.headerTitle.trim() || formData.title.trim() || 'Professional';
+
+  const updateProfileSetting = (field: keyof Required<ProfileSettings>, value: string | boolean) => {
     setFormData({
       ...formData,
       profileSettings: {
@@ -340,6 +356,10 @@ export default function ProfileForm({
             formData.profileSettings.companyFolderNameTemplate.trim() ||
             DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
           hardSkillOrdering: normalizeHardSkillOrdering(formData.profileSettings.hardSkillOrdering),
+          // Sent even when empty: an empty string is what clears the field
+          // back to the Title, and an omitted one would keep the old value.
+          headerTitle: formData.profileSettings.headerTitle.trim(),
+          appendTargetRole: formData.profileSettings.appendTargetRole,
           technicalSkillsLayout: normalizeTechnicalSkillsLayout(
             formData.profileSettings.technicalSkillsLayout
           ),
@@ -716,6 +736,48 @@ export default function ProfileForm({
                 </option>
               ))}
             </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Header Title
+            </label>
+            <input
+              type="text"
+              value={formData.profileSettings.headerTitle}
+              onChange={(e) => updateProfileSetting('headerTitle', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder={formData.title || 'Uses the Title field above'}
+              maxLength={MAX_HEADER_TITLE_LENGTH}
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              The line printed under the name. Leave it blank to use the Title field above.
+              Unlike Title, this changes only what is printed - the model is still told the
+              Title when it tailors a resume.
+            </p>
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Target Role In Header
+            </label>
+            <select
+              value={formData.profileSettings.appendTargetRole ? 'append' : 'off'}
+              onChange={(e) => updateProfileSetting('appendTargetRole', e.target.value === 'append')}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="append">Add the kind of role this job is for</option>
+              <option value="off">Print the header title alone</option>
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Prints:{' '}
+              <span className="font-medium text-gray-700">
+                {formData.profileSettings.appendTargetRole
+                  ? `${headerTitlePreview} | DevOps Engineer`
+                  : headerTitlePreview}
+              </span>
+              {formData.profileSettings.appendTargetRole
+                ? ' - the separator is drawn per resume from six shapes, so a batch is not all one pattern.'
+                : ' - for a profile whose own wording already names the discipline.'}
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">

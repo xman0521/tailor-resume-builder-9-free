@@ -25,6 +25,7 @@ import {
   advanceBatch,
   finishBatch,
   setBatchPhase,
+  beginBatchUnit,
   startBatch,
   watchBatch,
 } from '../services/batchProgress';
@@ -182,6 +183,29 @@ function logFailedJobsByProfile(
         `row ${failedForEveryProfile.join(', ')}`
     );
   }
+}
+
+/**
+ * What to say when a run needs account browsers and none are up.
+ *
+ * WHY A RUN STOPS HERE RATHER THAN TRYING. Every item of a batch asks a
+ * signed-in browser for its answer, so with none running every item fails -
+ * fifteen times, each after its retries, over several minutes, while the
+ * progress bar counts them as completed because a failed item is still an item
+ * that finished. The operator sees "10 / 15" and no files, which is the exact
+ * report that prompted this. One refusal before the queue is built says the
+ * same thing in one line and costs nothing.
+ *
+ * Only when the probe actually answered. See `noBrowsersRunning`.
+ */
+function describeNoBrowsers(detail: { registered: number; sites: string[] }): string {
+  const sites = detail.sites.join(' and ');
+  return detail.registered > 0
+    ? `No AI account browser is running, so there is nothing to generate with. `
+      + `${detail.registered} ${sites} browser(s) are registered but none are open - `
+      + `start them with "npm run browser:debug", then run this again.`
+    : `No AI account browser is registered or running, so there is nothing to generate with. `
+      + `Add an account in Admin, start it with "npm run browser:debug", then run this again.`;
 }
 
 function runBatchUnit<T>(label: string, signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
@@ -915,10 +939,27 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
 
     // Reported per unit as it lands, so the page's bar can move while this one
     // request is still open. See services/batchProgress.
+    if (capacity.noBrowsersRunning) {
+      // Before `startBatch`, so no progress stream is ever opened for a run that
+      // is not going to happen.
+      const message = describeNoBrowsers(capacity.noBrowsersRunning);
+      console.error(`[Resume batch] ${message}`);
+      res.status(503).json({ error: message });
+      return;
+    }
+
     if (progressId) startBatch(progressId, units.length, 'Building resumes');
 
     const outcomes = await mapWithConcurrency(units, capacity.limit, ({ job, profile }) =>
       runBatchUnit(`${profile.name} x ${job.companyName}`, requestSignal(req, res), async () => {
+        // Said BEFORE the work, not after it. A tailoring call against a free
+        // chat browser has a five-minute budget, so without this the page sits
+        // on "0 / 5, preparing resume generation" for minutes with nothing
+        // moving - which is indistinguishable from a hang, and was reported as
+        // one.
+        if (progressId) {
+          beginBatchUnit(progressId, { profileName: profile.name, companyName: job.companyName });
+        }
         const template = await resolveTemplateForProfile(profile, templateId);
         if (!template) {
           throw new Error('Default template not available');
@@ -989,7 +1030,16 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
           },
           (error: unknown) => {
             if (progressId) {
-              advanceBatch(progressId, { ok: false, profileName: profile.name, companyName: job.companyName });
+              advanceBatch(progressId, {
+                ok: false,
+                profileName: profile.name,
+                companyName: job.companyName,
+                // Carried to the page WHILE the run is still going. The
+                // response lists every failure, but it does not arrive until
+                // the last item is done - an hour too late to stop a run that
+                // is failing every item for one reason.
+                error: describeFailure(error, 'Failed to generate resume'),
+              });
             }
             throw error;
           }

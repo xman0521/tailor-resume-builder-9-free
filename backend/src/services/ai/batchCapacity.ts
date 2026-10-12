@@ -82,6 +82,19 @@ export type BatchCapacity = {
   limit: number;
   /** Why, in one clause, for the line the route logs. */
   reason: string;
+  /**
+   * Set only when this run needs account browsers and NONE are running.
+   *
+   * The capacity itself stays at one, as it always did - this is not a
+   * capacity problem and narrowing the batch does not describe it. It is here
+   * because this function is the one place that has already asked how many
+   * browsers are up, and a caller about to queue 15 doomed items should be
+   * able to say so once instead of failing 15 times.
+   *
+   * Absent when the probe could not answer: not knowing is not the same as
+   * knowing nothing is up, and a batch must not be refused over a probe.
+   */
+  noBrowsersRunning?: { registered: number; sites: string[] };
 };
 
 /**
@@ -164,7 +177,18 @@ export async function resolveBatchCapacity(
           : `${entry.browsers} of ${entry.registered} ${entry.site}`
       )
       .join(' + ');
-    return { limit, reason: `${described} browser${total === 1 ? '' : 's'} running` };
+    const capacity: BatchCapacity = {
+      limit,
+      reason: `${described} browser${total === 1 ? '' : 's'} running`,
+    };
+    // Only when the probe actually answered. `live` is null when it could not.
+    if (live && total === 0) {
+      capacity.noBrowsersRunning = {
+        registered: counted.reduce((sum, entry) => sum + entry.registered, 0),
+        sites: counted.map((entry) => entry.site),
+      };
+    }
+    return capacity;
   }
 
   return {

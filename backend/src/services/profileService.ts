@@ -235,6 +235,20 @@ export function getProfileHardSkillOrdering(profile?: Pick<Profile, 'profileSett
   return isHardSkillOrdering(value) ? value : DEFAULT_HARD_SKILL_ORDERING;
 }
 
+/**
+ * How long a header title may be.
+ *
+ * The same ceiling the composed headline has always had: past it the line wraps
+ * under the name in every template, and a headline that wraps reads as two
+ * lines of nothing in particular.
+ */
+export const MAX_HEADER_TITLE_LENGTH = 72;
+
+function normalizeHeaderTitle(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().replace(/\s+/g, ' ').slice(0, MAX_HEADER_TITLE_LENGTH).trim();
+}
+
 export function normalizeProfileSettings(
   input: CreateProfileDTO['profileSettings'] | undefined,
   existing?: ProfileSettings
@@ -272,6 +286,18 @@ export function normalizeProfileSettings(
       source?.companyFolderNameTemplate ?? existing?.companyFolderNameTemplate,
       DEFAULT_COMPANY_FOLDER_NAME_TEMPLATE
     ),
+    // Trimmed and capped, because it is printed: `MAX_HEADER_TITLE_LENGTH` is
+    // the width the head section can hold before the line wraps under the name.
+    // An EMPTY STRING is a real value here and means "use the Title field", so
+    // the field can be cleared; only an omitted one keeps what was stored.
+    headerTitle: normalizeHeaderTitle(
+      source && 'headerTitle' in source ? source.headerTitle : existing?.headerTitle
+    ),
+    // Absent means yes, which is what every resume did before this existed.
+    appendTargetRole:
+      typeof source?.appendTargetRole === 'boolean'
+        ? source.appendTargetRole
+        : (existing?.appendTargetRole ?? true),
     hardSkillOrdering,
     technicalSkillsLayout,
     // Only values this build understands survive, and an omitted one keeps

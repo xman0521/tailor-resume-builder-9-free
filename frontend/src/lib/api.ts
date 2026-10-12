@@ -1427,6 +1427,14 @@ export interface ProfileSettings {
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
   hardSkillOrdering?: HardSkillOrdering;
+  /**
+   * What the line under the name says, when this profile wants its own wording.
+   * Blank means "use the Title field". It changes only the printed line - the
+   * Title field is also what the model is told this person is.
+   */
+  headerTitle?: string;
+  /** Whether the kind of role the posting is for follows it. Absent means yes. */
+  appendTargetRole?: boolean;
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
   /** This profile's default model, effort and thinking mode. */
@@ -2083,6 +2091,10 @@ export const resumeApi = {
       phase: string;
       profileName?: string;
       companyName?: string;
+      /** Why the most recent failure failed, while the run is still going. */
+      lastError?: string;
+      /** What is being worked on right now, by profile and company. */
+      inFlight?: string[];
       done: boolean;
     }) => void
   ): (() => void) => {

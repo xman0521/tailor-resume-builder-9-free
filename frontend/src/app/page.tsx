@@ -343,7 +343,13 @@ export default function Home() {
     currentCompanyName?: string,
     currentJobTitle?: string,
     currentJobNumber?: number,
-    importedJobCount?: number
+    importedJobCount?: number,
+    // Counted separately from `completed`, which includes them: a failed
+    // build is still a build that finished, so a bar that only shows
+    // completed says "10 / 15" for a run that produced nothing.
+    failed?: number,
+    lastError?: string,
+    inFlight?: string[]
   ) => {
     setGenerationProgress({
       total,
@@ -354,6 +360,9 @@ export default function Home() {
       currentJobTitle,
       currentJobNumber,
       importedJobCount,
+      failed,
+      lastError,
+      inFlight,
     });
   };
 
@@ -593,7 +602,10 @@ export default function Home() {
             progress.companyName,
             undefined,
             undefined,
-            normalizedJobs.length
+            normalizedJobs.length,
+            alreadyFailed + progress.failed,
+            progress.lastError,
+            progress.inFlight
           );
         });
 

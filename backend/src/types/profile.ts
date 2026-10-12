@@ -84,6 +84,27 @@ export interface ProfileSettings {
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
   hardSkillOrdering?: HardSkillOrdering;
+  /**
+   * What the line under the name says, when this profile wants its own wording.
+   *
+   * WHY THIS IS NOT JUST `title`. The profile's Title field is printed, but it
+   * is also sent to the tailoring model as who this person is, scanned as a
+   * source of the skills they already claim, and used to build the fallback
+   * summary. Editing it to change the printed line changes all four. This
+   * changes only the printed line.
+   *
+   * Blank or absent means "use the Title field", which is what every profile
+   * did before this existed.
+   */
+  headerTitle?: string;
+  /**
+   * Whether the kind of role the posting is for is added after it.
+   *
+   * Absent means yes, because that is what every resume already did. Off prints
+   * the header title alone - for a profile whose own wording already says the
+   * discipline, where appending it reads as a stutter.
+   */
+  appendTargetRole?: boolean;
   /** Categorized or flat Technical Skills. Absent means categorized. */
   technicalSkillsLayout?: TechnicalSkillsLayout;
   /**

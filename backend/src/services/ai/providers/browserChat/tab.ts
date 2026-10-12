@@ -170,6 +170,43 @@ const ABANDONED_WAIT_MS = 35_000;
 const COMPOSER_SETTLE_MS = 2_000;
 const COMPOSER_SETTLE_STEP_MS = 100;
 
+/**
+ * How a deadline is spent: on SILENCE, not on duration.
+ *
+ * WHAT THIS FIXES. The budget used to be a wall clock - a turn that was still
+ * writing when it ran out was killed anyway, and reported as "was still writing
+ * when the deadline passed". That is not a stuck turn, it is a slow one, and
+ * which site you are on decides how often it happens: a long tailoring answer
+ * from a free ChatGPT window, with a dozen more windows on the same machine
+ * competing for it, streams slower than the same answer from Claude. A run with
+ * both sites in play hid it, because half the work went to the faster one. A run
+ * with only ChatGPT browsers blew the clock on every item and produced nothing.
+ *
+ * So each time the answer GROWS, the deadline moves to this far from now.
+ * Growth is the one unambiguous sign of progress - a spinner that never clears
+ * is not, which is why busy alone does not extend anything.
+ */
+const PROGRESS_GRACE_MS = 45_000;
+
+/**
+ * How often a turn in progress says so.
+ *
+ * A turn was silent between "Second LLM call started" and whatever it ended
+ * with, which on a slow site is minutes of a console that looks hung. There is
+ * nothing in that silence to tell an operator whether the prompt was sent, 
+ * whether the page is writing, or how fast - so the one question they can
+ * actually ask is "what's wrong?", which is the question this answers.
+ */
+const HEARTBEAT_MS = 30_000;
+
+/**
+ * ...and the ceiling, as a multiple of the caller's budget.
+ *
+ * An answer that keeps growing forever still has to end: this is what stops a
+ * page that streams an endless apology from holding a batch slot all night.
+ */
+const PROGRESS_EXTENSION_LIMIT = 3;
+
 const SEND_ENABLE_WAIT_MS = 10_000;
 const SEND_ENABLE_STEP_MS = 100;
 
@@ -772,7 +809,11 @@ export class ChatTab {
     progress: { sent: boolean } = { sent: false }
   ): Promise<string> {
     const prompt = composePrompt(body, this.site.nudge);
-    const expiry = this.now() + deadlineMs;
+    // Extended while the answer is growing; see PROGRESS_GRACE_MS.
+    let expiry = this.now() + deadlineMs;
+    const hardStop = this.now() + deadlineMs * PROGRESS_EXTENSION_LIMIT;
+    let longestSeen = 0;
+    let grewAtLeastOnce = false;
 
     // Before anything is read: a background tab is frozen, and every DOM read
     // against a frozen renderer blocks instead of returning.
@@ -883,6 +924,8 @@ export class ChatTab {
     sawBusy = await this.watchForBusy(BUSY_WATCH_MS);
 
     let nextRefusalCheck = this.now() + REFUSAL_CHECK_AFTER_MS;
+    const startedAt = this.now();
+    let nextHeartbeat = this.now() + HEARTBEAT_MS;
 
     while (this.now() < expiry) {
       await this.sleep(this.pollMs);
@@ -940,6 +983,21 @@ export class ChatTab {
         if (refusal) throw refusalError(this.site, refusal);
       }
 
+      if (this.now() >= nextHeartbeat) {
+        nextHeartbeat = this.now() + HEARTBEAT_MS;
+        const seconds = Math.round((this.now() - startedAt) / 1000);
+        const written = picked ? picked.reply.text.trim().length : 0;
+        this.log(
+          `[ai] ${this.site.id}: ${seconds}s waiting - ` +
+            (written > 0
+              ? `${written} characters so far`
+              : picked
+                ? 'a reply box is on the page with nothing in it yet'
+                : 'no reply on the page yet') +
+            `, ${Math.max(0, Math.round((expiry - this.now()) / 1000))}s left`
+        );
+      }
+
       if (!picked) continue;
       everRendered = true;
       if (picked.reply.text.trim().length > 0) everAnswered = true;
@@ -980,6 +1038,21 @@ export class ChatTab {
         );
       }
 
+      /*
+       * The answer got longer, so the turn is working. Push the deadline out
+       * rather than counting the time it has already taken: what is being
+       * measured is how long the page has been SILENT.
+       *
+       * Bounded by `hardStop`, which is the caller's budget times
+       * PROGRESS_EXTENSION_LIMIT and never moves.
+       */
+      const written = picked.reply.text.trim().length;
+      if (written > longestSeen) {
+        longestSeen = written;
+        grewAtLeastOnce = true;
+        expiry = Math.min(hardStop, Math.max(expiry, this.now() + PROGRESS_GRACE_MS));
+      }
+
       const outcome = poll(
         state,
         picked.reply.text,
@@ -990,7 +1063,7 @@ export class ChatTab {
       if (outcome.done) return outcome.done;
     }
 
-    const timedOut = new ChatTurnError('timeout', this.timeoutReason(everRendered));
+    const timedOut = new ChatTurnError('timeout', this.timeoutReason(everRendered, grewAtLeastOnce, longestSeen));
     /*
      * Two shapes of "this browser, not this answer".
      *
@@ -1007,7 +1080,11 @@ export class ChatTab {
      * alternative is what was measured: the same dead account taking work
      * until the run ended.
      */
-    timedOut.browserSuspect = (!everRendered && !this.assistantSelector) || !everAnswered;
+    // ...but NOT when the answer was still growing at the ceiling. That browser
+    // was working; sidelining it for being slow takes a healthy window out of
+    // the pool and makes the next item slower still.
+    timedOut.browserSuspect =
+      !grewAtLeastOnce && ((!everRendered && !this.assistantSelector) || !everAnswered);
     throw timedOut;
   }
 
@@ -1020,8 +1097,24 @@ export class ChatTab {
    * nothing new arrived" means the send did not land or the tab is signed out;
    * "still writing" means the answer is real and the budget was too small.
    */
-  private timeoutReason(everRendered: boolean): string {
-    if (everRendered) return `${this.site.label} was still writing when the deadline passed`;
+  private timeoutReason(everRendered: boolean, grew = false, written = 0): string {
+    // Two different things, and the operator acts on them differently. An
+    // answer that kept growing to the ceiling needs a bigger budget
+    // (AI_WEB_TIMEOUT_MS) or fewer browsers competing for the machine. One
+    // that rendered and then went quiet is a turn that died mid-answer.
+    if (grew) {
+      return (
+        `${this.site.label} was still writing after ${PROGRESS_EXTENSION_LIMIT}x its budget ` +
+        `(${written} characters so far). Raise AI_WEB_TIMEOUT_MS, or run fewer browsers at ` +
+        'once so each one writes faster.'
+      );
+    }
+    if (everRendered) {
+      return (
+        `${this.site.label} rendered a reply and then stopped writing for ` +
+        `${Math.round(PROGRESS_GRACE_MS / 1000)}s. The answer may have been cut off.`
+      );
+    }
     if (this.assistantSelector) {
       return (
         `${this.site.label} rendered no new message before the deadline, though ` +

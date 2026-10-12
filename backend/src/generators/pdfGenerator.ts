@@ -2464,11 +2464,28 @@ const SEPARATE_GLUED_RUNS_SCRIPT = `(() => {
       if (!leftText.trim() || !rightText.trim()) continue;
 
       // Already separated in the source, or by content the author wrote.
+      //
+      // ONLY WHERE THE SOURCE'S WHITESPACE IS ACTUALLY PRINTED. A flex or grid
+      // container drops the anonymous whitespace between its items, so a
+      // newline in the markup separates nothing: a section whose heading sits
+      // in a margin track beside its body printed
+      // "E D U C AT I O NBS, Computer Science" to a parser while the markup
+      // looked correctly spaced. Inside such a container the gap is layout,
+      // and layout is not a character.
+      const parentDisplay = getComputedStyle(parent).display;
+      const parentLaysOutItems =
+        parentDisplay.indexOf('flex') !== -1 || parentDisplay.indexOf('grid') !== -1;
       const between = left.nextSibling;
-      if (between && between !== right && between.nodeType === 3
+      if (!parentLaysOutItems && between && between !== right && between.nodeType === 3
         && /[\\s\\u00a0]/.test(between.textContent || '')) continue;
-      if (/[\\s\\u00a0]$/.test(leftText)) continue;
-      if (/^[\\s\\u00a0]/.test(rightText)) continue;
+      // Same reasoning for the children's own edges: whitespace at the end of
+      // one grid item and the start of the next is in textContent and is not
+      // printed, so inside such a container only a non-breaking space counts as
+      // a separator that is really there. Elsewhere ordinary whitespace does.
+      if (/\\u00a0$/.test(leftText)) continue;
+      if (/^\\u00a0/.test(rightText)) continue;
+      if (!parentLaysOutItems && /[\\s\\u00a0]$/.test(leftText)) continue;
+      if (!parentLaysOutItems && /^[\\s\\u00a0]/.test(rightText)) continue;
 
       // A flex or grid box would turn the separator into a child item of its
       // own and move what is inside it, so those are left alone.

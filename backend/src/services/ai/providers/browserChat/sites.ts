@@ -111,7 +111,35 @@ const CHATGPT_WEB: ChatSite = {
     '[data-testid="stop-button"]',
     'button[aria-label*="Stop"]',
   ],
-  assistant: ['[data-message-author-role="assistant"]', 'article[data-turn="assistant"]', '.agent-turn'],
+  /*
+   * TWO MARKUPS, NEITHER OF WHICH MATCHES THE OTHER.
+   *
+   * ChatGPT is serving a rebuilt conversation DOM to some tabs and the old
+   * one to others - measured on two signed-in browsers at the same minute:
+   *
+   *   port 9222   [data-message-author-role="assistant"]  1 node, 10162 chars
+   *               [data-markdown-text-style="assistant-message"]  0 nodes
+   *   port 9223   [data-message-author-role="assistant"]  0 nodes
+   *               [data-markdown-text-style="assistant-message"]  1 node, 8295 chars
+   *
+   * On a tab with the new markup NOTHING here matched - no `article`, no
+   * `data-message-author-role` anywhere on the page - so a turn that had a
+   * complete answer sitting on screen read an empty transcript and waited out
+   * its whole deadline. That is the reported fault: the account answered with
+   * the resume JSON and this app never got it.
+   *
+   * The new ones go LAST so a tab on the old markup behaves exactly as before:
+   * the first candidate that matches wins, and the lists do not overlap.
+   * `assistant-message` is preferred over the search-unit key because the
+   * latter includes the "ChatGPT said:" preamble.
+   */
+  assistant: [
+    '[data-message-author-role="assistant"]',
+    'article[data-turn="assistant"]',
+    '.agent-turn',
+    '[data-markdown-text-style="assistant-message"]',
+    '[data-chatgpt-search-unit-key$=":assistant"]',
+  ],
   newChat: ['[data-testid="create-new-chat-button"]', 'button[aria-label*="New chat"]'],
   messageIdAttr: 'data-message-id',
   nudge: NUDGE,

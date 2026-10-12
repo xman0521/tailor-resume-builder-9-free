@@ -113,12 +113,30 @@ async function inspectRole(page: Page, site: ChatSite, role: Role): Promise<Role
   return { role, matched: null, count: 0, actionable: null, tried: candidates };
 }
 
-function describeRole(site: ChatSiteId, report: RoleReport): string[] {
+function describeRole(site: ChatSiteId, report: RoleReport, composerEmpty: boolean): string[] {
   const lines: string[] = [];
   const name = report.role.padEnd(10);
 
   if (!report.matched) {
-    if (ONLY_VISIBLE_DURING_A_TURN.has(report.role)) {
+    /*
+     * A SEND CONTROL THAT IS NOT THERE YET IS NOT A BROKEN ONE.
+     *
+     * ChatGPT renders no send button at all while the composer is empty -
+     * the row holds "Add files and more", "Think", "Dictate" and "Start
+     * Voice", and the send button appears only once there is something to
+     * send. Measured on two signed-in tabs, not assumed.
+     *
+     * Reported as missing, with a line telling the operator to set
+     * AI_WEB_CHATGPT_SEND, it sent them chasing a selector across sixteen
+     * healthy browsers while the real fault was elsewhere. That is the exact
+     * failure this tool exists to end, so it is the same category as
+     * `assistant` and `busy`: absence at rest means nothing.
+     */
+    if (ONLY_VISIBLE_DURING_A_TURN.has(report.role) || (report.role === 'send' && composerEmpty)) {
+      if (report.role === 'send') {
+        lines.push(`  --      ${name} only appears once the composer has text. Use --send to check.`);
+        return lines;
+      }
       lines.push(`  --      ${name} not on the page yet - only exists during a reply. Use --send to check.`);
       return lines;
     }
@@ -138,6 +156,32 @@ function describeRole(site: ChatSiteId, report: RoleReport): string[] {
       : '';
   lines.push(`  ok      ${name} ${report.matched}  (${report.count} node${report.count === 1 ? '' : 's'})${note}`);
   return lines;
+}
+
+/** Is there anything in the message box? Unknown counts as empty, which is the
+ *  quieter of the two readings: it reports a missing send as "not yet" rather
+ *  than as a fault, and --send proves the truth either way. */
+async function isComposerEmpty(page: Page, site: ChatSite): Promise<boolean> {
+  // A string script, like every other page read in this codebase: the
+  // compiler here has no DOM library, so a callback referring to HTMLElement
+  // does not type-check.
+  const script =
+    `(() => {`
+    + `  for (const selector of ${JSON.stringify(site.composer)}) {`
+    + `    const node = document.querySelector(selector);`
+    + `    if (!node) continue;`
+    + `    return !String(node.innerText || node.value || "").trim();`
+    + `  }`
+    + `  return true;`
+    + `})()`;
+  try {
+    return Boolean(await page.evaluate(script));
+  } catch {
+    // Unknown counts as empty, the quieter of the two readings: a missing
+    // send is then reported as "not yet" rather than as a fault, and --send
+    // proves the truth either way.
+    return true;
+  }
 }
 
 async function findTab(browser: Browser, site: ChatSite): Promise<Page | null> {
@@ -165,7 +209,12 @@ async function inspectSite(
 
   const reports: RoleReport[] = [];
   for (const role of ROLES) reports.push(await inspectRole(page, site, role));
-  for (const report of reports) for (const line of describeRole(site.id, report)) console.log(line);
+  // Asked of the page rather than assumed, because it decides whether a
+  // missing send control is news.
+  const composerEmpty = await isComposerEmpty(page, site);
+  for (const report of reports) {
+    for (const line of describeRole(site.id, report, composerEmpty)) console.log(line);
+  }
 
   const brokenRoles = reports.filter((entry) => !entry.matched && REQUIRED_AT_REST.has(entry.role));
   if (brokenRoles.length > 0) {

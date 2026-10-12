@@ -1036,10 +1036,21 @@ test('a deadline reached while the answer was still growing says exactly that', 
   const tab = new ChatTab(fakePage({ present: () => true, messages: () => [] }), FAKE_SITE, {
     log: () => {},
   });
-  const reason = tab.timeoutReason(true);
-  assert.match(reason, /still writing when the deadline passed/);
-  assert.doesNotMatch(reason, /selector/, 'the selectors are fine; saying so sends them hunting');
-  assert.doesNotMatch(reason, /signed out|signed in/);
+  // Two messages now, because the one message covered two different situations
+  // and the operator acts on them differently: an answer that kept arriving
+  // until the ceiling needs a bigger budget, and one that rendered and went
+  // quiet died mid-answer. Neither should send anybody to look at selectors.
+  const stillWriting = tab.timeoutReason(true, true, 1234);
+  assert.match(stillWriting, /still writing after 3x its budget/);
+  assert.match(stillWriting, /AI_WEB_TIMEOUT_MS/, 'the budget is the thing to change');
+
+  const wentQuiet = tab.timeoutReason(true, false);
+  assert.match(wentQuiet, /stopped writing/);
+
+  for (const reason of [stillWriting, wentQuiet]) {
+    assert.doesNotMatch(reason, /selector/, 'the selectors are fine; saying so sends them hunting');
+    assert.doesNotMatch(reason, /signed out|signed in/);
+  }
 });
 
 test('a refusal reaches the user in the browser provider\'s voice, not the CLI\'s', async () => {
@@ -1328,4 +1339,149 @@ test('a wall that appears in ANSWER to the prompt records that it was sent', asy
     assert.equal(error.sent, true);
     return true;
   });
+});
+
+/*
+ * ─── A deadline is spent on SILENCE, not on duration ────────────────────────
+ *
+ * REPORTED AS: "no resume generating error happens only when I use only chatgpt
+ * browsers." A run with both sites in play worked; a run with only ChatGPT
+ * browsers produced nothing, every item reported as "was still writing when the
+ * deadline passed".
+ *
+ * The budget was a wall clock, so a turn still streaming when it ran out was
+ * killed and its half-written answer thrown away. Which site you are on decides
+ * how often that happens: a long tailoring answer from a free ChatGPT window,
+ * with a dozen more windows on the same machine competing for it, streams
+ * slower than the same answer from Claude. Two sites hid it. One did not.
+ *
+ * `msPerRead` below is what makes "slow" a number here rather than a race.
+ */
+
+/**
+ * A page that writes one character per second of fake time, up to `chars`, and
+ * stops growing after `stallAfterMs`.
+ *
+ * Driven by the CLOCK rather than by a count of reads, because the driver reads
+ * the page more than once per poll and a per-read counter makes the answer's
+ * length depend on how it happens to be implemented.
+ */
+function streamingPage({ chars, stallAfterMs = Infinity }) {
+  return fakePage({
+    msPerRead: 1_000,
+    present: (selector, state) => {
+      if (selector === '#composer' || selector === '#send') return true;
+      // Never busy: growth alone is what buys time here, and a fake that
+      // reported busy would be proving a different rule.
+      if (selector === '#stop') return false;
+      return state.sent !== '';
+    },
+    actionable: (selector) => selector === '#composer' || selector === '#send',
+    messages: (_selector, state) => {
+      if (!state.sent) return [];
+      const elapsed = Math.min(state.now, stallAfterMs);
+      const written = Math.min(chars, Math.max(0, Math.floor(elapsed / 1_000)));
+      if (written === 0) return [];
+      return [{ id: 'm1', text: 'x'.repeat(written) }];
+    },
+  });
+}
+
+test('an answer that keeps arriving is not killed at the budget', async () => {
+  /*
+   * The reported fault. One character per second against a 120-second budget:
+   * under the wall clock the turn died at 120s with about 120 characters
+   * written and the rest thrown away.
+   *
+   * The assertion is "more than the budget could have produced", not an exact
+   * length - where the answer settles is up to the poll's own stability rule,
+   * which is not what changed here.
+   */
+  const page = streamingPage({ chars: 250 });
+  const answer = await tabFor(page).ask('write me a long thing', 120_000);
+
+  assert.ok(
+    answer.length > 150,
+    `the budget alone allowed about 120 characters; got ${answer.length}`
+  );
+  assert.ok(page.state.now > 120_000, `it ran past the budget on purpose (${page.state.now}ms)`);
+});
+
+test('growth is what buys the time, so an answer that stops gets no more', async () => {
+  /*
+   * A reply that writes for 30 seconds and then stops is a FINISHED answer as
+   * far as the driver is concerned - it decides an answer is done by the text
+   * settling, with no busy signal needed. What matters here is that it is not
+   * held open for the rest of the ceiling on the strength of having grown
+   * earlier: the extension is bounded by silence, not banked.
+   */
+  const page = streamingPage({ chars: 10_000, stallAfterMs: 30_000 });
+  const answer = await tabFor(page).ask('write me a long thing', 600_000);
+
+  assert.equal(answer.length, 30, 'what it had written when it went quiet');
+  assert.ok(
+    page.state.now < 120_000,
+    `it settled shortly after the text stopped changing (${page.state.now}ms)`
+  );
+});
+
+test('an answer that never ends is stopped at the ceiling, and blamed correctly', async () => {
+  const page = streamingPage({ chars: Number.MAX_SAFE_INTEGER });
+
+  await assert.rejects(tabFor(page).ask('write forever', 60_000), (error) => {
+    // Named as slow, with the two things that help, rather than as a browser
+    // whose selectors need looking at.
+    assert.match(error.message, /still writing after 3x its budget/);
+    assert.match(error.message, /AI_WEB_TIMEOUT_MS/);
+    assert.equal(
+      error.browserSuspect,
+      false,
+      'a browser that wrote the whole time is not a suspect: sidelining it takes a working '
+        + 'window out of the pool and makes the next item slower still'
+    );
+    return true;
+  });
+  assert.ok(page.state.now <= 60_000 * 3 + 5_000, `stopped at the ceiling (${page.state.now}ms)`);
+});
+
+test('a turn in progress says so, instead of going silent for minutes', async () => {
+  /*
+   * REPORTED AS: a log that reads "Second LLM call started" and then nothing,
+   * with the question "what's wrong?" - which was unanswerable, because a turn
+   * said nothing at all between being sent and finishing. On a site that takes
+   * minutes to write a long answer, that silence is indistinguishable from a
+   * hang, and it is the only thing the operator can see.
+   */
+  const lines = [];
+  const page = streamingPage({ chars: 200 });
+  await tabFor(page, { log: (line) => lines.push(line) }).ask('write me a long thing', 600_000);
+
+  const beats = lines.filter((line) => /\d+s waiting/.test(line));
+  assert.ok(beats.length >= 3, `expected a heartbeat every 30s, got ${beats.length}: ${beats[0]}`);
+
+  // Each one says the two things that answer the question: is anything being
+  // written, and how long is left before it gives up.
+  assert.match(beats[beats.length - 1], /characters so far/);
+  assert.match(beats[0], /\d+s left/);
+  assert.match(beats[0], /chatgpt-web|claude-web/);
+});
+
+test('a turn with nothing on the page says THAT, which is a different problem', async () => {
+  // No reply node at all means the prompt may never have sent, or the tab is
+  // signed out. Saying "0 characters" would read as a slow answer; it is not.
+  const lines = [];
+  const page = fakePage({
+    msPerRead: 1_000,
+    present: (selector) => selector === '#composer' || selector === '#send',
+    messages: () => [],
+  });
+
+  await assert.rejects(
+    tabFor(page, { log: (line) => lines.push(line) }).ask('hello', 90_000),
+    (error) => error.kind === 'timeout'
+  );
+
+  const beats = lines.filter((line) => /\d+s waiting/.test(line));
+  assert.ok(beats.length >= 1, 'it should still report while waiting');
+  assert.match(beats[0], /no reply on the page yet/);
 });
