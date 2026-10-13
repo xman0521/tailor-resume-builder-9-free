@@ -21,6 +21,7 @@ const test = require('node:test');
 
 const {
   DebugBrowserError,
+  assertUsableInterval,
   assertUsablePort,
   buildBrowserArgv,
   defaultProfileDirFor,
@@ -301,4 +302,41 @@ test('a value flag with nothing after it does not swallow the next flag', () => 
 
 test('an empty value is absent rather than an empty string', () => {
   assert.equal(parseArgs(['--port=']).port, undefined);
+});
+
+test('the interval between starts is validated like a port is', () => {
+  /*
+   * Seventeen Chrome instances starting back-to-back contend for the same disk,
+   * and some windows come up slow or not at all. `--interval 2` spaces them out.
+   * Fractions are allowed because half a second is a reasonable thing to want.
+   */
+  assert.equal(assertUsableInterval(2), 2);
+  assert.equal(assertUsableInterval(' 2 '), 2, 'a string from a CLI flag is fine');
+  assert.equal(assertUsableInterval('0.5'), 0.5);
+  assert.equal(assertUsableInterval(0), 0, 'nought means what it always did: no pause');
+
+  for (const bad of [-1, 61, 'two', '', null, undefined, '2; rm -rf /', '2s']) {
+    assert.throws(
+      () => assertUsableInterval(bad),
+      (error) => {
+        assert.ok(error instanceof DebugBrowserError);
+        assert.match(error.hint, /between 0 and 60/);
+        return true;
+      },
+      `must refuse ${JSON.stringify(bad)}`
+    );
+  }
+});
+
+test('--interval is read as a value, not as a bare switch', () => {
+  // The bug this shape exists to stop: `--port=9333` once silently meant "start
+  // everything", because the parser only knew the space-separated spelling.
+  assert.equal(parseArgs(['--interval', '2']).interval, '2');
+  assert.equal(parseArgs(['--interval=2']).interval, '2');
+  assert.equal(parseArgs([]).interval, undefined, 'absent means no pause');
+  assert.equal(
+    parseArgs(['--interval', '2', '--port', '9333', '--site', 'claude-web']).port,
+    '9333',
+    'it does not swallow the flag after it'
+  );
 });

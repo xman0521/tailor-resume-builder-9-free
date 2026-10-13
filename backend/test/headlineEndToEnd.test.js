@@ -33,6 +33,17 @@ const analysisWithBlankTitle = () => ({
 test('the headline reaches the renderer carrying the sheet\'s own role', async (t) => {
   useTempStorage('headline-e2e');
 
+  /*
+   * The batch refuses to start when no account browser is running, which is
+   * right for an operator and wrong for a test: whether one is up is a fact
+   * about the machine this runs on, not about the code under test. These tests
+   * were passing only because a real Chrome happened to be listening on the
+   * port the temp database had registered, and failed the day it was closed.
+   */
+  const capacityModule = require('../dist/services/ai/batchCapacity');
+  const originalCapacity = capacityModule.resolveBatchCapacity;
+  capacityModule.resolveBatchCapacity = async () => ({ limit: 4, reason: 'pinned for this test' });
+
   const pinnedStyle = process.env.RESUME_HEADLINE_STYLE;
   process.env.RESUME_HEADLINE_STYLE = 'pipe';
 
@@ -140,6 +151,7 @@ test('the headline reaches the renderer carrying the sheet\'s own role', async (
     assert.equal(preview.status, 200, JSON.stringify(shown).slice(0, 300));
     assert.equal(shown.html, '<p>Software Engineer | AI/ML Engineer</p>');
   } finally {
+    capacityModule.resolveBatchCapacity = originalCapacity;
     execution.createPromptCompletion = original;
     generator.generateResumePDF = originalRender;
     generator.generatePreviewHTML = originalPreview;

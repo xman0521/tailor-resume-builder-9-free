@@ -31,6 +31,17 @@ const analysis = () => ({
 async function withBatchServer(t, { failCompany, onShutdownCommand } = {}) {
   useTempStorage('shutdown-route');
 
+  /*
+   * The batch refuses to start when no account browser is running, which is
+   * right for an operator and wrong for a test: whether one is up is a fact
+   * about the machine this runs on, not about the code under test. These tests
+   * were passing only because a real Chrome happened to be listening on the
+   * port the temp database had registered, and failed the day it was closed.
+   */
+  const capacityModule = require('../dist/services/ai/batchCapacity');
+  const originalCapacity = capacityModule.resolveBatchCapacity;
+  capacityModule.resolveBatchCapacity = async () => ({ limit: 4, reason: 'pinned for this test' });
+
   const execution = require('../dist/services/ai/promptExecution');
   const originalCompletion = execution.createPromptCompletion;
   execution.createPromptCompletion = async () => JSON.stringify({
@@ -102,6 +113,7 @@ async function withBatchServer(t, { failCompany, onShutdownCommand } = {}) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 
   t.after(async () => {
+    capacityModule.resolveBatchCapacity = originalCapacity;
     execution.createPromptCompletion = originalCompletion;
     generator.generateResumePDF = originalPdf;
     coverLetters.saveCoverLetter = originalCover;

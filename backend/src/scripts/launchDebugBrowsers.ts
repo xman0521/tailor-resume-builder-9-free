@@ -73,6 +73,7 @@ import { isChatSiteId, readChatSite, type ChatSiteId } from '../services/ai/prov
  *
  *   npm run browser:debug                          # every registered browser
  *   npm run browser:debug -- --port 9333 --site chatgpt-web
+ *   npm run browser:debug -- --interval 2    # ...with a 2s pause between each
  *   npm run browser:debug -- --list
  */
 
@@ -103,6 +104,36 @@ export class DebugBrowserError extends Error {
     this.name = 'DebugBrowserError';
     this.hint = hint;
   }
+}
+
+/** The longest gap worth allowing between two starts. */
+const MAX_INTERVAL_SECONDS = 60;
+
+/**
+ * Seconds to wait between starting one browser and the next.
+ *
+ * WHY ANYONE WANTS THIS. The browsers already start one at a time, each waited
+ * for before the next, but "waited for" means the debug port answered - not that
+ * Chrome has finished opening its profile, restoring its tabs and settling. On a
+ * machine starting seventeen of them, back-to-back launches all contend for the
+ * same disk at once and some windows come up slow or not at all. A deliberate
+ * pause costs seconds and buys a start that behaves the same every time.
+ *
+ * Fractions are allowed because half a second is a reasonable thing to want.
+ */
+export function assertUsableInterval(value: unknown): number {
+  const raw = typeof value === 'number' ? String(value) : String(value ?? '').trim();
+  // Digits with an optional decimal part, and nothing else - the same refusal
+  // to half-read an argument that `assertUsablePort` explains at length.
+  const seconds = /^\d+(?:\.\d+)?$/.test(raw) ? Number.parseFloat(raw) : Number.NaN;
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > MAX_INTERVAL_SECONDS) {
+    throw new DebugBrowserError(
+      `"${String(value)}" is not a usable interval.`,
+      `Choose a number of seconds between 0 and ${MAX_INTERVAL_SECONDS}. ` +
+        'It is the pause between starting one browser and starting the next.'
+    );
+  }
+  return seconds;
 }
 
 export function assertUsablePort(value: unknown): number {
@@ -428,7 +459,7 @@ export async function launchOne(input: {
 /* ------------------------------------------------------------------ */
 
 /** Flags that take a value, and flags that do not. Nothing else is accepted. */
-const VALUE_FLAGS = ['port', 'site', 'profile'] as const;
+const VALUE_FLAGS = ['port', 'site', 'profile', 'interval'] as const;
 const BARE_FLAGS = ['list', 'help', 'h', 'no-register'] as const;
 
 /** argv without node and the script path. */
@@ -449,6 +480,8 @@ export type ParsedArgs = {
   port?: string;
   site?: string;
   profile?: string;
+  /** Seconds to wait between starting one browser and the next. */
+  interval?: string;
   list: boolean;
   help: boolean;
   register: boolean;
@@ -460,6 +493,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     port: readValue(args, 'port'),
     site: readValue(args, 'site'),
     profile: readValue(args, 'profile'),
+    interval: readValue(args, 'interval'),
     list: readBare(args, 'list'),
     help: readBare(args, 'help') || readBare(args, 'h'),
     register: !readBare(args, 'no-register'),
@@ -671,6 +705,7 @@ async function main(): Promise<number> {
         '  npm run browser:debug                                   every registered browser',
         '  npm run browser:debug -- --port 9333 --site claude-web  one, and register it',
         '  npm run browser:debug -- --port 9333 --site claude-web --no-register',
+        '  npm run browser:debug -- --interval 2                   all of them, 2s apart',
         '  npm run browser:debug -- --list                         show what is registered',
         '',
         'Sites: claude-web, chatgpt-web. --port=9333 also works.',
@@ -712,10 +747,26 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  console.log(`[browser] Starting ${targets.length} browser${targets.length === 1 ? '' : 's'}.`);
+  const intervalMs = Math.round(assertUsableInterval(parsed.interval ?? 0) * 1000);
+  console.log(
+    `[browser] Starting ${targets.length} browser${targets.length === 1 ? '' : 's'}`
+      + (intervalMs > 0 ? `, ${intervalMs / 1000}s apart.` : '.')
+  );
 
   let failures = 0;
-  for (const target of targets) {
+  let started = 0;
+  for (const [index, target] of targets.entries()) {
+    /*
+     * The pause goes BEFORE the next start rather than after the previous
+     * one, so nothing waits once the last browser is up - and it is skipped
+     * when nothing has actually been started yet, because a run that only
+     * found browsers already running has nothing to settle and should not
+     * sit there for half a minute saying so.
+     */
+    if (intervalMs > 0 && index > 0 && started > 0) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
     // One at a time, not Promise.all. Each of these opens a window and several
     // of them racing for the foreground is how an operator ends up signing in to
     // the wrong one - and a cold Chrome profile is disk-bound anyway, so the
@@ -733,6 +784,7 @@ async function main(): Promise<number> {
           ),
       });
       const site = outcome.status.sites.find((entry) => entry.id === target.siteId);
+      if (!outcome.reused) started += 1;
       console.log(
         `[browser]   ${describe(target)}: ${outcome.reused ? 'already running' : `started ${outcome.browserLabel}`}` +
           `${site?.open ? ', tab open' : ', tab not open yet'}`
