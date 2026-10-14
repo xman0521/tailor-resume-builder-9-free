@@ -446,6 +446,75 @@ async function sweepTemporaryProfile(dir: string): Promise<void> {
   }
 }
 
+/**
+ * Keeps a leftover scratch profile from killing the server.
+ *
+ * WHAT HAPPENED. A run stopped mid-batch with
+ *
+ *   Error: EBUSY: resource busy or locked, unlink
+ *   '...\puppeteer_dev_chrome_profile-Yq4bwy\lockfile'
+ *
+ * `closeBrowser` already tolerates exactly this - but only where it is awaited.
+ * Puppeteer also removes that directory from its OWN cleanup, which is not in
+ * the promise chain `close()` returns, so the rejection reaches nobody. With no
+ * `unhandledRejection` handler anywhere in this server, Node's default applied
+ * and the backend went down in the middle of generating resumes.
+ *
+ * NARROW ON PURPOSE. It swallows a filesystem error on a puppeteer scratch
+ * profile inside the temp directory and nothing else: every other unhandled
+ * rejection is re-thrown on the next tick, where the default behaviour - a
+ * printed stack and a dead process - applies exactly as it did before. A
+ * blanket handler here would turn every future bug into a silent one.
+ */
+let guarded = false;
+
+export type ProfileGuardDeps = {
+  /**
+   * What happens to a rejection this guard does not own.
+   *
+   * Injectable only so a test can watch it: thrown for real it reaches the
+   * test runner's own uncaught handling and is attributed to whichever test
+   * is running, which makes the behaviour impossible to assert.
+   */
+  rethrow?: (reason: unknown) => void;
+  log?: (message: string) => void;
+};
+
+export function guardTemporaryProfileCleanup(deps: ProfileGuardDeps = {}): void {
+  if (guarded) return;
+  guarded = true;
+  const log = deps.log ?? ((message: string) => console.warn(message));
+  const rethrow =
+    deps.rethrow
+    ?? ((reason: unknown) => {
+      setImmediate(() => {
+        throw reason;
+      });
+    });
+
+  process.on('unhandledRejection', (reason: unknown) => {
+    const detail = reason instanceof Error ? reason.message : String(reason);
+    const dir = temporaryProfileDirIn(detail);
+
+    if (dir && /\b(EBUSY|EPERM|ENOTEMPTY|ENOENT|EACCES)\b/.test(detail)) {
+      log(
+        `[browser] Chrome still held its scratch profile when puppeteer tried to delete it: ${detail}`
+      );
+      log('[browser] The browser is closed and the work is unaffected; sweeping it instead.');
+      void sweepTemporaryProfile(dir);
+      return;
+    }
+
+    // Not ours. Re-thrown rather than re-reported, so this handler changes
+    // nothing about how any other failure behaves.
+    rethrow(reason);
+  });
+}
+
+export function resetTemporaryProfileGuardForTests(): void {
+  guarded = false;
+}
+
 /** A one-line summary for the startup log and the health endpoint. */
 export function describeBrowser(deps: BrowserResolutionDeps = defaultDeps): string {
   const resolved = getResolvedBrowser(deps);

@@ -65,10 +65,13 @@ test('the prompt says where they go, now that there is no section for them', () 
   assert.match(prompt, /SOFT SKILLS ARE PROSE, AND THEY ARE NOT OPTIONAL/);
   // The rules that decide whether a scanner finds them at all. "At least two in
   // the summary" became "three or four" when 15 scanned resumes came back with
-  // soft skills as the weak band in every one.
+  // soft skills as the weak band in every one - and then became "at most one"
+  // when the summary was capped at 65 words. The count changed twice; the
+  // requirement that the prompt NAME where they go has not.
   assert.match(prompt, /WRITE THE TERM ITSELF/);
   assert.match(prompt, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);
-  assert.match(prompt, /Three or four in the summary/);
+  assert.match(prompt, /SPREAD THEM\. AT MOST ONE in the summary/);
+  assert.match(prompt, /the rest through the bullets/);
 });
 
 test('a soft skill that is also a banned word survives when the posting asked for it', () => {

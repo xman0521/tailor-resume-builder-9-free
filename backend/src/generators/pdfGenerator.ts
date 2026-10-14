@@ -2502,7 +2502,23 @@ const SEPARATE_GLUED_RUNS_SCRIPT = `(() => {
       if (shared < Math.min(a.height, b.height) * 0.5) continue;
       if (b.left < a.right - 1) continue;
 
-      left.appendChild(document.createTextNode(SEPARATOR));
+      /*
+       * Appended INSIDE the last thing that already has text, not beside it.
+       *
+       * The separator is two NON-BREAKING spaces, which do not collapse. Dropped
+       * among BLOCK children it becomes an anonymous block of its own and adds a
+       * whole blank line: measured at 20px on an entry header whose left side is
+       * a title div over a company div, which is a gap an operator sees and the
+       * text stream does not need. Inside the last text-bearing descendant it
+       * extends that line instead, and the stream is identical either way.
+       */
+      let host = left;
+      for (;;) {
+        const last = host.lastElementChild;
+        if (!last || !(last.textContent || '').trim()) break;
+        host = last;
+      }
+      host.appendChild(document.createTextNode(SEPARATOR));
       added += 1;
     }
   }

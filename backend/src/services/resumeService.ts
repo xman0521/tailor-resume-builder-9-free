@@ -1283,6 +1283,57 @@ function getConceptKeywords(jobAnalysis?: JobAnalysis, librarySkills: string[] =
  * answers a different question.
  */
 /** At most this many bullets under one role, whatever the model returns. */
+/**
+ * The longest a summary may be.
+ *
+ * WHY A CEILING AT ALL. The prompt asked for 80-120 words and got paragraphs
+ * that filled a third of the first page before a reader reached a single thing
+ * the candidate had done. The operator asked for 65, and for the keywords that
+ * no longer fit to go into the bullets instead - which is where they do more
+ * good anyway, attached to work rather than asserted in prose.
+ */
+const MAX_SUMMARY_WORDS = 65;
+
+/** The cap, which an operator can move without editing the source. */
+function summaryWordCap(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(env.RESUME_MAX_SUMMARY_WORDS || '', 10);
+  if (!Number.isFinite(raw) || raw < 1) return MAX_SUMMARY_WORDS;
+  return raw;
+}
+
+const wordsIn = (value: string): number => value.trim().split(/\s+/).filter(Boolean).length;
+
+/**
+ * Trims a long summary to the cap by dropping WHOLE SENTENCES from the end.
+ *
+ * Never mid-sentence. A paragraph cut at the 65th word ends in the middle of a
+ * clause, which reads worse than a paragraph that is a few words long and is
+ * the first thing anybody sees on the page. A single sentence that already
+ * exceeds the cap is therefore kept as it is and reported instead - there is no
+ * cut that improves it, and silently halving it would be the renderer rewriting
+ * the candidate's prose.
+ */
+export function capSummaryWords(
+  summary: string,
+  cap: number = summaryWordCap()
+): { summary: string; dropped: number; words: number } {
+  const trimmed = summary.trim();
+  const words = wordsIn(trimmed);
+  if (!trimmed || words <= cap) return { summary: trimmed, dropped: 0, words };
+
+  // Kept WITH their punctuation, so the rebuilt paragraph still ends in a stop.
+  const sentences = trimmed.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) ?? [trimmed];
+  const kept: string[] = [];
+  for (const sentence of sentences) {
+    const candidate = [...kept, sentence].join('').trim();
+    if (kept.length > 0 && wordsIn(candidate) > cap) break;
+    kept.push(sentence);
+  }
+
+  const result = kept.join('').trim() || trimmed;
+  return { summary: result, dropped: sentences.length - kept.length, words: wordsIn(result) };
+}
+
 const MAX_BULLETS_PER_ROLE = 8;
 
 /**
@@ -3147,7 +3198,24 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
   const modelSummary = useNumeralsForExperienceYears(
     removeCompanyMentionsFromSummary(normalizeSummary((content.summary ?? '').trim()), profile)
   );
-  const finalSummary = modelSummary || (profile ? buildFallbackSummary(profile) : '');
+  // Last, after the sanitising: trimming first and then removing an employer
+  // mention would leave a paragraph shorter than the cap meant to allow.
+  const capped = capSummaryWords(modelSummary);
+  if (capped.dropped > 0) {
+    console.log(
+      `[Resume summary] ${profile?.name ?? 'resume'}: trimmed to ${capped.words} words, ` +
+        `dropping ${capped.dropped} sentence(s) past the ${summaryWordCap()}-word cap.`
+    );
+  } else if (capped.words > summaryWordCap()) {
+    // One sentence longer than the whole budget. Nothing was cut, because
+    // there is no cut that improves it - but the prompt asked for 3-4
+    // sentences and got one, which is worth seeing.
+    console.log(
+      `[Resume summary] ${profile?.name ?? 'resume'}: ${capped.words} words in a single ` +
+        `sentence, past the ${summaryWordCap()}-word cap. Left alone rather than cut mid-sentence.`
+    );
+  }
+  const finalSummary = capped.summary || (profile ? buildFallbackSummary(profile) : '');
 
   // Measured on what will actually be rendered, after the summary has been
   // sanitised and the experience normalised. Measuring the model's raw answer

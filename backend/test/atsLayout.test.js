@@ -395,3 +395,53 @@ test('the reordering can be switched off', () => {
 
   assert.equal(reorderResumeSections(markup, { RESUME_SECTION_ORDER_OFF: '1' }), markup);
 });
+
+test('separating two glued fields never adds a blank line', async (t) => {
+  /*
+   * The separator is two NON-BREAKING spaces, and those do not collapse. Dropped
+   * among BLOCK children - a title div over a company div, which is how several
+   * of these templates build an entry header - the browser wraps them in an
+   * anonymous block and the header grows by a whole line. Measured at 41px ->
+   * 61px on one of them, which is a gap an operator sees on the page and the
+   * text stream never needed.
+   *
+   * So the pass appends into the last text-bearing descendant instead, and this
+   * pins the consequence: inserting separators changes the text stream and
+   * nothing about the layout.
+   */
+  /*
+   * The skill-group look is drawn at RANDOM per document, and some of the six
+   * change how the block flows. Left to chance, a line that was nearly full
+   * under one look wraps when two spaces are added under another, and this
+   * test reports a different template every run. Pinned, it measures the one
+   * thing it is about: whether the separator creates a box of its own.
+   */
+  const pinnedLook = process.env.SKILL_GROUP_STYLE;
+  process.env.SKILL_GROUP_STYLE = 'caps';
+  t.after(() => {
+    if (pinnedLook === undefined) delete process.env.SKILL_GROUP_STYLE;
+    else process.env.SKILL_GROUP_STYLE = pinnedLook;
+  });
+
+  const browser = await launchBrowser();
+  const grew = [];
+
+  try {
+    const page = await browser.newPage();
+    for (const file of ALL_TEMPLATES) {
+      const template = JSON.parse(fs.readFileSync(path.join(TEMPLATE_DIR, file), 'utf8'));
+      await page.setContent(await generatePreviewHTML(profile, template, tailored), { waitUntil: 'load' });
+
+      const height = () => page.evaluate('document.body.scrollHeight');
+      const before = await height();
+      const added = await separateGluedTextRuns(page);
+      const after = await height();
+
+      if (after > before) grew.push(`${file}: ${before}px -> ${after}px after ${added} separator(s)`);
+    }
+  } finally {
+    await browser.close();
+  }
+
+  assert.deepEqual(grew, [], grew.join(String.fromCharCode(10)));
+});

@@ -28,6 +28,33 @@ type GenerateMode = 'single' | 'multiple';
 type BuilderMode = 'manual' | 'sheets' | null;
 type SheetsTargetMode = 'single' | 'all' | 'group';
 
+/** One job, in the shape `generateMultiJob` takes it back. */
+type BuildableJob = {
+  companyName: string;
+  role: string;
+  jobDescription: string;
+  jobAnalysis: JobAnalysis;
+  sourceRowNumber?: number;
+};
+
+/**
+ * A profile x job pair that did not build.
+ *
+ * Carries the JOB with it, not just its name: re-running needs the analysis
+ * back, and the analysis is thrown away when the run ends. Without this a retry
+ * would have to re-analyse every failed posting - minutes of model time spent
+ * redoing work that had succeeded.
+ */
+type FailedBuild = {
+  profileId: string;
+  profileName: string;
+  companyName: string;
+  sourceRowNumber?: number;
+  error: string;
+  /** Absent when the run died before the jobs were built, so there is nothing to retry. */
+  job?: BuildableJob;
+};
+
 type UnconfirmedSkill = { original: string; value: string };
 
 type MultiplePreview = {
@@ -102,6 +129,16 @@ export default function Home() {
    * from, and the next one is often watched. A remembered tick is a machine that
    * turns itself off on a run nobody meant to arm.
    */
+  /*
+   * What failed, and enough to run it again.
+   *
+   * The red banner used to say "Some builds failed (10/15)" with three company
+   * names and an ellipsis, which is not something anybody can act on. These are
+   * listed in full and can be re-queued without re-running the ones that worked.
+   */
+  const [failedPairs, setFailedPairs] = useState<FailedBuild[]>([]);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+
   const [shutdownAfterComplete, setShutdownAfterComplete] = useState(false);
   const [shutdownReport, setShutdownReport] = useState<ShutdownReport | null>(null);
   const [isCancellingShutdown, setIsCancellingShutdown] = useState(false);
@@ -131,6 +168,68 @@ export default function Home() {
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
   }, [shutdownReport?.shutdownAt]);
+
+  /**
+   * Builds the failed pairs again, and nothing else.
+   *
+   * ONE CALL PER JOB, carrying only the profiles that failed on it. The batch
+   * endpoint builds the whole profile x job grid it is given, so handing it the
+   * failed jobs and the failed profiles as two lists would rebuild pairs that
+   * already succeeded - overwriting good files and spending model time on work
+   * that was done. Grouping keeps the retry to exactly what failed.
+   *
+   * The analyses ride along from the first run, so nothing is analysed twice.
+   */
+  const regenerateFailed = async () => {
+    const retryable = failedPairs.filter((pair) => pair.job);
+    if (retryable.length === 0) return;
+
+    setIsRegenerating(true);
+    setError('');
+    setSuccessMessage('');
+
+    const byJob = new Map<string | number, { job: BuildableJob; profileIds: string[] }>();
+    for (const pair of retryable) {
+      const job = pair.job as BuildableJob;
+      const key = job.sourceRowNumber ?? job.companyName;
+      const group = byJob.get(key) ?? { job, profileIds: [] };
+      if (!group.profileIds.includes(pair.profileId)) group.profileIds.push(pair.profileId);
+      byJob.set(key, group);
+    }
+
+    const stillFailed: FailedBuild[] = [];
+    let rebuilt = 0;
+
+    try {
+      for (const [, group] of byJob) {
+        setGenerationStep(`Regenerating ${group.job.companyName}`);
+        const result = await resumeApi.generateMultiJob({
+          ...aiRequestOverrides,
+          ...getDefaultGenerationOptions(),
+          jobs: [group.job],
+          profileIds: group.profileIds,
+        });
+        rebuilt += result.generated;
+        for (const failure of result.failures) {
+          stillFailed.push({ ...failure, job: group.job });
+        }
+      }
+
+      setFailedPairs(stillFailed);
+      setSuccessMessage(
+        stillFailed.length === 0
+          ? `Regenerated all ${rebuilt} build(s) that had failed.`
+          : `Regenerated ${rebuilt} build(s). ${stillFailed.length} still failing.`
+      );
+    } catch (err) {
+      // The pairs are left on screen: a failed retry must not lose the list of
+      // what to retry, which is the only record of it once the run has ended.
+      setError(err instanceof Error ? err.message : 'Could not regenerate the failed builds');
+    } finally {
+      setIsRegenerating(false);
+      setGenerationStep('');
+    }
+  };
 
   const cancelShutdown = async () => {
     setIsCancellingShutdown(true);
@@ -171,6 +270,7 @@ export default function Home() {
     setMultiplePreviews([]);
     setMultiplePreviewTailored(false);
     setMultiplePreviewIndex(0);
+    setFailedPairs([]);
   }, [resetTailoredEditor]);
 
   useEffect(() => {
@@ -631,6 +731,21 @@ export default function Home() {
           failedCompanies.add(failure.companyName);
           failures.push(`${failure.companyName} / ${failure.profileName}: ${failure.error}`);
         }
+
+        /*
+         * Kept with the job each one came from, so they can be re-queued without
+         * re-analysing the posting. Matched on the sheet row where there is one,
+         * because two rows can name the same company.
+         */
+        const jobByKey = new Map<string | number, BuildableJob>(
+          buildableJobs.map((job) => [job.sourceRowNumber ?? job.companyName, job])
+        );
+        setFailedPairs(
+          result.failures.map((failure) => ({
+            ...failure,
+            job: jobByKey.get(failure.sourceRowNumber ?? failure.companyName),
+          }))
+        );
 
         setUnconfirmedHardSkills(toUnconfirmedItems(result.unconfirmedHardSkills ?? []));
         setUnconfirmedSoftSkills(toUnconfirmedItems(result.unconfirmedSoftSkills ?? []));
@@ -1503,6 +1618,44 @@ export default function Home() {
       {/* Main Content */}
       <main className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-6">Generate Resumes</h1>
+
+        {failedPairs.length > 0 && (
+          <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-amber-900">
+                  {failedPairs.length} build(s) failed
+                </p>
+                <p className="mt-0.5 text-xs text-amber-800">
+                  Regenerating runs only these, with the analyses from the last run - the builds
+                  that succeeded are left alone.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={regenerateFailed}
+                disabled={isRegenerating || isGenerating || failedPairs.every((pair) => !pair.job)}
+                className="shrink-0 rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-amber-400"
+              >
+                {isRegenerating ? 'Regenerating...' : 'Regenerate failed'}
+              </button>
+            </div>
+            <ul className="mt-2 max-h-56 overflow-y-auto text-xs text-amber-900">
+              {failedPairs.map((pair, index) => (
+                <li key={`${pair.profileId}-${pair.sourceRowNumber ?? pair.companyName}-${index}`} className="py-0.5">
+                  <span className="font-medium">
+                    {pair.sourceRowNumber ? `Row ${pair.sourceRowNumber}` : pair.companyName}
+                    {' - '}
+                    {pair.profileName}
+                  </span>
+                  {': '}
+                  <span className="opacity-90">{pair.error}</span>
+                  {!pair.job && <span className="ml-1 italic">(cannot be re-queued)</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {shutdownReport && (
           <div

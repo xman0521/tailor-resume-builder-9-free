@@ -109,3 +109,71 @@ test('an ordinary close stays ordinary', async () => {
   await closeBrowser({ close: async () => { closed += 1; } });
   assert.equal(closed, 1);
 });
+
+test('a locked scratch profile does not take the server down, and nothing else is swallowed', (t) => {
+  /*
+   * REPORTED AS: "backend stopped working while generating resumes", with
+   *
+   *   Error: EBUSY: resource busy or locked, unlink
+   *   '...\puppeteer_dev_chrome_profile-Yq4bwy\lockfile'
+   *
+   * `closeBrowser` above already tolerates this - but only where it is awaited.
+   * Puppeteer removes that directory from its OWN cleanup too, which is not in
+   * the chain `close()` returns, so the rejection reached nobody. With no
+   * `unhandledRejection` handler in the server, Node's default applied and the
+   * process died in the middle of a batch.
+   */
+  const {
+    guardTemporaryProfileCleanup,
+    resetTemporaryProfileGuardForTests,
+  } = require('../dist/config/browser');
+
+  const existing = process.listeners('unhandledRejection');
+  for (const listener of existing) process.removeListener('unhandledRejection', listener);
+  t.after(() => {
+    for (const listener of process.listeners('unhandledRejection')) {
+      process.removeListener('unhandledRejection', listener);
+    }
+    for (const listener of existing) process.on('unhandledRejection', listener);
+    resetTemporaryProfileGuardForTests();
+  });
+
+  resetTemporaryProfileGuardForTests();
+  const rethrown = [];
+  const said = [];
+  guardTemporaryProfileCleanup({ rethrow: (reason) => rethrown.push(reason), log: (line) => said.push(line) });
+
+  const handlers = process.listeners('unhandledRejection');
+  assert.equal(handlers.length, 1, 'the guard installs exactly one handler');
+  // Installing twice must not stack handlers: the server start path and a test
+  // can both call it, and two would re-throw the same reason twice.
+  guardTemporaryProfileCleanup({ rethrow: (reason) => rethrown.push(reason) });
+  assert.equal(process.listeners('unhandledRejection').length, 1, 'and only ever one');
+
+  const guard = handlers[0];
+  const locked = path.join(os.tmpdir(), 'puppeteer_dev_chrome_profile-Yq4bwy');
+
+  // 1. The reported failure: swallowed, said out loud, and the process lives.
+  guard(new Error(`EBUSY: resource busy or locked, unlink '${path.join(locked, 'lockfile')}'`));
+  assert.deepEqual(rethrown, [], 'the server must stay up for this one');
+  assert.ok(
+    said.some((line) => /scratch profile/.test(line)),
+    'it says what it swallowed, rather than swallowing it silently'
+  );
+
+  /*
+   * 2. The half that keeps this honest. A handler that swallowed everything
+   * would turn every future bug into a silent one, so anything else is passed
+   * straight back out - where, in the real server, the absence of an
+   * `uncaughtException` handler means Node behaves exactly as it did before.
+   */
+  const others = [
+    new Error('something else went wrong entirely'),
+    // The right shape of error on a path that is NOT a puppeteer scratch dir.
+    new Error("EBUSY: resource busy or locked, unlink '/var/lib/app/data.db'"),
+    // ...and the right path with an error that is not about the file system.
+    new Error(`Protocol error: Target closed while deleting ${locked}`),
+  ];
+  for (const reason of others) guard(reason);
+  assert.deepEqual(rethrown, others, 'everything that is not a locked scratch profile is re-thrown');
+});

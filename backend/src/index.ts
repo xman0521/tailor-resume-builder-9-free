@@ -20,7 +20,12 @@ import aiHealthRoutes from './routes/aiHealth';
 import { aiErrorHandler } from './middleware/aiErrors';
 import { preflightAllProviders } from './services/ai';
 import { describeApiPortMismatch, findApiPortMismatch } from './config/apiUrl';
-import { describeBrowser, describeMissingBrowser, getResolvedBrowser } from './config/browser';
+import {
+  describeBrowser,
+  describeMissingBrowser,
+  getResolvedBrowser,
+  guardTemporaryProfileCleanup,
+} from './config/browser';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -202,6 +207,10 @@ const server = app.listen(PORT, HOST, () => {
   // Reports a missing binary or a signed-out subscription seat where an
   // operator can see it, instead of hours later as a failed generation.
   void preflightAllProviders();
+  // Installed before any work can start a browser. A scratch profile Windows
+  // still has locked took the whole server down mid-batch; see the guard.
+  guardTemporaryProfileCleanup();
+
   // Same idea for the browser every PDF is printed with: a missing Chrome
   // used to surface only when someone clicked Generate.
   const browser = getResolvedBrowser();

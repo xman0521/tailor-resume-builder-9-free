@@ -86,7 +86,11 @@ test('both prompts ask for the work, in the copies that actually run', () => {
 
   const tailor = running('tailor-resume');
   assert.match(tailor, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);
-  assert.match(tailor, /Three or four in the summary/);
+  // The summary used to take three or four of them. It is capped at 65 words
+  // now, so the bullets take them instead - the rule still has to name a
+  // destination, which is what this is really pinning.
+  assert.match(tailor, /SPREAD THEM\. AT MOST ONE in the summary/);
+  assert.match(tailor, /the rest through the bullets/);
   // The summary names the role in the model's own words, and the headline is
   // built by the application - the candidate's own title plus the kind of role -
   // so the model is told to write its identity and add no discipline itself.

@@ -2169,6 +2169,8 @@ export const resumeApi = {
         profileId: string;
         profileName: string;
         companyName: string;
+        /** The sheet row, which is how a failed build is re-queued. */
+        sourceRowNumber?: number;
         error: string;
       }>;
       failedCompanies: string[];
