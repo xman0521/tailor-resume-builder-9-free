@@ -29,6 +29,7 @@ import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_DEEPSEEK_MODEL,
   DEFAULT_OPENAI_MODEL,
+  DEFAULT_OPENROUTER_MODEL,
 } from '../services/aiModelCatalog';
 import {
   buildOutputPathPreview,
@@ -320,6 +321,30 @@ function createDefaultModelRecords(): AIModelRecord[] {
       provider: 'deepseek',
       modelName: 'deepseek-v4-pro',
       description: 'DeepSeek direct high-capability model for long-context analysis and drafting.',
+    },
+    /*
+     * OpenRouter, by way of example rather than as a catalogue.
+     *
+     * It fronts hundreds of models and the list moves weekly, so seeding more
+     * than a couple would be a list that goes stale in the database. These are
+     * two that exercise both ends - a cheap one for analysis, a stronger one
+     * for tailoring - and any other id from openrouter.ai/models can be added
+     * under Admin -> Models.
+     *
+     * The VENDOR PREFIX IS PART OF THE ID. "gpt-4o-mini" is a 404 there;
+     * "openai/gpt-4o-mini" is the model.
+     */
+    {
+      name: DEFAULT_OPENROUTER_MODEL,
+      provider: 'openrouter',
+      modelName: DEFAULT_OPENROUTER_MODEL,
+      description: 'OpenRouter default configured for this app. Cheap, and fine for job analysis.',
+    },
+    {
+      name: 'Claude Sonnet 4 (OpenRouter)',
+      provider: 'openrouter',
+      modelName: 'anthropic/claude-sonnet-4',
+      description: 'Anthropic Sonnet through OpenRouter, for resume tailoring and cover letters.',
     },
   ];
 

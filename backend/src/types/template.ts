@@ -83,6 +83,7 @@ export type AIProvider =
   | 'claude'
   | 'openai'
   | 'deepseek'
+  | 'openrouter'
   | 'claude-web'
   | 'chatgpt-web';
 

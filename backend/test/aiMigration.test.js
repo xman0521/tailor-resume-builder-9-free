@@ -89,10 +89,22 @@ test('a settings row written before the provider change migrates and then loads'
   assert.equal(loaded.providersEnabled['claude-cli'], true);
   assert.equal(loaded.providersEnabled.openai, true);
 
-  // Model rows naming OpenRouter models are removed - "openai/gpt-5.4-nano"
-  // means nothing to the Claude CLI - and subscription models are seeded.
+  /*
+   * Model rows naming OpenRouter are KEPT, and the subscription models are
+   * still seeded alongside them.
+   *
+   * This used to assert the opposite: the rows were dropped, because the
+   * provider had been removed and "openai/gpt-5.4-nano" named nothing this app
+   * could run. OpenRouter is a provider again and `vendor/model` is exactly the
+   * shape its ids take, so those rows are valid models.
+   *
+   * It is also the only unrecoverable thing this migration did, and it can
+   * still run against a CURRENT database whenever the version stamp is lost -
+   * a restored backup, a hand-cleared schema_meta - where it would have taken
+   * an operator's own OpenRouter models with it.
+   */
   const providers = loaded.aiModels.map((model) => model.provider);
-  assert.equal(providers.includes('openrouter'), false);
+  assert.ok(providers.includes('openrouter'), 'the OpenRouter rows survive, because they mean something again');
   assert.ok(providers.includes('claude-cli'));
   assert.ok(loaded.aiModels.some((model) => model.id === 'openai-gpt-5-1'), 'other providers are untouched');
 
@@ -286,7 +298,11 @@ test('a row that never customised its model library keeps every provider model',
   assert.ok(providers.has('openai'), 'the OpenAI models must survive');
   assert.ok(providers.has('claude'), 'the Anthropic models must survive');
   assert.ok(providers.has('deepseek'), 'the DeepSeek models must survive');
-  assert.equal(providers.has('openrouter'), false);
+  // OpenRouter is a provider again, so its seeded models belong in the
+  // inherited catalogue like every other provider's. What migration 001 still
+  // removes is the models the OLD openrouter rows named, asserted where that
+  // migration is tested.
+  assert.ok(providers.has('openrouter'), 'the OpenRouter models are seeded like the rest');
 });
 
 test('the legacy data importer migrates the row it plants, even after boot stamped the version', async () => {

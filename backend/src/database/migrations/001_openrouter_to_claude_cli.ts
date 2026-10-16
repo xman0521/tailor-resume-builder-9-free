@@ -162,8 +162,25 @@ function migrateSettings(db: Database.Database, report: MigrationReport): void {
   // install that had simply never customised its model library.
   if (hasExplicitModels) {
     const models = settings.aiModels as unknown[];
-    const kept = models.filter((model) => !(isObject(model) && model.provider === LEGACY_PROVIDER));
-    report.removedModels = models.length - kept.length;
+    /*
+     * OPENROUTER MODEL ROWS ARE KEPT NOW. This used to drop them, because the
+     * provider had been removed and a row like
+     * `{ provider: 'openrouter', modelName: 'openai/gpt-5.4-nano' }` named
+     * nothing this app could run.
+     *
+     * OpenRouter is a provider again, and `vendor/model` is exactly the shape
+     * its ids take - so those rows are valid models, not debris. Deleting
+     * them was also the one unrecoverable thing this migration did, and it
+     * can still run against a CURRENT database whenever the version stamp is
+     * lost: a restored backup, a hand-cleared schema_meta. That would have
+     * taken an operator's own OpenRouter models with it.
+     *
+     * The rest of the migration is unchanged: the settings flag and the
+     * prompt overrides still move to the subscription seat, which is the
+     * conservative direction - a keyless provider rather than a metered one.
+     */
+    const kept = models;
+    report.removedModels = 0;
 
     const haveCli = new Set(
       kept.filter((model) => isObject(model) && model.provider === NEW_PROVIDER).map((model) => (model as Json).id)

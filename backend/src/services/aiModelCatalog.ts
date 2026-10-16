@@ -5,6 +5,12 @@ export const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.1';
 export const DEFAULT_CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514';
 export const DEFAULT_DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
 /**
+ * OpenRouter names a model as `vendor/model`, and the vendor half is part of
+ * the id - `openai/gpt-4o-mini`, not `gpt-4o-mini`. A bare name is the
+ * commonest way to get a 404 from it, so the default carries one.
+ */
+export const DEFAULT_OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini';
+/**
  * The `--model` value the CLI provider uses when nothing else names one.
  * An alias rather than a dated model name, so it follows the current release.
  */

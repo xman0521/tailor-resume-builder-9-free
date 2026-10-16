@@ -196,6 +196,7 @@ export type AIProvider =
   | 'claude'
   | 'openai'
   | 'deepseek'
+  | 'openrouter'
   | 'claude-web'
   | 'chatgpt-web';
 
@@ -221,6 +222,13 @@ export const PROVIDER_META = {
   claude: { label: 'Anthropic API', requiresApiKey: true, modelNameHint: 'claude-sonnet-4-20250514' },
   openai: { label: 'OpenAI', requiresApiKey: true, modelNameHint: 'gpt-5.1' },
   deepseek: { label: 'DeepSeek', requiresApiKey: true, modelNameHint: 'deepseek-v4-flash' },
+  // The vendor prefix is part of an OpenRouter model id, so the hint carries
+  // one: "gpt-4o-mini" alone is a 404 there.
+  openrouter: {
+    label: 'OpenRouter',
+    requiresApiKey: true,
+    modelNameHint: 'openai/gpt-4o-mini, anthropic/claude-sonnet-4',
+  },
   'claude-web': {
     label: 'Claude (browser)',
     requiresApiKey: false,

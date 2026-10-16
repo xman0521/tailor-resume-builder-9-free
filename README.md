@@ -71,6 +71,7 @@ is a compile error rather than a silent fall-through.
 | `claude` | `ANTHROPIC_API_KEY` | Metered. The only provider that can still honour `temperature`. |
 | `openai` | `OPENAI_API_KEY` | Metered. |
 | `deepseek` | `DEEPSEEK_API_KEY` | Metered. |
+| `openrouter` | `OPENROUTER_API_KEY` | Metered. One key for models from many vendors. Model ids carry their vendor: `openai/gpt-4o-mini`, not `gpt-4o-mini`. `OPENROUTER_MODEL` sets the default. |
 
 **Locked providers.** A lock means this installation cannot run a provider —
 distinct from the admin's enable switch, which records what an operator wants.
@@ -452,7 +453,7 @@ File and folder names are templated per profile.
 | `AI_CLI_CONCURRENCY` | Simultaneous `claude` processes, process-wide (default `4`) |
 | `AI_CLI_TIMEOUT_MS` / `AI_CLI_TIMEOUT_MS_TAILOR` | Per-call wall-clock budgets |
 | `AI_CLI_ALLOW_API_KEY` / `AI_CLI_ALLOW_OVERAGE` | Opt in to metered billing; both off by default |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | Keys for the metered providers. `.env` only - there is no key management in the app, and keys an older release stored in the database are deleted on first read |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` | Keys for the metered providers. `.env` only - there is no key management in the app, and keys an older release stored in the database are deleted on first read |
 | `GOOGLE_SERVICE_ACCOUNT_KEY_PATH` | Service account JSON for Google Sheets import |
 
 See `.env.example` for the full `AI_CLI_*` list.
@@ -500,7 +501,7 @@ See `.env.example` for the full `AI_CLI_*` list.
 | A browser provider warns `no usable "still generating" selector` | Every stop-button candidate also matched an idle page, so nothing can report that a reply is in flight. Answers are still read correctly - the driver falls back to waiting until the text has stopped changing for several seconds - but each call is slower. Set `AI_WEB_CLAUDE_BUSY` or `AI_WEB_CHATGPT_BUSY` to something present only while the site is generating. |
 | A browser provider says the tab `was navigated to ...` | Something moved that tab off the chat site mid-answer - usually a link clicked in it. Give the app a tab of its own in the debug browser, or leave that window alone while a run is in flight. |
 | A browser provider returns the prompt instead of an answer | The site's assistant selector is also matching your own message. The backend refuses the answer rather than tailoring a resume to the instructions, and says so. Set `AI_WEB_CLAUDE_ASSISTANT` or `AI_WEB_CHATGPT_ASSISTANT` to something that can only match an assistant turn. |
-| A metered provider says `No API key is configured` | Set its key in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`) and restart the backend. Keys used to be enterable on the Settings page and stored in the database; that is gone, and any keys an older install had stored are deleted the first time the new build reads its settings. The Settings page shows each provider's live status instead. |
+| A metered provider says `No API key is configured` | Set its key in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`) and restart the backend. Keys used to be enterable on the Settings page and stored in the database; that is gone, and any keys an older install had stored are deleted the first time the new build reads its settings. The Settings page shows each provider's live status instead. |
 | An effort or thinking choice appears to do nothing | Look for `[ai] ... has no effort control` in the backend output. Only the Claude CLI provider honours them; the metered OpenAI, Anthropic and DeepSeek transports report them as dropped rather than pretending they applied. Switch the model, on the profile or under Admin → Models, to a Claude CLI one. |
 | `Could not find Chrome (ver. ...)`, or `PDF rendering needs a Chrome to print with` | Puppeteer's Chrome was never downloaded - an `npm install --ignore-scripts`, a proxy blocking the download, or a cleaned cache. Run `npm run setup:browser`, which fetches exactly the build puppeteer expects. If that download cannot get through, point the server at a browser you already have instead: `CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` in `.env` (Chrome, Edge, Chromium and Brave all work - same engine). The server also finds an installed browser on its own when the download is missing, so this only comes up when there is neither. |
 | `Could not start ... - but there is no file there` at startup | `CHROME_PATH` or `PUPPETEER_EXECUTABLE_PATH` names a path that does not exist. An explicit setting is never silently overridden, so fix the path or unset it to fall back to the downloaded browser. |

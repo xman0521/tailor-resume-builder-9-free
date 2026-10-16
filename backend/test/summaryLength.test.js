@@ -103,31 +103,109 @@ test('the cap can be moved without editing the source', () => {
   }
 });
 
-test('the prompt asks for the same 65 words, and sends the rest to the bullets', () => {
+test('the prompt asks for the same 80 words, with a floor so the model fills it', () => {
   /*
-   * The cap and the prompt have to agree. If the prompt still asked for 80-120
-   * words, every resume would be written long and then trimmed - and the terms
-   * in the dropped sentences would be lost rather than placed in a bullet,
-   * which is the half of this the operator actually asked for.
+   * The cap and the prompt have to agree, and the FLOOR is the half that was
+   * missing. Measured over 60 delivered resumes per run: asked only for "at
+   * most 65", the model wrote a median of 52 and not one summary was trimmed by
+   * the code - it retreated from a ceiling rather than filling it, and the share
+   * of skills terms also appearing in the summary fell from 16% to 4%. The ATS
+   * average fell about ten points with it.
    *
-   * READ FROM THE SHIPPED FILE, not through `resolvePromptByExactId`. A SAVED
-   * prompt in the operator's database wins over the file at runtime, so both
-   * were edited - but what the saved one says is this machine's own data, and a
-   * test that asserted on it would be a test about the machine it runs on. That
-   * mistake is already in this suite's history: three route tests passed only
-   * because a real Chrome happened to be listening on the port the temp
-   * database had registered.
+   * READ FROM THE SHIPPED FILE, not through `resolvePromptByExactId`: a saved
+   * prompt in the operator's database wins at runtime, so both were edited, but
+   * what the saved one says is this machine's own data.
    */
   const fs = require('node:fs');
   const path = require('node:path');
   const file = path.join(__dirname, '..', 'static', 'prompts', 'tailor-resume.json');
-  const content = JSON.parse(fs.readFileSync(file, 'utf8')).content || '';
+  const content = JSON.parse(fs.readFileSync(file, 'utf8')).content;
 
-  assert.match(content, /AT MOST 65 words/);
-  assert.doesNotMatch(content, /80-120 words/, 'the old budget must be gone, not merely outvoted');
+  assert.match(content, /Summary: 65-80 words, 4-5 sentences/);
+  assert.match(content, /AIM AT 80, never under 65/, 'a ceiling alone is what produced 52-word summaries');
+  assert.doesNotMatch(content, /AT MOST 65 words/, 'the ceiling-only wording must be gone');
+  assert.doesNotMatch(content, /80-120 words/, 'and so must the budget before it');
 
-  // ...and the keywords go somewhere, rather than being dropped with the words.
+  // The keyword rules still point at the bullets, which is the half that was
+  // asked for separately and must not be undone by widening the paragraph.
   assert.match(content, /MORE BULLETS, NOT A LONGER PARAGRAPH/);
   assert.match(content, /The summary is not the overflow bin/);
-  assert.match(content, /SPREAD THEM\. AT MOST ONE in the summary/);
+
+  // Every reference to the old budget moved together. A rule still citing 65 as
+  // the ceiling would be arguing with the one above it.
+  assert.doesNotMatch(content, /65 words/, 'no rule may still quote 65 as the budget');
+});
+
+test('the code ceiling matches the budget the prompt asks for', () => {
+  // They are set in different files and drift silently: a prompt asking for 80
+  // against a cap of 65 would have every summary trimmed on arrival, which is
+  // the mirror image of the bug this pair was written for.
+  const { capSummaryWords } = require('../dist/services/resumeService');
+
+  const seventy = Array.from({ length: 70 }, (_, i) => `word${i}`).join(' ') + '.';
+  const result = capSummaryWords(seventy);
+  assert.equal(result.dropped, 0, 'a 70-word summary is inside the budget and must not be trimmed');
+  assert.equal(result.words, 70);
+});
+
+test('the skills block gets one form of a thing, and the rules do not contradict each other', () => {
+  /*
+   * REPORTED AS duplicate skills: "LLMs, Large Language Models", "CI/CD, CI/CD
+   * pipelines", "AWS, Amazon Web Services". The code dedup is exact-match only
+   * and cannot see those as the same thing, so the prompt decides - and the
+   * prompt was arguing with itself in three places:
+   *
+   *   - near the top: "both forms ... both go on the page", with no mention of
+   *     where, which reads as "put both in the block";
+   *   - 100 lines later: "THE BLOCK GETS ONE ... drop the rest from the list";
+   *   - inside that same section, with no heading between them: "BOTH FORMS OF
+   *     A SHORT NAME ... write both", which is about the CONCEPTS checklist and
+   *     read as being about the block.
+   *
+   * The duplicates the operator saw were the example strings from those rules.
+   * Read from the shipped file for the reason the summary test above gives: the
+   * saved record is this machine's own data.
+   */
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const file = path.join(__dirname, '..', 'static', 'prompts', 'tailor-resume.json');
+  const content = JSON.parse(fs.readFileSync(file, 'utf8')).content;
+
+  // The global rule now says WHERE each form goes, rather than only that both
+  // belong somewhere.
+  assert.doesNotMatch(
+    content,
+    /both forms are on the checklist\s*\n\s*and both go on the page\./,
+    'the bare "both go on the page" is what made the block the obvious place for both'
+  );
+  assert.match(content, /both go on the page - but NOT in the same place/);
+  assert.match(content, /The skills block takes one\s*\n\s*of them; the prose takes the other/);
+
+  // The concepts rule has a heading of its own, so "both forms" is visibly not
+  // about the block, and its referent is named rather than "These".
+  assert.match(content, /CONCEPTS AND CAPABILITIES: BOTH FORMS, IN THE PROSE/);
+  assert.match(content, /Concepts and capabilities do NOT appear in the skills list/);
+  assert.doesNotMatch(content, /These do NOT appear in the skills list/, 'an unnamed "These" is what made it ambiguous');
+
+  // ...and it points back at the rule that settles the block, so the two are
+  // read together rather than as rivals.
+  const conceptsAt = content.indexOf('CONCEPTS AND CAPABILITIES: BOTH FORMS');
+  const blockAt = content.indexOf('THE BLOCK GETS ONE');
+  assert.ok(blockAt > 0 && conceptsAt > blockAt, 'the block rule still comes first');
+  assert.match(content, /the block gets ONE form of a thing, never two/);
+  assert.match(content, /and that entry belongs in a SENTENCE, not in the skills list/);
+});
+
+test('the analyser no longer carries its both-forms rule twice', () => {
+  // A bad patch had duplicated the whole paragraph, doubling the emphasis on
+  // the one instruction that manufactures the pairs. The operator removed it
+  // from the saved record; this pins the shipped file, which a fresh install
+  // reads and which still had both copies.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const file = path.join(__dirname, '..', 'static', 'prompts', 'analyze-job-description.json');
+  const content = JSON.parse(fs.readFileSync(file, 'utf8')).content;
+
+  const occurrences = content.split('BOTH FORMS OF EVERY SHORT NAME').length - 1;
+  assert.equal(occurrences, 1, `the paragraph appears ${occurrences} times`);
 });

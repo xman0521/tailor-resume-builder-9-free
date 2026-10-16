@@ -9,6 +9,11 @@ import {
   BROWSER_CHAT_SCHEMA_VERSION,
   type BrowserChatMigrationReport,
 } from './002_seed_browser_chat_models';
+import {
+  migrate003,
+  OPENROUTER_SCHEMA_VERSION,
+  type OpenRouterMigrationReport,
+} from './003_seed_openrouter_models';
 
 /**
  * Data migrations, run once per process on the first database use.
@@ -36,7 +41,7 @@ function writeVersion(db: Database.Database, version: number): void {
 }
 
 /** The version a fully migrated database is at. */
-export const CURRENT_SCHEMA_VERSION = BROWSER_CHAT_SCHEMA_VERSION;
+export const CURRENT_SCHEMA_VERSION = OPENROUTER_SCHEMA_VERSION;
 
 function describe(report: MigrationReport): string {
   const parts: string[] = [];
@@ -46,6 +51,12 @@ function describe(report: MigrationReport): string {
   if (report.rewrittenPrompts) parts.push(`${report.rewrittenPrompts} prompt override(s) repointed`);
   if (report.clearedPromptOverrides) parts.push(`${report.clearedPromptOverrides} shipped prompt override(s) cleared`);
   return parts.length ? parts.join(', ') : 'nothing to change';
+}
+
+function describeOpenRouter(report: OpenRouterMigrationReport): string {
+  return report.seededModels
+    ? `${report.seededModels} OpenRouter model(s) added`
+    : 'nothing to change';
 }
 
 function describeBrowserChat(report: BrowserChatMigrationReport): string {
@@ -91,6 +102,15 @@ const MIGRATIONS: readonly MigrationStep[] = [
     apply: (db) => {
       const report = migrate002(db);
       return { ran: report.ran, notes: report.notes, summary: describeBrowserChat(report) };
+    },
+  },
+
+  {
+    version: OPENROUTER_SCHEMA_VERSION,
+    label: 'OpenRouter model migration',
+    apply: (db) => {
+      const report = migrate003(db);
+      return { ran: report.ran, notes: report.notes, summary: describeOpenRouter(report) };
     },
   },
 ];

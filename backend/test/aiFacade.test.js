@@ -213,10 +213,20 @@ test('tailorResume still delivers its skill override after the transport change'
   );
 });
 
-test('a prompt record model override beats the caller, and a stale provider id still resolves', async () => {
+test('a prompt record model override beats the caller', async () => {
+  /*
+   * This used to be "...and a stale provider id still resolves", with the
+   * record naming `openrouter` - which worked because that string was a
+   * retired ALIAS for the CLI seat. OpenRouter is a live provider again, so
+   * the alias is gone and the fixture names a real provider.
+   *
+   * The half that was lost with it is asserted below instead, and is the more
+   * useful fact: an id no release ever had is REFUSED, not quietly coerced to
+   * something that happens to be installed.
+   */
   const { staticDir } = useTempStorage('facade-override');
   writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobDescription]]', {
-    modelProvider: 'openrouter',
+    modelProvider: 'claude-cli',
     modelName: 'opus',
   });
 
@@ -232,9 +242,39 @@ test('a prompt record model override beats the caller, and a stale provider id s
     useExactPromptId: true,
   });
 
-  // The record wins over the caller's fallback, and the removed provider id it
-  // names is read as the provider that replaced it rather than throwing.
+  // The record wins over the caller's fallback.
   assert.equal(requests[0].modelName, 'opus');
+});
+
+test('a prompt record naming a provider that never existed is refused, not guessed at', async () => {
+  // Loudly, and naming what it would accept: a prompt that silently ran on
+  // whichever provider happened to be installed is how a keyless seat and a
+  // billed API key get confused for each other.
+  const { staticDir } = useTempStorage('facade-unknown-provider');
+  writePrompt(staticDir, 'analyze-job-description', 'Analyze.\n[[jobDescription]]', {
+    modelProvider: 'a-provider-that-never-existed',
+    modelName: 'opus',
+  });
+
+  const ai = loadAi();
+  const { adapter } = stubAdapter();
+  ai.registerAdapter('claude-cli', () => adapter);
+
+  await assert.rejects(
+    () =>
+      ai.createPromptCompletion({
+        promptId: 'analyze-job-description',
+        promptValues: { jobDescription: 'A job' },
+        fallbackProvider: 'openai',
+        fallbackModelName: 'gpt-5.1',
+        useExactPromptId: true,
+      }),
+    (error) => {
+      assert.match(error.message, /must be one of/);
+      assert.match(error.message, /openrouter/, 'the list names every provider this build has');
+      return true;
+    }
+  );
 });
 
 test('a disabled provider is refused with a status a route can act on', async () => {
@@ -281,6 +321,7 @@ test('an explicitly registered adapter wins, and the other providers still exist
     'claude-web',
     'deepseek',
     'openai',
+    'openrouter',
   ]);
   assert.equal(
     capabilities.find((entry) => entry.id === 'claude-cli').label,

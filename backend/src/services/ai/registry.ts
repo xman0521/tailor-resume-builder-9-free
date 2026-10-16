@@ -2,6 +2,7 @@ import { AI_PROVIDER_IDS, getProviderLockReason } from '../../config/providerCat
 import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_DEEPSEEK_MODEL,
+  DEFAULT_OPENROUTER_MODEL,
   DEFAULT_OPENAI_MODEL,
 } from '../aiModelCatalog';
 import type { AIProvider } from '../../types/template';
@@ -67,6 +68,23 @@ function registerDefaults(): void {
       baseURL: 'https://api.deepseek.com',
       defaultModel: DEFAULT_DEEPSEEK_MODEL,
       tokenLimitField: 'max_tokens',
+    })
+  );
+  registerDefault('openrouter', () =>
+    createOpenAICompatibleAdapter({
+      id: 'openrouter',
+      baseURL: 'https://openrouter.ai/api/v1',
+      defaultModel: DEFAULT_OPENROUTER_MODEL,
+      // OpenRouter takes `max_tokens`, not OpenAI's newer
+      // `max_completion_tokens`: it normalises for whichever vendor is behind
+      // the model id, and the older field is the one it documents.
+      tokenLimitField: 'max_tokens',
+      // Optional on their side, and how a call is attributed to this app
+      // rather than to an anonymous key.
+      defaultHeaders: {
+        'HTTP-Referer': 'https://github.com/free-tailor',
+        'X-Title': 'Free Tailor',
+      },
     })
   );
   // Registered like any other, and costing nothing at import: the adapter does

@@ -152,6 +152,25 @@ export const PROVIDER_CATALOG = {
     lockReason: '',
     order: 3,
   },
+  openrouter: {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    summary:
+      'One API key for models from many vendors, through OpenRouter. Billed per token. '
+      + 'Model ids carry their vendor - "openai/gpt-4o-mini", not "gpt-4o-mini".',
+    supportsEffort: false,
+    supportsThinking: false,
+    // Nothing older than this entry can be asking about it: the flag this
+    // provider's FORMER incarnation used, `openrouterEnabled`, belongs to
+    // claude-cli now and must not be reclaimed with the id.
+    legacyEnabledField: null,
+    envKeyVar: 'OPENROUTER_API_KEY',
+    requiresApiKey: true,
+    credentialKind: 'api-key',
+    locked: false,
+    lockReason: '',
+    order: 6,
+  },
   'claude-web': {
     id: 'claude-web',
     label: 'Claude (free)',
@@ -259,20 +278,28 @@ export function listLockedProviderIds(): AIProvider[] {
 /**
  * Provider ids that were valid in an older release, and what they became.
  *
- * This map is PERMANENT, not a migration step. A boot migration rewrites the
- * settings row once, but stored provider strings reach typed code from places
- * a migration cannot cover: a restored backup, a hand-edited row, and
- * scripts/migrateLegacyData.ts, which writes a legacy `ai-models.json`
- * verbatim at any later time. Coercing on read means none of those can brick
- * the app; the migration is then an improvement rather than a prerequisite.
+ * EMPTY, AND DELIBERATELY SO. It held one entry - `openrouter` -> `claude-cli`
+ * - from when OpenRouter support was removed. OpenRouter is a provider here
+ * again, with an API key of its own, so that string has to mean OpenRouter.
+ *
+ * The three paths the alias was written for are all still covered, which is
+ * what made reclaiming the id safe rather than merely convenient:
+ *
+ *   - a restored backup carries its own `provider_schema_version`, so the boot
+ *     runner re-runs migration 001 against it;
+ *   - the legacy `ai-models.json` importer calls `migrate001` itself (see
+ *     scripts/migrateLegacyData.ts), so it converts as it imports;
+ *   - a hand-edited row in a database already at version 2 is now somebody
+ *     naming the CURRENT provider, which is the reading they would want.
+ *
+ * Kept as a map rather than deleted: the mechanism is sound and the next
+ * retired id goes here.
  */
 export const LEGACY_PROVIDER_ALIASES: Readonly<Record<string, AIProvider>> = Object.freeze(
   // Null prototype: a plain object would resolve "constructor", "toString" and
   // every other inherited name to an Object.prototype member, and a stored
   // provider string of that shape would then be handed back as a provider id.
-  Object.assign(Object.create(null) as Record<string, AIProvider>, {
-    openrouter: 'claude-cli' as AIProvider,
-  })
+  Object.assign(Object.create(null) as Record<string, AIProvider>, {})
 );
 
 const warnedAliases = new Set<string>();

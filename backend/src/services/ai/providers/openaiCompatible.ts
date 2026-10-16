@@ -17,18 +17,25 @@ import type {
 } from '../types';
 
 /**
- * OpenAI and DeepSeek share a wire format, so they share an adapter. The only
- * differences are the base URL, the default model, and the token-cap field
- * name - OpenAI moved to `max_completion_tokens` while DeepSeek still takes
- * `max_tokens`.
+ * OpenAI, DeepSeek and OpenRouter share a wire format, so they share an
+ * adapter. The differences are the base URL, the default model, the token-cap
+ * field name - OpenAI moved to `max_completion_tokens` while the other two
+ * still take `max_tokens` - and, for OpenRouter, two headers it uses to
+ * attribute traffic.
  */
 
 type OpenAICompatibleOptions = {
-  id: Extract<AIProvider, 'openai' | 'deepseek'>;
+  id: Extract<AIProvider, 'openai' | 'deepseek' | 'openrouter'>;
   baseURL?: string;
   defaultModel: string;
-  /** OpenAI renamed this field; DeepSeek did not. */
+  /** OpenAI renamed this field; the others did not. */
   tokenLimitField: 'max_completion_tokens' | 'max_tokens';
+  /**
+   * Sent on every request. OpenRouter reads `HTTP-Referer` and `X-Title` to
+   * attribute calls to an app; both are optional there and meaningless
+   * elsewhere, so this stays empty for the others.
+   */
+  defaultHeaders?: Record<string, string>;
 };
 
 function classifyHttpStatus(status: number | undefined): AIErrorKind {
@@ -71,7 +78,11 @@ export function createOpenAICompatibleAdapter(options: OpenAICompatibleOptions):
       });
     }
     if (!client || clientKey !== apiKey) {
-      client = new OpenAI({ apiKey, ...(options.baseURL ? { baseURL: options.baseURL } : {}) });
+      client = new OpenAI({
+        apiKey,
+        ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+        ...(options.defaultHeaders ? { defaultHeaders: options.defaultHeaders } : {}),
+      });
       clientKey = apiKey;
     }
     return client;

@@ -1288,11 +1288,17 @@ function getConceptKeywords(jobAnalysis?: JobAnalysis, librarySkills: string[] =
  *
  * WHY A CEILING AT ALL. The prompt asked for 80-120 words and got paragraphs
  * that filled a third of the first page before a reader reached a single thing
- * the candidate had done. The operator asked for 65, and for the keywords that
- * no longer fit to go into the bullets instead - which is where they do more
- * good anyway, attached to work rather than asserted in prose.
+ * the candidate had done.
+ *
+ * WHY 80 AND NOT 65. The first version of this capped at 65, and measured over
+ * 60 delivered resumes per run the result was a median of 52 words - the model
+ * retreated from a ceiling it was only ever told not to exceed, and not one
+ * summary in the sample was trimmed by this function. The share of the resume's
+ * own skills terms that also appeared in the summary fell from 16% to 4%, and
+ * the ATS scores fell about ten points with it. The prompt now asks for 65-80
+ * and names a floor; this is the ceiling that floor sits under.
  */
-const MAX_SUMMARY_WORDS = 65;
+const MAX_SUMMARY_WORDS = 80;
 
 /** The cap, which an operator can move without editing the source. */
 function summaryWordCap(env: NodeJS.ProcessEnv = process.env): number {

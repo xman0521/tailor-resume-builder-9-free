@@ -759,7 +759,12 @@ test('a provider string naming an inherited property is not a provider', () => {
   }
 
   assert.equal(coerceProviderId('claude-cli'), 'claude-cli');
-  assert.equal(coerceProviderId('openrouter'), 'claude-cli', 'the one real legacy alias still resolves');
+  // `openrouter` was an alias for the CLI seat while OpenRouter support was
+  // gone. It is a provider in its own right again, with its own API key, so
+  // the string has to mean OpenRouter - converting genuinely old rows is
+  // migration 001's job, and it is versioned so it cannot touch new ones.
+  assert.equal(coerceProviderId('openrouter'), 'openrouter');
+  assert.equal(coerceProviderId('not-a-provider'), null, 'an unknown id still resolves to nothing');
 });
 
 test('a spent seat-wide window parks the seat, whatever rateLimitType names', () => {

@@ -179,6 +179,7 @@ test('app settings preserve at least one enabled provider, and keys come from th
         claude: false,
         openai: false,
         deepseek: false,
+        openrouter: false,
         'claude-web': false,
         'chatgpt-web': false,
       },

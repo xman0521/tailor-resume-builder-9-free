@@ -237,7 +237,7 @@ test('prompt service renders prompt segments in template order', async () => {
   ]);
 });
 
-test('a prompt record naming the removed openrouter provider still loads', async () => {
+test('a prompt record naming openrouter loads as OpenRouter, not as the CLI seat', async () => {
   const { dbDir, staticDir } = useTempStorage('prompts-legacy-provider');
   writeDefaultPrompt(staticDir, 'analyze-job-description', 'Analyze [[jobDescription]]');
 
@@ -268,6 +268,8 @@ test('a prompt record naming the removed openrouter provider still loads', async
   const listed = await reloaded.listPrompts();
   const legacy = listed.find((prompt) => prompt.id === created.id);
 
-  assert.ok(legacy, 'the legacy prompt must still be listed rather than throwing');
-  assert.equal(legacy.modelProvider, 'claude-cli');
+  assert.ok(legacy, 'the prompt must still be listed rather than throwing');
+  // The string means OpenRouter now. What has not changed, and is the point of
+  // this test, is that a hand-written record still LOADS rather than throwing.
+  assert.equal(legacy.modelProvider, 'openrouter');
 });

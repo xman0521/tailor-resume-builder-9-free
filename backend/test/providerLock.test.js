@@ -170,7 +170,7 @@ test('settings that would leave only locked providers enabled are refused', asyn
       config.updateAppSettings({
         providersEnabled: {
           'claude-cli': true, claude: false, openai: false, deepseek: false,
-          'claude-web': false, 'chatgpt-web': false,
+          openrouter: false, 'claude-web': false, 'chatgpt-web': false,
         },
       }),
     /unlocked AI provider/i
