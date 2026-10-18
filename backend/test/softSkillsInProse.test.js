@@ -63,16 +63,24 @@ test('every soft skill the posting named reaches the prompt', () => {
 test('the prompt says where they go, now that there is no section for them', () => {
   const prompt = require('../static/prompts/tailor-resume.json').content;
   assert.match(prompt, /SOFT SKILLS ARE PROSE, AND THEY ARE NOT OPTIONAL/);
-  // The rules that decide whether a scanner finds them at all. "At least two in
-  // the summary" became "three or four" when 15 scanned resumes came back with
-  // soft skills as the weak band in every one, then "at most one" when the
-  // summary was capped at 65 words, then "one or two" when that cap went to 80
-  // because the shorter paragraph cost ATS points. The count has changed three
-  // times; the requirement that the prompt NAME where they go has not.
+  /*
+   * The rules that decide whether a scanner finds them at all. "At least two in
+   * the summary" became "three or four" when 15 scanned resumes came back with
+   * soft skills as the weak band in every one, then "at most one" when the
+   * summary was capped at 65 words, then "one or two" at 80, and now "one at
+   * most, usually none" at 50. The count has changed four times; the
+   * requirement that the prompt NAME where they go has not.
+   *
+   * AND THE BULLETS ARE NOW THE ONLY PLACE. The skills block used to end with a
+   * group of soft skills, which satisfied a scanner whatever the sentences did.
+   * The operator removed it - they are unprovable adjectives in a list - so a
+   * soft skill that is not written into a bullet is not on the resume at all.
+   */
   assert.match(prompt, /WRITE THE TERM ITSELF/);
   assert.match(prompt, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);
-  assert.match(prompt, /SPREAD THEM\. ONE OR TWO in the summary/);
-  assert.match(prompt, /the rest through the bullets/);
+  assert.match(prompt, /SPREAD THEM\. The summary is 50 words and holds ONE at most/);
+  assert.match(prompt, /the rest go through the bullets/);
+  assert.match(prompt, /there is no\s+soft-skill group in the skills block/);
 });
 
 test('a soft skill that is also a banned word survives when the posting asked for it', () => {
@@ -90,10 +98,18 @@ test('a soft skill that is also a banned word survives when the posting asked fo
 });
 
 test('a run that places them, and one that loses them, are told apart', (t) => {
+  /*
+   * BOTH STREAMS. A run that loses its soft skills is now a console.warn, not a
+   * console.log: the skills block no longer carries a group of them, so a
+   * shortfall in the prose is a shortfall on the resume. Capturing only `log`
+   * made this test see the good run and miss the bad one.
+   */
   const lines = [];
   const realLog = console.log;
+  const realWarn = console.warn;
   console.log = (line) => lines.push(String(line));
-  t.after(() => { console.log = realLog; });
+  console.warn = (line) => lines.push(String(line));
+  t.after(() => { console.log = realLog; console.warn = realWarn; });
 
   build('Engineer of 9 years on payments.', ['Cut p99 latency from 180ms to 118ms.']);
   const lost = lines.find((line) => line.includes('[Resume soft skills]'));
@@ -109,6 +125,7 @@ test('a run that places them, and one that loses them, are told apart', (t) => {
   );
   const placed = lines.find((line) => line.includes('[Resume soft skills]'));
   console.log = realLog;
+  console.warn = realWarn;
 
   assert.match(lost ?? '', /0\/4 placed/);
   assert.match(lost ?? '', /Missing: .*communication/);
@@ -120,7 +137,9 @@ test('the terms are counted where a scanner reads them, not in the cover letter'
   // term that appears only there has not appeared.
   const lines = [];
   const realLog = console.log;
+  const realWarn = console.warn;
   console.log = (line) => lines.push(String(line));
+  console.warn = (line) => lines.push(String(line));
   parseTailoredResumeContent(
     JSON.stringify({
       title: 'Engineer',

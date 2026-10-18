@@ -71,18 +71,23 @@ test('the groups come through exactly as the model returned them', () => {
   assert.deepEqual(out.skills, out.hardSkills);
 });
 
-test('the same string is not printed twice, and nothing subtler is touched', () => {
+test('the same string is not printed twice, nor the same string plus filler', () => {
   /*
-   * THE ONE THING CODE TAKES OUT of a block it otherwise prints verbatim, and
-   * it is here because there is no judgement in it. Measured over a batch: a
-   * third of resumes printed an identical entry twice - one carried "python,
-   * sql, rest, postgresql, dbt, aws, git" all doubled - usually because a tool
-   * belongs under two of the model's own headings and it wrote it under both.
+   * WHAT CODE TAKES OUT of a block it otherwise prints verbatim, and both are
+   * here because there is no judgement in either.
    *
-   * What is NOT taken out is anything that needs an opinion: "Spring" beside
-   * "Spring Framework", "CI/CD" beside "CI/CD tools", "CSS" beside "SCSS". Which
-   * form to keep is a decision about the posting, so it lives in the prompt, and
-   * the losing forms go into the prose where a scanner reads them just as well.
+   * THE SAME STRING. Measured over a batch: a third of resumes printed an
+   * identical entry twice - one carried "python, sql, rest, postgresql, dbt,
+   * aws, git" all doubled - usually because a tool belongs under two of the
+   * model's own headings and it wrote it under both.
+   *
+   * THE SAME STRING PLUS FILLER, which this test used to pin as untouched on
+   * the grounds that "Spring" against "Spring Framework" needs an opinion. The
+   * operator reported the result as keyword stuffing - "data pipelines, data
+   * pipeline operations, production pipeline operations" - and asked for one
+   * entry per real skill, so the decision has been reversed: an entry goes when
+   * every word it ADDS is filler. The narrowness is the whole of it, and the
+   * cases below say where the line now falls.
    */
   const out = parseTailoredResumeContent(
     answer([
@@ -113,18 +118,49 @@ test('the same string is not printed twice, and nothing subtler is touched', () 
   );
   assert.deepEqual(emptied.skillGroups, [{ category: 'Cloud', skills: ['AWS', 'Terraform'] }]);
 
-  // And the judgement cases survive untouched: this is not a synonym filter.
+  // One entry plus nothing but filler: the operator's own examples, gone.
+  const padded = parseTailoredResumeContent(
+    answer([
+      { category: 'Delivery', skills: ['CI/CD', 'CI/CD tools', 'Spring', 'Spring Framework'] },
+      { category: 'Data', skills: ['Data pipelines', 'Data pipeline operations', 'Performance'] },
+      { category: 'Monitoring', skills: ['Performance tuning', 'Datadog'] },
+    ]),
+    profile(),
+    analysis()
+  );
+  /*
+   * "Performance" goes as a VAGUE WORD rather than as a restatement - a bare
+   * quality noun is the heading a group sits under, not a thing in it - and
+   * because that pass runs first, "Performance tuning" then has nothing left to
+   * restate and survives. The specific wording is promoted by the removal of
+   * the empty one, which is the right way round.
+   */
+  assert.deepEqual(padded.skillGroups, [
+    { category: 'Delivery', skills: ['CI/CD', 'Spring'] },
+    { category: 'Data', skills: ['Data pipelines'] },
+    { category: 'Monitoring', skills: ['Datadog'] },
+  ]);
+  // "Performance tuning" goes as a CONCEPT - its head noun names an activity -
+  // and "CI/CD" stays, which is the line the operator drew: the block loses
+  // the practice and keeps the string a scanner weights most.
+
+
+  // And this is still not a synonym filter. Every pair here differs by a word
+  // that NAMES something - a vendor, a product, a protocol - so both entries
+  // stand, which is what keeps "AWS Lambda" on a resume that also says "AWS".
   const keptApart = parseTailoredResumeContent(
     answer([
       { category: 'Web', skills: ['CSS', 'SCSS', 'HTTP', 'HTTPS'] },
-      { category: 'Delivery', skills: ['CI/CD', 'CI/CD tools', 'Spring', 'Spring Framework'] },
+      { category: 'Cloud', skills: ['AWS', 'AWS Lambda', 'Azure', 'Azure DevOps'] },
+      { category: 'Data & Messaging', skills: ['Kinesis', 'Amazon Kinesis', 'React', 'React Native'] },
     ]),
     profile(),
     analysis()
   );
   assert.deepEqual(keptApart.skillGroups, [
     { category: 'Web', skills: ['CSS', 'SCSS', 'HTTP', 'HTTPS'] },
-    { category: 'Delivery', skills: ['CI/CD', 'CI/CD tools', 'Spring', 'Spring Framework'] },
+    { category: 'Cloud', skills: ['AWS', 'AWS Lambda', 'Azure', 'Azure DevOps'] },
+    { category: 'Data & Messaging', skills: ['Kinesis', 'Amazon Kinesis', 'React', 'React Native'] },
   ]);
 });
 
@@ -210,16 +246,21 @@ test('the renderer prints the model grouping even when the profile asks for a fl
 
 test('a thin block and a posting-shaped block are reported, not corrected', (t) => {
   /*
-   * The prompt asks for about 18 skills, topped up from the candidate's own
-   * stack so the block reads as theirs rather than as a copy of the posting.
-   * Neither rule can be enforced here - correcting the block would mean
-   * editing an answer this app asked the model to own - so both are measured
-   * and said out loud instead.
+   * The prompt asks for a floor of 35 skills, topped up from the candidate's
+   * own stack so the block reads as theirs rather than as a copy of the
+   * posting. Neither rule can be enforced here - correcting the block would
+   * mean editing an answer this app asked the model to own - so both are
+   * measured and said out loud instead.
+   *
+   * BOTH STREAMS: a block under the floor is a console.warn now, not a log.
+   * It stopped being a remark when the operator set the floor by number.
    */
   const lines = [];
   const realLog = console.log;
+  const realWarn = console.warn;
   console.log = (line) => lines.push(String(line));
-  t.after(() => { console.log = realLog; });
+  console.warn = (line) => lines.push(String(line));
+  t.after(() => { console.log = realLog; console.warn = realWarn; });
 
   const thin = parseTailoredResumeContent(
     answer([{ category: 'Languages', skills: ['Python', 'Kafka', 'AWS'] }]),
@@ -227,12 +268,13 @@ test('a thin block and a posting-shaped block are reported, not corrected', (t) 
     analysis()
   );
   console.log = realLog;
+  console.warn = realWarn;
 
   assert.deepEqual(thin.hardSkills, ['Python', 'Kafka', 'AWS'], 'the block is printed as returned');
   const report = lines.find((line) => line.includes('[Resume skills]'));
   assert.ok(report, `no skills report was logged: ${lines.join(' | ')}`);
   assert.match(report, /3 skill\(s\) in 1 group\(s\)/);
-  assert.match(report, /thin/, 'a block under 18 has to say so');
+  assert.match(report, /UNDER the floor of 35/, 'a block under the floor has to say so');
   // Every one of those three is a term this posting named, which is the shape
   // a reader recognises as written for them.
   assert.match(report, /100% are terms this posting named/);

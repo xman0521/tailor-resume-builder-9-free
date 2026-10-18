@@ -81,8 +81,23 @@ test('both prompts ask for the work, in the copies that actually run', () => {
   const running = (name) => (getStoredPrompt(name)?.content ?? staticPrompt(name));
 
   const analyser = running('analyze-job-description');
-  assert.match(analyser, /EVERY behavioural requirement/, 'the analyser still asks for soft skills in one line');
-  assert.match(analyser, /Aim for 8-15/);
+  /*
+   * This used to pin "EVERY behavioural requirement this posting makes ... in
+   * the posting's own words. Aim for 8-15". The first half was right and the
+   * last five words were the fault: asked for the posting's wording, the
+   * analyser returned "ambiguity tolerance", "high bar for quality",
+   * "reversible decision-making" and the rest of a company's recruiting copy,
+   * and the skills block printed eighty of them across nine resumes. The rule
+   * now names the skills from a fixed list.
+   *
+   * What is still pinned is what the original test was for: the analyser asks
+   * for a substantial soft-skill list, not a token one, because a short list
+   * here cannot be recovered later.
+   */
+  assert.match(analyser, /behavioural requirements this posting makes/, 'the analyser still asks for soft skills');
+  assert.match(analyser, /NAMED FROM THE LIST BELOW and from nothing else/);
+  assert.match(analyser, /Target: 6-12 entries/);
+  assert.doesNotMatch(analyser, /in the posting's own words/, 'the posting writes its values as recruiting copy');
 
   const tailor = running('tailor-resume');
   assert.match(tailor, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);
@@ -90,8 +105,8 @@ test('both prompts ask for the work, in the copies that actually run', () => {
   // summary was capped at 65 words, then one or two when that cap went to 80
   // because the shorter paragraph cost ATS points. What is actually being
   // pinned is that the rule still NAMES a destination for the rest.
-  assert.match(tailor, /SPREAD THEM\. ONE OR TWO in the summary/);
-  assert.match(tailor, /the rest through the bullets/);
+  assert.match(tailor, /SPREAD THEM\. The summary is 50 words and holds ONE at most/);
+  assert.match(tailor, /the rest go through the bullets/);
   // The summary names the role in the model's own words, and the headline is
   // built by the application - the candidate's own title plus the kind of role -
   // so the model is told to write its identity and add no discipline itself.

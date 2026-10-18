@@ -32,6 +32,17 @@ import {
   type PlacementReport,
 } from './utils/placementCoverage';
 import {
+  MAX_SKILL_BLOCK_SIZE,
+  bulletsNamingATool,
+  findAnachronisms,
+  findBrokenBullets,
+  findGarbledMetrics,
+  recentRolesWithoutScope,
+  rolesWithoutScale,
+  tidySkillGroups,
+  withoutValuesPhrases,
+} from './utils/resumeQuality';
+import {
   partitionSkills,
   validateHardSkill,
   validateSoftSkill,
@@ -606,47 +617,15 @@ const HARD_SKILL_CATEGORY_WEIGHT: Record<HardSkillCategory, number> = {
  * unchanged. It lives here rather than in the stored prompt so an admin
  * editing the prompt cannot drop the field the renderer reads.
  */
-/**
- * What the soft-skill group at the end of the skills block is called.
- *
- * WHY IT IS A LIST. The heading was one fixed string, so every resume this app
- * produced - every profile, every posting - ended its skills block with a group
- * headed "Professional Skills". A phrase repeated across a batch is how a
- * reader, and a recruiter seeing two of our resumes, tells they came off the
- * same line. The group itself is worth keeping: those are the posting's own
- * soft-skill words, they are scored as skills, and they appear nowhere else on
- * a resume with no Soft Skills section.
- *
- * All of these read as an ordinary heading a person would write above a short
- * list of how somebody works, which is the only requirement: the words UNDER it
- * are the posting's, and they are what a scanner matches.
+/*
+ * THE SOFT-SKILL GROUP HEADING USED TO BE DRAWN HERE, from a list of eight, so
+ * that a batch of resumes did not all end their skills block with the words
+ * "Professional Skills". The group it headed is gone: the operator asked for no
+ * soft skills in the skills block at all - they are unprovable adjectives in a
+ * list - so they are shown through the bullets instead, where SOFT SKILLS ARE
+ * PROSE already required them. The heading, the draw, the `SOFT_SKILL_HEADING`
+ * pin and the `[[softSkillGroupHeading]]` prompt value went with it.
  */
-const SOFT_SKILL_GROUP_HEADINGS = [
-  'Professional Skills',
-  'Professional Strengths',
-  'Collaboration and Communication',
-  'Communication and Teamwork',
-  'Working Practices',
-  'Ways of Working',
-  'Workplace Skills',
-  'Team and Collaboration',
-];
-
-/**
- * Random per resume, pinnable for a test with SOFT_SKILL_HEADING - the same
- * shape as `pickSkillGroupLook`, for the same reason: a batch that varies is
- * the point, and a test that cannot hold one still has to assert something.
- */
-export function pickSoftSkillGroupHeading(env: NodeJS.ProcessEnv = process.env): string {
-  const pinned = (env.SOFT_SKILL_HEADING ?? '').trim();
-  const match = SOFT_SKILL_GROUP_HEADINGS.find(
-    (heading) => heading.toLowerCase() === pinned.toLowerCase()
-  );
-  if (match) return match;
-  return SOFT_SKILL_GROUP_HEADINGS[Math.floor(Math.random() * SOFT_SKILL_GROUP_HEADINGS.length)];
-}
-
-export const SOFT_SKILL_GROUP_HEADING_NAMES = [...SOFT_SKILL_GROUP_HEADINGS];
 
 /**
  * What the draft is short of, and the revision that asks for it.
@@ -673,6 +652,8 @@ type CoverageGap = {
   missingTerms: string[];
   /** The missing terms that are worth a second model call on their own. */
   missingImportant: string[];
+  /** Of those, the soft skills, which now have nowhere else to appear. */
+  missingSoft: string[];
   figures: number;
   short: boolean;
   reason: string;
@@ -688,6 +669,25 @@ type CoverageGap = {
  */
 const REVISION_MISSING_FLOOR = 3;
 
+/**
+ * And how many missing SOFT skills are worth it, which is fewer.
+ *
+ * WHY THEY GET THEIR OWN FLOOR. They used to be pooled with everything else, so
+ * a resume missing four soft skills and nothing else never bought the call -
+ * and since the skills block stopped carrying a group of them, a soft skill
+ * that is not in a bullet is not on the resume at all. Measured over the batch
+ * that prompted this: soft-skill presence fell from 8.8 terms per resume to
+ * 6.8 when the group went, and the bullets picked up less than a third of what
+ * the block had been carrying.
+ *
+ * TWO, NOT ONE, because the call costs money and time - a batch of 500 went
+ * from 0.84 hours to 2.21 when an earlier version revised on any single
+ * missing term. Most of the resumes this now catches were already being
+ * revised for something else, so it is one call either way; what changes is
+ * that the call is TOLD about the soft skills.
+ */
+const SOFT_SKILL_MISSING_FLOOR = 2;
+
 function measureCoverageGap(
   content: TailoredContent,
   jobAnalysis?: JobAnalysis
@@ -698,7 +698,9 @@ function measureCoverageGap(
     ...getSoftSkills(jobAnalysis),
   ]);
   const missingTerms = wanted.filter((term) => !containsTerm(prose, term));
-  const figures = countFigures(content);
+  // Bullets only, matching the floor's own wording: "five measurable results in
+  // bullet points". The summary is 50 words and contributes at most one.
+  const figures = countFigures({ experience: content.experience });
 
   /*
    * The terms a missing one of which is worth the call by itself: the five this
@@ -711,9 +713,19 @@ function measureCoverageGap(
   );
   const missingImportant = missingTerms.filter((term) => important.has(term.toLowerCase()));
 
+  // The soft skills among them, counted apart: with no group in the skills
+  // block, a bullet is the only place they can appear.
+  const softWanted = new Set(
+    withoutValuesPhrases(normalizeSkillsList(getSoftSkills(jobAnalysis))).terms.map((term) => term.toLowerCase())
+  );
+  const missingSoft = missingTerms.filter((term) => softWanted.has(term.toLowerCase()));
+
   const reasons: string[] = [];
   if (missingImportant.length > 0) {
     reasons.push(`${missingImportant.length} of the posting's leading terms missing`);
+  }
+  if (missingSoft.length >= SOFT_SKILL_MISSING_FLOOR) {
+    reasons.push(`${missingSoft.length} soft skill(s) missing, which now appear nowhere else`);
   }
   if (missingTerms.length >= REVISION_MISSING_FLOOR) {
     reasons.push(`${missingTerms.length} checklist terms missing`);
@@ -725,6 +737,7 @@ function measureCoverageGap(
   return {
     missingTerms,
     missingImportant,
+    missingSoft,
     figures,
     short: reasons.length > 0,
     reason: reasons.join(', '),
@@ -742,6 +755,20 @@ const RESUME_REVISION_PROMPT_ID = 'revise-resume-coverage';
  * prompt, all 36,853 characters of rules, and asked for the whole resume back.
  * It does not need the rules. It needs the sentences it is rewriting.
  */
+/**
+ * The revision call's values, exported for the test that renders the prompt.
+ *
+ * A variable added to the prompt and not to this function fails the whole
+ * revision at runtime with "missing runtime values", which is a thing to find
+ * in a test rather than in the middle of a batch.
+ */
+export function buildRevisionPromptValuesForTests(
+  content: TailoredContent,
+  gap: CoverageGap
+): Record<string, string> {
+  return revisionPromptValues(content, gap);
+}
+
 function revisionPromptValues(content: TailoredContent, gap: CoverageGap): Record<string, string> {
   const draft = {
     summary: content.summary ?? '',
@@ -753,19 +780,43 @@ function revisionPromptValues(content: TailoredContent, gap: CoverageGap): Recor
   };
 
   const figuresNote = gap.figures < FIGURE_FLOOR
-    ? `THE DRAFT ALSO NEEDS MORE FIGURES. It carries ${gap.figures} and this resume needs at least `
-      + `${FIGURE_FLOOR}: a page under that reads as a list of duties and fails a scanner's `
-      + `measurable-results check. Add figures to enough bullets to reach ${FIGURE_FLOOR}, spread `
-      + `across roles, at most one per bullet. Use the number the work itself implies - how many `
-      + `services a change covered, how many engineers a review involved, how often a release went `
-      + `out, how long a job took before and after - small, ordinary and defensible, and prefer a `
-      + `before-and-after ("40 minutes to 6") to a lone percentage.`
-    : 'The draft carries enough figures. Do not add more.';
+    ? `THE DRAFT ALSO NEEDS MORE MEASURABLE RESULTS. Its bullets carry ${gap.figures} and this `
+      + `resume needs at least ${FIGURE_FLOOR}: a page under that reads as a list of duties and `
+      + `fails a scanner's measurable-results check. Add figures to enough bullets to reach `
+      + `${FIGURE_FLOOR}, spread across roles, at most one per bullet. Use the number the work `
+      + `itself implies - how many services a change covered, how many engineers a review `
+      + `involved, how often a release went out, how long a job took before and after - small, `
+      + `ordinary and defensible. Prefer a before-and-after to a lone percentage, and write the `
+      + `unit on BOTH ends of one: "from 40 minutes to 6 minutes", never "by 40 minutes to 6". `
+      + `The figures in this instruction are examples; every number you write comes from the work `
+      + `in the bullet.`
+    : 'The draft carries enough measurable results. Do not add more.';
+
+  /*
+   * Soft skills, named separately and told where to go.
+   *
+   * They are in `missingTermsJson` as well, pooled with everything else, and
+   * that was not enough: the skills block no longer carries a group of them, so
+   * a soft skill that is not in a bullet is not on the resume - and the one
+   * instruction most likely to be obeyed is the one that says which words and
+   * which sentences.
+   */
+  const softSkillsNote = gap.missingSoft.length > 0
+    ? `THE SOFT SKILLS ARE THE WEAKEST BAND ON THIS RESUME, and ${gap.missingSoft.length} of them `
+      + `are missing: ${gap.missingSoft.join(', ')}. There is no soft-skills section and no soft-skill `
+      + `group in the skills block, so a bullet is the only place a scanner can find them. Write each `
+      + `one INSIDE a sentence about work the draft already describes, spelled exactly as listed - `
+      + `"Took ownership of the settlement path after two outages, cutting repeat incidents from nine `
+      + `a quarter to one", not "Strong ownership and collaboration skills". Consecutive bullets may `
+      + `each carry one; two in one sentence may not, and no bullet exists in order to hold one. If a `
+      + `term has nothing in this draft to attach it to, leave it out rather than asserting it.`
+    : 'The draft carries the soft skills this posting asked for. Do not add more.';
 
   return {
     draftJson: promptJson(draft),
     missingTermsJson: promptJson(gap.missingTerms),
     figuresNote,
+    softSkillsNote,
   };
 }
 
@@ -820,8 +871,21 @@ function coverageRevisionEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
   return !env.RESUME_REVISION_OFF && !env.RESUME_METRIC_RETRY_OFF;
 }
 
-const finalSkillOverride = (softSkillGroupHeading: string) => `FINAL SKILL OVERRIDE:
-Return "skillGroups": an array of { "category": string, "skills": string[] }, 5-8 groups, 4-10 skills each, ordered as you want them read, the last group headed "${softSkillGroupHeading}" and holding this posting's own soft-skill words spelled as it spells them. Count the skills before returning: about 30 in total, never fewer, never more than 40 - fill up from the technologies this posting names and the ones the candidate's own roles imply, so the block answers the posting without reading as a copy of it. A tool is not gated by the profile; a DOMAIN is - nothing from an industry this candidate has not worked in. It is printed exactly as returned - nothing reorders, merges, filters or tops it up - so no duplicates of one product, no concepts, no invented versions, and nothing from a domain this candidate has not worked in. Never invent a metric, an employer, a title or a date. Omit "skills", "hardSkills", "softSkills", "unconfirmedHardSkills" and "unconfirmedSoftSkills": there is no soft-skills section, and the flat lists are derived from skillGroups.`;
+/**
+ * The skills-block instruction an admin cannot edit away.
+ *
+ * Appended to the user body on every call, which makes it the LAST thing the
+ * model reads and the most salient - so it has to agree with the prompt word
+ * for word. It did not: while the prompt was being changed to ban soft skills
+ * from the block, this still said "the last group headed X and holding this
+ * posting's own soft-skill words spelled as it spells them", and being last it
+ * would have won. A rule in two places is a rule that disagrees with itself
+ * sooner or later; both are changed together or neither is.
+ *
+ * It no longer takes a heading, because there is no soft-skill group to head.
+ */
+const finalSkillOverride = () => `FINAL SKILL OVERRIDE:
+Return "skillGroups": an array of { "category": string, "skills": string[] }, 5-7 groups, 5-9 skills each and never fewer than five in a group, ordered as you want them read. The FIRST group is "Languages & Frameworks" and it is required on every resume - the languages this candidate writes and the frameworks they build with - because it is the first thing a technical reader looks for. Concrete tools, languages, frameworks and platforms ONLY. NO soft skills anywhere in the block - not "Ownership", "Communication", "Collaboration", "Mentoring", "Accountability", "Troubleshooting", nor any other - and no category words such as "Cloud", "Infrastructure", "Platforms", "Systems", "Data", "Tools" or "Technologies": the application deletes both wherever they appear, so writing them only makes the group shorter. No entry of three or more words unless it is a proper name with its capitals, and no entry joining two things with "and". NO CONCEPTS OR PRACTICES - write the TOOL instead: Datadog not "Observability", Terraform not "Infrastructure as Code", pytest not "unit testing", MLflow not "Experiment Tracking", Kong or Redis not "rate limiting". An entry goes if its last word names an activity (engineering, optimization, automation, orchestration, monitoring, planning, tracking, modeling, validation, testing, design, deployment, integration, implementation, operations) or if it is two or more words with no capital letter in it; "CI/CD", "APIs", "REST", "Large Language Models" and "RAG" are the exceptions and stay. The concept itself goes in an experience bullet, spelled as the posting spells it - it is moved, not dropped, and the application checks that it arrived. No past-tense verb as a skill. One entry per real thing: where one entry's words are all inside another's, write the shorter. Count the skills before returning: AT LEAST 35 in total - thirty-five is a floor, and five groups need seven entries each, six need six, seven need five - never more than 45, and anything past 45 is deleted from the end of the longest group. Reach thirty-five by naming the stack one layer at a time rather than by writing one thing several ways: the cloud alone is Lambda, S3, ECS, RDS, CloudWatch and IAM rather than the single word "AWS". Infer what the described work could not have been done without, never a tool from an industry they have not worked in and never a competitor beside the tool they used; if thirty-five would need a line nobody could be asked about, return what is true and stop short - fill up from the technologies this posting names and the ones the candidate's own roles imply, so the block answers the posting without reading as a copy of it. A tool is not gated by the profile; a DOMAIN is - nothing from an industry this candidate has not worked in. Beyond those removals it is printed exactly as returned - nothing reorders it, merges it or tops it up - so no duplicates of one product, no concepts, no invented versions. Never invent a metric, an employer, a title or a date. Omit "skills", "hardSkills", "softSkills", "unconfirmedHardSkills" and "unconfirmedSoftSkills": there is no soft-skills section, and the flat lists are derived from skillGroups.`;
 
 function usesJobPriorityHardSkillOrdering(profile?: Profile): boolean {
   return getProfileHardSkillOrdering(profile) === 'job-priority';
@@ -1298,7 +1362,7 @@ function getConceptKeywords(jobAnalysis?: JobAnalysis, librarySkills: string[] =
  * the ATS scores fell about ten points with it. The prompt now asks for 65-80
  * and names a floor; this is the ceiling that floor sits under.
  */
-const MAX_SUMMARY_WORDS = 80;
+const MAX_SUMMARY_WORDS = 50;
 
 /** The cap, which an operator can move without editing the source. */
 function summaryWordCap(env: NodeJS.ProcessEnv = process.env): number {
@@ -1411,7 +1475,11 @@ function getProseChecklist(jobAnalysis?: JobAnalysis): string[] {
   const conceptSet = new Set(concepts.map((term) => term.toLowerCase()));
   const keywords = buildLibraryAugmentedPromptLists(jobAnalysis).keywords
     .filter((term) => !conceptSet.has(term.toLowerCase()));
-  return normalizeSkillsList([...keywords, ...concepts]);
+  // Without the posting's culture language, for the reason given where the
+  // prompt's own lists are built: a measurement that counts a term the prompt
+  // forbids reads as a shortfall, and a shortfall buys a revision that puts the
+  // phrase back. The two have to agree about what belongs on the page.
+  return withoutValuesPhrases(normalizeSkillsList([...keywords, ...concepts])).terms;
 }
 
 /**
@@ -1491,6 +1559,133 @@ function reportBulletVoice(
   console.warn(`[Resume voice] ${profileName}: ${parts.join('; ')}.`);
 }
 
+/**
+ * Claims that do not fit inside the years of the role they sit in.
+ *
+ * REPORTED BY THE OPERATOR: LLM-as-a-judge, RAG, prompt injection testing and
+ * agent orchestration written into 2017-2019 roles. Every role is tailored
+ * towards the same posting, so a posting that leans on AI pushes AI language
+ * into the oldest role on the page - and that is the one fault on the list that
+ * ends an interview rather than costing a point.
+ *
+ * Reported, not repaired: fixing it means describing the old work in the
+ * vocabulary of its own era, which only the model can do. The prompt now asks
+ * for exactly that, under fault 2, and this says whether it listened.
+ */
+function reportAnachronisms(
+  profileName: string,
+  content: { experience?: Array<{ company?: string; endDate?: string; achievements?: string[] }> }
+): void {
+  const found = findAnachronisms(content.experience ?? []);
+  if (found.length === 0) return;
+
+  const shown = found
+    .slice(0, 5)
+    .map((hit) => `"${hit.term}" in ${hit.company} (ended ${hit.endedIn}, term is ${hit.from} on)`)
+    .join('; ');
+  console.warn(
+    `[Resume dates] ${profileName}: ${found.length} claim(s) newer than the role they sit in - `
+      + `${shown}${found.length > 5 ? ', ...' : ''}.`
+  );
+}
+
+/**
+ * Figures whose two ends do not describe one measurement.
+ *
+ * REPORTED BY THE OPERATOR as garbled metrics: "reduced deploy time by about 40
+ * minutes to 6". This prompt taught it - its own before-and-after example was
+ * written "40 minutes to 6", with the unit on one end - so the example and the
+ * rule were both fixed, and this counts what still arrives.
+ */
+function reportGarbledMetrics(
+  profileName: string,
+  content: { experience?: Array<{ achievements?: string[] }> }
+): void {
+  const found = findGarbledMetrics(content.experience ?? []);
+  if (found.length === 0) return;
+
+  console.warn(
+    `[Resume metrics] ${profileName}: ${found.length} figure(s) a reader cannot parse - `
+      + found
+        .slice(0, 3)
+        .map((hit) => `${hit.shape}: ${JSON.stringify(hit.bullet.slice(0, 90))}`)
+        .join('; ')
+      + `${found.length > 3 ? ', ...' : ''}.`
+  );
+}
+
+/** The prompt's own floor: two of every three bullets name a technology. */
+const TOOL_SHARE_FLOOR = 2 / 3;
+
+/**
+ * The bullets the prompt asks for, and the reason the floor is counted.
+ *
+ * MEASURED on a five-role profile after the per-role guidance was cut to 5-7
+ * and 2-3: twelve bullets, below the prompt's own stated minimum of fourteen.
+ * A short page is why the soft skills, the checklist terms and the five
+ * measurable results all ran out of room at once - each needs a sentence to
+ * live in. The page has no length limit, so there is nothing a short resume
+ * buys.
+ */
+const BULLET_FLOOR = 14;
+
+/**
+ * The three faults left on the operator's list, counted rather than repaired.
+ *
+ * Broken or leftover text, bullets with no named tool and no figure of scale,
+ * and roles that never widen into owning or mentoring anything. Each one needs
+ * the sentence rewritten, so each is a rule in the prompt - and a writing rule
+ * nobody counts is a writing rule that quietly stops holding, which is why
+ * `echoingBullets` is counted beside its own ban.
+ *
+ * ONE LINE PER RESUME, and only when there is something to say: an operator
+ * reads a batch of sixty of these.
+ */
+function reportBulletShape(
+  profileName: string,
+  roles: ReadonlyArray<{ company?: string; achievements?: string[] }>,
+  vocabulary: readonly string[]
+): void {
+  const parts: string[] = [];
+
+  const written = roles.reduce((count, role) => count + (role.achievements ?? []).length, 0);
+  if (written > 0 && written < BULLET_FLOOR) {
+    parts.push(
+      `${written} bullets across ${roles.length} role(s), under the floor of ${BULLET_FLOOR} `
+        + `- everything else on this page needs a sentence to live in`
+    );
+  }
+
+  const broken = findBrokenBullets(roles);
+  if (broken.length > 0) {
+    parts.push(
+      `${broken.length} bullet(s) that are not one finished sentence (`
+        + `${broken.slice(0, 2).map((hit) => `${hit.shape}: ${JSON.stringify(hit.bullet.slice(0, 70))}`).join('; ')})`
+    );
+  }
+
+  const tools = bulletsNamingATool(roles, vocabulary);
+  if (tools.bullets > 0 && tools.share < TOOL_SHARE_FLOOR) {
+    parts.push(
+      `only ${tools.named}/${tools.bullets} bullets name a technology this resume claims `
+        + `(${Math.round(tools.share * 100)}%, floor ${Math.round(TOOL_SHARE_FLOOR * 100)}%)`
+    );
+  }
+
+  const noScale = rolesWithoutScale(roles);
+  if (noScale.length > 0) {
+    parts.push(`${noScale.length} role(s) with no figure of scale: ${noScale.slice(0, 3).join(', ')}`);
+  }
+
+  const noScope = recentRolesWithoutScope(roles);
+  if (noScope.length > 0) {
+    parts.push(`no ownership or mentoring bullet in ${noScope.slice(0, 2).join(', ')}`);
+  }
+
+  if (parts.length === 0) return;
+  console.warn(`[Resume bullets] ${profileName}: ${parts.join('; ')}.`);
+}
+
 /** How many times a term appears in the achievement bullets. */
 function timesInBullets(
   content: { experience?: Array<{ achievements?: string[] }> },
@@ -1562,12 +1757,19 @@ function reportFocusAndFigures(
     }
   }
 
-  const figures = countFigures(content);
+  /*
+   * COUNTED IN THE BULLETS ONLY, on the operator's instruction: "at least 5
+   * measurable results in bullet points". It used to count the summary too,
+   * which inflated the number by one on most resumes and by more on the long
+   * summaries - and at 50 words the summary now has room for a single figure,
+   * so a floor that counted it would be a floor of four.
+   */
+  const figures = countFigures({ experience: content.experience });
   if (figures >= FIGURE_FLOOR) {
-    console.log(`[Resume metrics] ${profileName}: ${figures} figure(s) in the summary and bullets.`);
+    console.log(`[Resume metrics] ${profileName}: ${figures} measurable result(s) in the bullets.`);
   } else {
     console.warn(
-      `[Resume metrics] ${profileName}: only ${figures} figure(s) in the summary and bullets, `
+      `[Resume metrics] ${profileName}: only ${figures} measurable result(s) in the bullets, `
         + `floor ${FIGURE_FLOOR}.`
     );
   }
@@ -1575,11 +1777,23 @@ function reportFocusAndFigures(
 
 function reportPlacement(
   profileName: string,
-  content: { summary?: string; experience?: Array<{ description?: string; achievements?: string[] }> },
+  content: {
+    summary?: string;
+    // `company` and `endDate` are here for the two date-aware checks below: a
+    // claim is only too new for the years of the role it sits in.
+    experience?: Array<{
+      company?: string;
+      endDate?: string;
+      description?: string;
+      achievements?: string[];
+    }>;
+  },
   jobAnalysis?: JobAnalysis
 ): PlacementReport | null {
   reportFocusAndFigures(profileName, content, jobAnalysis);
   reportBulletVoice(profileName, content);
+  reportAnachronisms(profileName, content);
+  reportGarbledMetrics(profileName, content);
   const checklist = getProseChecklist(jobAnalysis);
   if (checklist.length === 0) return null;
 
@@ -1611,24 +1825,36 @@ function reportPlacement(
     const conceptProse = renderedProse(content);
     const placed = conceptsWanted.filter((term) => containsTerm(conceptProse, term));
     const missingConcepts = conceptsWanted.filter((term) => !containsTerm(conceptProse, term));
-    console.log(
+    const conceptLine =
       `[Resume concepts] ${profileName}: ${placed.length}/${conceptsWanted.length} written into the prose` +
-        `${missingConcepts.length > 0 ? `. Missing: ${missingConcepts.slice(0, 8).join(', ')}` : '.'}`
-    );
+      `${missingConcepts.length > 0 ? `. Missing: ${missingConcepts.slice(0, 8).join(', ')}` : '.'}`;
+    // A warning now, for the same reason the soft skills became one: the block
+    // used to carry these as entries whatever the sentences did, and it no
+    // longer does. A concept missing from the prose is missing from the resume.
+    if (missingConcepts.length > 0) console.warn(`${conceptLine} - the bullets are the only place they count now.`);
+    else console.log(conceptLine);
   }
 
-  const softWanted = normalizeSkillsList([
+  const softWanted = withoutValuesPhrases(normalizeSkillsList([
     ...getSoftSkills(jobAnalysis),
     ...getMatchedLibrarySoftSkills(jobAnalysis),
-  ]);
+  ])).terms;
   if (softWanted.length > 0) {
     const prose = renderedProse(content);
     const softPlaced = softWanted.filter((term) => containsTerm(prose, term));
     const missing = softWanted.filter((term) => !containsTerm(prose, term));
-    console.log(
+    /*
+     * A WARNING when any are missing, which it was not while the skills block
+     * ended with a group of them: a scanner found them there whatever the
+     * sentences did, so a shortfall here cost nothing. That group is gone, so
+     * a soft skill that is not in a bullet is not on the resume, and the score
+     * falls by exactly the number missing.
+     */
+    const line =
       `[Resume soft skills] ${profileName}: ${softPlaced.length}/${softWanted.length} placed in the prose` +
-        `${missing.length > 0 ? `. Missing: ${missing.slice(0, 8).join(', ')}` : '.'}`
-    );
+      `${missing.length > 0 ? `. Missing: ${missing.slice(0, 8).join(', ')}` : '.'}`;
+    if (missing.length > 0) console.warn(`${line} - the bullets are the only place they count now.`);
+    else console.log(line);
   }
 
   if (report.ratio >= floor) {
@@ -2950,15 +3176,120 @@ function reportSkillBlock(
   const fromPosting = skills.filter((skill) => posting.has(skill.trim().toLowerCase())).length;
   const share = skills.length > 0 ? Math.round((100 * fromPosting) / skills.length) : 0;
 
-  const thin = skills.length < MIN_SKILL_BLOCK_SIZE ? ` - thin, the prompt asks for about ${MIN_SKILL_BLOCK_SIZE}` : '';
-  console.log(
-    `[Resume skills] ${profileName}: ${skills.length} skill(s) in ${groups.length} group(s)${thin}. ` +
-      `${share}% are terms this posting named.`
-  );
+  /*
+   * The share of the block the posting did NOT name, said out loud.
+   *
+   * At a floor of 35 entries, most of the block is read off the candidate's
+   * work rather than copied from the job description - no posting names
+   * thirty-five tools, and these profiles carry no skill list of their own. The
+   * prompt licenses that inference and bounds it: the ordinary companions of a
+   * tool somebody plainly used, never a competitor beside it and never an
+   * industry they have not worked in. An interviewer can still ask about any
+   * line, so the number is worth seeing rather than burying.
+   */
+  const inferred = 100 - share;
+  const thin = skills.length < MIN_SKILL_BLOCK_SIZE
+    ? ` - UNDER the floor of ${MIN_SKILL_BLOCK_SIZE}`
+    : '';
+  const line =
+    `[Resume skills] ${profileName}: ${skills.length} skill(s) in ${groups.length} group(s)${thin}. `
+    + `${share}% are terms this posting named, ${inferred}% read off the candidate's work.`;
+  if (thin) console.warn(line);
+  else console.log(line);
+
+  const small = groups.filter((group) => group.skills.length < MIN_SKILLS_PER_GROUP);
+  if (small.length > 0) {
+    console.warn(
+      `[Resume skills] ${profileName}: ${small.length} group(s) under ${MIN_SKILLS_PER_GROUP} entries - `
+        + `${small.map((group) => `${group.category} (${group.skills.length})`).join(', ')}. `
+        + `A thin group is how a block of 35 becomes a block of 17.`
+    );
+  }
+
+  /*
+   * The one fault left that nothing removes.
+   *
+   * The prompt bans ordinary words as skill names - "Logs", "Reflection",
+   * "Less", "Echo", "Behave" - because each is also a real product, so a reader
+   * cannot tell whether the resume means the tool or the word. "Logs" was
+   * printed in a delivered block beside "prediction logs". It is NOT deleted
+   * here: each one genuinely is a product somebody might have used, and a
+   * removal that cannot tell which would be guessing. Said out loud instead.
+   */
+  /*
+   * The group the operator calls essential.
+   *
+   * "Languages & Framework category in the skill section is essential and
+   * required." It is the first thing a technical reader looks for and the
+   * first thing a scanner matches on, and a block that opens with "Cloud &
+   * Infrastructure" has buried it. Reported rather than invented: the entries
+   * would have to come from somewhere, and a group of languages this candidate
+   * does not write is worse than a block without the heading.
+   */
+  const hasLanguages = groups.some((group) => /language/i.test(group.category));
+  if (!hasLanguages) {
+    console.warn(
+      `[Resume skills] ${profileName}: no Languages group in the block - `
+        + `${groups.map((group) => group.category).join(', ')}.`
+    );
+  }
+  if (groups.length < MIN_SKILL_GROUPS || groups.length > MAX_SKILL_GROUPS) {
+    console.warn(
+      `[Resume skills] ${profileName}: ${groups.length} group(s), outside the `
+        + `${MIN_SKILL_GROUPS}-${MAX_SKILL_GROUPS} the prompt asks for.`
+    );
+  }
+
+  const ordinary = skills.filter((skill) => ORDINARY_WORD_SKILLS.has(skill.trim().toLowerCase()));
+  if (ordinary.length > 0) {
+    console.warn(
+      `[Resume skills] ${profileName}: ${ordinary.length} ordinary word(s) printed as skill names - `
+        + `${ordinary.join(', ')}. Each is a product too, so none was removed.`
+    );
+  }
 }
 
-/** What the prompt asks the model to fill the block up to. */
-const MIN_SKILL_BLOCK_SIZE = 30;
+/**
+ * The words the prompt names under WHAT STAYS OUT.
+ *
+ * Every one is both an English word and a real product - Logs, Echo, Behave,
+ * Less, Reflection - which is exactly why they reach the page and why code
+ * cannot settle them.
+ */
+const ORDINARY_WORD_SKILLS = new Set([
+  'logs',
+  'echo',
+  'behave',
+  'less',
+  'reflection',
+  'camel',
+  'spark',
+  'flow',
+]);
+
+/**
+ * The floor the prompt states, and the operator asked for by number.
+ *
+ * MEASURED before it moved: "about 30, at most 40" delivered 25 entries on
+ * average across a batch, 17 on one resume. A ceiling stated hard and a floor
+ * stated soft is obeyed on one side only - the same shape as the 65-word
+ * summary floor that produced 52 words - so this is now a floor in both the
+ * prompt and the log.
+ */
+const MIN_SKILL_BLOCK_SIZE = 35;
+
+/** And the shape it asks for: see TECHNICAL SKILLS in the prompt. */
+const MIN_SKILL_GROUPS = 5;
+const MAX_SKILL_GROUPS = 7;
+
+/**
+ * Five to a group, because the arithmetic of the floor depends on it.
+ *
+ * Five groups of seven, six of six or seven of five all reach 35; a group
+ * holding one tool - "Security & Performance: Redis", from a delivered resume -
+ * is how a block of 35 turns into a block of 17.
+ */
+const MIN_SKILLS_PER_GROUP = 5;
 
 function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAnalysis, profile?: Profile): TailoredContent {
   /*
@@ -2984,48 +3315,72 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
    * printed an identical entry twice - "python, sql, rest, postgresql, dbt, aws,
    * git" all doubled on one of them - usually because the same tool belongs in
    * two of the model's own groups and it wrote it in both. Removing the second
-   * copy cannot be wrong and cannot be argued with; anything subtler than that
-   * - "Spring" against "Spring Framework" - is a judgement, stays in the prompt,
-   * and stays out of here.
+   * copy cannot be wrong and cannot be argued with.
+   *
+   * AND THE SAME STRING PLUS FILLER, which the operator reported as keyword
+   * stuffing: "performance" beside "performance tuning", "GitHub Copilot"
+   * beside "GitHub Copilot app", "agent runtime" beside "agent runtime
+   * execution" - 3.1 entries per resume, measured over 70 of them. That used to
+   * be left to the prompt on the grounds that "Spring" against "Spring
+   * Framework" is a judgement. It is not, once the test is narrow enough:
+   * `dropRestatedSkillsFromGroups` removes an entry only when every word it
+   * adds is filler, which is why "AWS Lambda" still stands beside "AWS". What it
+   * cannot see - "production pipeline operations" against "data pipelines" -
+   * remains a judgement and remains in the prompt.
    *
    * The flat list is kept in step because templates, the DOCX writer and the
    * keyword measurement all read `hardSkills`.
    */
-  const seenSkills = new Map<string, string>();
-  const droppedSkills: string[] = [];
   const modelSkillGroups = (content.skillGroups ?? [])
     .map((group) => ({
       category: String(group?.category ?? '').trim(),
       skills: (Array.isArray(group?.skills) ? group.skills : [])
         .map((skill) => String(skill ?? '').trim().replace(/\s+/g, ' '))
-        .filter(Boolean)
-        .filter((skill) => {
-          const key = skill.toLowerCase();
-          if (seenSkills.has(key)) {
-            droppedSkills.push(skill);
-            return false;
-          }
-          seenSkills.set(key, skill);
-          return true;
-        }),
+        .filter(Boolean),
     }))
-    .filter((group) => group.category && group.skills.length > 0);
+    .filter((group) => group.category);
 
-  if (droppedSkills.length > 0) {
-    console.log(
-      `[Resume skills] ${profile?.name ?? 'resume'}: removed ${droppedSkills.length} repeated `
-        + `entr${droppedSkills.length === 1 ? 'y' : 'ies'} from the block - ${droppedSkills.slice(0, 8).join(', ')}`
-        + `${droppedSkills.length > 8 ? ', ...' : ''}`
+  const tidied = tidySkillGroups(modelSkillGroups);
+  const skillGroups = tidied.groups;
+
+  const said: string[] = [];
+  const list = (entries: readonly string[], show: number) =>
+    entries.slice(0, show).join(', ') + (entries.length > show ? ', ...' : '');
+  if (tidied.report.repeated.length > 0) {
+    said.push(`${tidied.report.repeated.length} repeated (${list(tidied.report.repeated, 6)})`);
+  }
+  if (tidied.report.described.length > 0) {
+    said.push(`${tidied.report.described.length} descriptions rather than names (${list(tidied.report.described, 4)})`);
+  }
+  if (tidied.report.softOrVague.length > 0) {
+    said.push(
+      `${tidied.report.softOrVague.length} soft skill(s) and category word(s) `
+        + `(${list(tidied.report.softOrVague, 4)})`
     );
   }
+  if (tidied.report.restated.length > 0) {
+    said.push(
+      `${tidied.report.restated.length} restated `
+        + `(${list(tidied.report.restated.slice(0, 4).map((pair) => `${pair.dropped} -> ${pair.kept}`), 4)})`
+    );
+  }
+  if (tidied.report.concepts.length > 0) {
+    said.push(`${tidied.report.concepts.length} concept(s) rather than tools (${list(tidied.report.concepts, 4)})`);
+  }
+  if (tidied.report.trimmed.length > 0) {
+    said.push(`${tidied.report.trimmed.length} past the ${MAX_SKILL_BLOCK_SIZE}-entry ceiling (${list(tidied.report.trimmed, 4)})`);
+  }
+  if (said.length > 0) {
+    console.log(`[Resume skills] ${profile?.name ?? 'resume'}: removed ${said.join('; ')}.`);
+  }
 
-  const hardSkills = modelSkillGroups.length > 0
-    ? modelSkillGroups.flatMap((group) => group.skills)
+  const hardSkills = skillGroups.length > 0
+    ? skillGroups.flatMap((group) => group.skills)
     // No groups in the answer - an older prompt, or a build with no posting to
     // tailor against. The model's flat list, then the profile's own skills.
     : normalizeSkillsList(content.hardSkills ?? content.skills ?? profile?.skills ?? []);
 
-  reportSkillBlock(profile?.name ?? 'resume', modelSkillGroups, hardSkills, jobAnalysis);
+  reportSkillBlock(profile?.name ?? 'resume', skillGroups, hardSkills, jobAnalysis);
 
   // Ordering used to happen here - job-priority first, or the library's own
   // priority column. Neither applies now: the model returns the block in the
@@ -3232,6 +3587,41 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
   }, jobAnalysis);
 
   /*
+   * A concept taken out of the block has to turn up in a bullet.
+   *
+   * ASKED FOR: "regarding concepts, don't remove but add them to bullets of
+   * experience section." The block loses it; the resume must not. The prompt
+   * has required this for a long time - every concept it maps to a tool still
+   * has to appear in a sentence, spelled as the posting spells it - and nothing
+   * ever checked, which is how "tool calling" and "agent orchestration" ended
+   * up listed in the block and written nowhere else.
+   *
+   * Reported, never inserted: putting the phrase into a bullet means rewriting
+   * the sentence around it, and a bullet written by this file is the thing the
+   * whole prompt exists to avoid.
+   */
+  if (tidied.report.concepts.length > 0) {
+    const bullets = normalizedExperience.flatMap((role) => role.achievements ?? []).join(' \n ');
+    const stranded = tidied.report.concepts.filter((term) => !containsTerm(bullets, term));
+    if (stranded.length > 0) {
+      console.warn(
+        `[Resume concepts] ${profile?.name ?? 'resume'}: ${stranded.length} of `
+          + `${tidied.report.concepts.length} concept(s) removed from the block are in no bullet `
+          + `either - ${stranded.slice(0, 6).join(', ')}${stranded.length > 6 ? ', ...' : ''}`
+      );
+    } else {
+      console.log(
+        `[Resume concepts] ${profile?.name ?? 'resume'}: all ${tidied.report.concepts.length} `
+          + `concept(s) removed from the block appear in the bullets.`
+      );
+    }
+  }
+  // Separately, because this one needs the skills block as its vocabulary: a
+  // bullet "names a tool" if it names one of the technologies THIS resume
+  // claims, which is a sharper test than a list of tools kept in code.
+  reportBulletShape(profile?.name ?? 'resume', normalizedExperience, hardSkills);
+
+  /*
    * What the swaps could not take out.
    *
    * A banned adjective is deleted and a banned verb is swapped, so anything
@@ -3258,7 +3648,7 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
     summary: finalSummary,
     experience: normalizedExperience,
     hardSkills,
-    skillGroups: modelSkillGroups,
+    skillGroups,
     /*
      * No soft-skills block. It was a row of nouns nobody reads - and 44 of the
      * library's entries are the exact register the operator asked to be rid
@@ -3394,8 +3784,34 @@ export function buildTailorResumePromptValues(
   const { sourceJobDescription: _sourceJobDescription, ...jobAnalysisForPrompt } = jobAnalysis;
   const profileForPrompt = buildPromptProfile(profile);
   const augmentedPromptLists = buildLibraryAugmentedPromptLists(jobAnalysis);
-  const promptSkills = augmentedPromptLists.promptSkills;
-  const conceptKeywords = getConceptKeywords(jobAnalysis, promptSkills);
+
+  /*
+   * The posting's culture language never reaches the model.
+   *
+   * REPORTED AS pasted job-description phrases: "radical ownership mindset",
+   * "accuracy obsession", "valued all voices", "relentless bias toward action",
+   * tacked onto the ends of bullets where they break the sentence. The prompt
+   * now refuses them under fault 1 - and a rule alone could not have held,
+   * because these arrive on the analyser's own checklists and three things in
+   * this file then push them onto the page: the prompt is told to place EVERY
+   * term, the coverage measurement counts a missing one as a shortfall, and a
+   * big enough shortfall buys a revision call whose whole job is to write the
+   * missing terms in. A model obeying the rule would have been overruled by
+   * its own corrections.
+   *
+   * So the phrase is taken off the lists here, at the one point they are
+   * assembled. Set aside, not missed: the same decision rule 3 makes about an
+   * industry the candidate has never worked in.
+   */
+  const setAside = new Set<string>();
+  const withoutValues = (terms: string[]): string[] => {
+    const result = withoutValuesPhrases(terms);
+    for (const term of result.setAside) setAside.add(term);
+    return result.terms;
+  };
+
+  const promptSkills = withoutValues(augmentedPromptLists.promptSkills);
+  const conceptKeywords = withoutValues(getConceptKeywords(jobAnalysis, promptSkills));
   const conceptSet = new Set(conceptKeywords.map((keyword) => keyword.toLowerCase()));
 
   /*
@@ -3422,10 +3838,18 @@ export function buildTailorResumePromptValues(
   const uncovered = findUncoveredKeywords(collectJobKeywords(jobAnalysis), spokenFor)
     .filter((keyword) => !conceptSet.has(keyword.toLowerCase()));
 
-  const proseKeywords = normalizeSkillsList([
+  const proseKeywords = withoutValues(normalizeSkillsList([
     ...augmentedPromptLists.keywords.filter((keyword) => !conceptSet.has(keyword.toLowerCase())),
     ...uncovered,
-  ]);
+  ]));
+
+  if (setAside.size > 0) {
+    console.log(
+      `[Resume values] ${profile.name}: set aside ${setAside.size} values phrase(s) the `
+        + `posting asked for - ${[...setAside].slice(0, 6).join(', ')}`
+        + `${setAside.size > 6 ? ', ...' : ''}`
+    );
+  }
   const promptValues = {
     profileJson: promptJson(profileForPrompt),
     jobAnalysisJson: promptJson(jobAnalysisForPrompt),
@@ -3460,9 +3884,7 @@ export function buildTailorResumePromptValues(
     // Shuffled per request: see `buildConceptToolOptions`.
     conceptToolsJson: promptJson(buildConceptToolOptions(jobAnalysis, conceptKeywords)),
     keyResponsibilitiesJson: promptJson(getResponsibilities(jobAnalysis)),
-    // The heading over the soft-skill group, drawn per resume rather than
-    // fixed, so a batch does not end every skills block with the same words.
-    softSkillGroupHeading: pickSoftSkillGroupHeading(),
+
     // The five the posting leans on. The prompt builds bullets around these.
     topSkillsJson: promptJson(focusSkills(jobAnalysis)),
     // The kind of role this resume is aimed at, for the summary to name in its
@@ -3571,7 +3993,7 @@ export async function tailorResume(
     // providers taking a single flat string, so the instruction was silently
     // absent on the structured path - and the code below assumes the model
     // obeyed it, because skills are decided here, not by the model.
-    appendToUserBody: finalSkillOverride(promptValues.softSkillGroupHeading),
+    appendToUserBody: finalSkillOverride(),
     signal,
   });
   const secondCallEndedAt = process.hrtime.bigint();

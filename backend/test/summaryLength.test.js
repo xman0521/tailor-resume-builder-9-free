@@ -103,14 +103,22 @@ test('the cap can be moved without editing the source', () => {
   }
 });
 
-test('the prompt asks for the same 80 words, with a floor so the model fills it', () => {
+test('the prompt asks for the 50 words the code enforces', () => {
   /*
-   * The cap and the prompt have to agree, and the FLOOR is the half that was
-   * missing. Measured over 60 delivered resumes per run: asked only for "at
-   * most 65", the model wrote a median of 52 and not one summary was trimmed by
-   * the code - it retreated from a ceiling rather than filling it, and the share
-   * of skills terms also appearing in the summary fell from 16% to 4%. The ATS
-   * average fell about ten points with it.
+   * FIFTY, ON THE OPERATOR'S INSTRUCTION, and this test records that it is a
+   * reversal rather than a discovery.
+   *
+   * It was 80 with a floor of 65, set after a measured fall: asked only for "at
+   * most 65", the model wrote a median of 52, the share of skills terms also
+   * appearing in the summary fell from 16% to 4%, and the ATS average fell
+   * about ten points. The operator was asked directly whether a 50-word
+   * resume-writing spec should override that, with the measurement in front of
+   * them, and chose the shorter paragraph: it reads better to a person, and a
+   * person is who they are writing for.
+   *
+   * So expect the scanner numbers to fall again. That is the trade, not a
+   * regression, and the FLOOR is deliberately gone - at 50 words there is no
+   * room to retreat from.
    *
    * READ FROM THE SHIPPED FILE, not through `resolvePromptByExactId`: a saved
    * prompt in the operator's database wins at runtime, so both were edited, but
@@ -121,31 +129,42 @@ test('the prompt asks for the same 80 words, with a floor so the model fills it'
   const file = path.join(__dirname, '..', 'static', 'prompts', 'tailor-resume.json');
   const content = JSON.parse(fs.readFileSync(file, 'utf8')).content;
 
-  assert.match(content, /Summary: 65-80 words, 4-5 sentences/);
-  assert.match(content, /AIM AT 80, never under 65/, 'a ceiling alone is what produced 52-word summaries');
-  assert.doesNotMatch(content, /AT MOST 65 words/, 'the ceiling-only wording must be gone');
-  assert.doesNotMatch(content, /80-120 words/, 'and so must the budget before it');
+  assert.match(content, /Summary: 2-3 sentences, AT MOST 50 words/);
+  assert.match(content, /the role and how long they have done it/, 'the three facts it has room for');
+  assert.match(content, /ONE proof point/);
+  assert.match(content, /Normal sentence\s+capitalisation/);
+  assert.match(content, /no "Known for X and Y\."/, 'the shape the spec named is banned by name');
 
-  // The keyword rules still point at the bullets, which is the half that was
-  // asked for separately and must not be undone by widening the paragraph.
+  // The budget before it is gone from every rule that quoted it, or the prompt
+  // would be arguing with itself about the same paragraph.
+  assert.doesNotMatch(content, /AIM AT 80/, 'the old floor must be gone');
+  assert.doesNotMatch(content, /4-5 sentences/);
+  assert.doesNotMatch(content, /at 80 words/);
+  assert.doesNotMatch(content, /capped at 80 words/);
+
+  // The keyword rules still point at the bullets. Shortening the paragraph
+  // makes this MORE important, not less: there is now one term's room in it.
   assert.match(content, /MORE BULLETS, NOT A LONGER PARAGRAPH/);
   assert.match(content, /The summary is not the overflow bin/);
-
-  // Every reference to the old budget moved together. A rule still citing 65 as
-  // the ceiling would be arguing with the one above it.
-  assert.doesNotMatch(content, /65 words/, 'no rule may still quote 65 as the budget');
+  assert.match(content, /at 50 words it holds\s+one term at most/);
 });
 
 test('the code ceiling matches the budget the prompt asks for', () => {
   // They are set in different files and drift silently: a prompt asking for 80
-  // against a cap of 65 would have every summary trimmed on arrival, which is
+  // against a cap of 50 would have every summary trimmed on arrival, which is
   // the mirror image of the bug this pair was written for.
   const { capSummaryWords } = require('../dist/services/resumeService');
 
-  const seventy = Array.from({ length: 70 }, (_, i) => `word${i}`).join(' ') + '.';
-  const result = capSummaryWords(seventy);
-  assert.equal(result.dropped, 0, 'a 70-word summary is inside the budget and must not be trimmed');
-  assert.equal(result.words, 70);
+  const forty = Array.from({ length: 40 }, (_, i) => `word${i}`).join(' ') + '.';
+  const result = capSummaryWords(forty);
+  assert.equal(result.dropped, 0, 'a 40-word summary is inside the budget and must not be trimmed');
+  assert.equal(result.words, 40);
+
+  // ...and one over the line is cut, which is what makes 50 a fact rather than
+  // a request. Two sentences, so there is a boundary to cut on.
+  const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(' ')
+    + '. ' + Array.from({ length: 30 }, (_, i) => `later${i}`).join(' ') + '.';
+  assert.ok(capSummaryWords(long).words <= 50, 'the 50-word ceiling is not being applied');
 });
 
 test('the skills block gets one form of a thing, and the rules do not contradict each other', () => {

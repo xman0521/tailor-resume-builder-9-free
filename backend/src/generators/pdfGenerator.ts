@@ -14,6 +14,7 @@ import { TailoredContent, Template } from '../types/template';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getGeneratedFilePath, getResumeOutputFilename } from '../utils/generatedPath';
 import { withRenderPermit } from './renderConcurrency';
+import { standardDegreeNotation } from '../services/utils/resumeQuality';
 import {
   HARD_SKILL_CATEGORIES,
   HardSkillCategory,
@@ -1683,14 +1684,19 @@ const SKILL_GROUP_LOOKS: Record<string, string> = {
    * after it is a REAL non-breaking space rather than a margin, so the PDF's
    * text stream reads "- LANGUAGES" instead of running the two together.
    */
+  // DRAWN, NOT TYPED. The mark used to be generated CONTENT - a small square
+  // plus a non-breaking space - and generated content goes into the PDF's text
+  // stream, so an extracted skills section read "- LANGUAGES" with a square in
+  // front of every heading. An empty box with a background paints the same mark
+  // and leaves nothing for a parser to read.
   marker:
     '.skill-category-title{font-weight:700;font-size:0.9em;text-transform:uppercase;'
     + 'letter-spacing:0.04em;line-height:1.3;margin:0 0 1px 0}'
-    + '.skill-category-title::before{content:"\\25aa\\00a0";'
-    + 'color:color-mix(in srgb, currentColor 65%, transparent)}'
+    + '.skill-category-title::before{content:"";display:inline-block;width:0.32em;'
+    + 'height:0.32em;margin-right:0.45em;vertical-align:0.06em;'
+    + 'background:color-mix(in srgb, currentColor 65%, transparent)}'
     + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0}',
 
-  // A bar down the left of the group, with everything indented past it.
   bar:
     '.skill-category{padding-left:7px;border-left:2px solid currentColor}'
     + '.skill-category-title{font-weight:700;font-size:0.92em;letter-spacing:0.02em;margin:0 0 1px 0}'
@@ -2393,6 +2399,12 @@ export function prepareResumeRenderData(
     companyName: companyName || '',
     role: role || '',
     title: sanitizeTitleForATS(getResumeTitle(profile, tailoredContent)),
+    // "B.S. in Computer Science", from whatever the profile happens to say.
+    // Education is the one section the model never writes, so it reaches the
+    // page exactly as it was typed - and only the unambiguous forms are
+    // rewritten: "Bachelor's degree in X" could be a B.S. or a B.A. and the
+    // profile does not say.
+    education: standardDegreeNotation(profile.education),
     skillInventory: normalizeSkills([
       ...(profile.skills ?? []),
       ...tailoredHardSkills,
@@ -2449,7 +2461,33 @@ function compileTemplate(template: Template) {
  * line break, and every parser reads it as a space.
  */
 const SEPARATE_GLUED_RUNS_SCRIPT = `(() => {
-  const SEPARATOR = '\\u00a0\\u00a0';
+  /*
+   * A SPACE FOLLOWED BY A NON-BREAKING SPACE, and the order matters.
+   *
+   * This was two non-breaking spaces. They survive, which is the whole point -
+   * a plain space here is trailing whitespace inside a block and is thrown away,
+   * taking the separation with it. But a non-breaking space is not whitespace to
+   * every parser: Java's \s does not match it, and the application forms that
+   * matter are Java, so "Everbridge\\u00a0\\u00a011/2021" arrived as one token and
+   * the date never parsed.
+   *
+   * A plain space BETWEEN two non-space characters - the text before it and the
+   * non-breaking space after it - is not collapsible, so it survives too. The
+   * pair is the same width as before and gives every parser something to split
+   * on.
+   */
+  const SEPARATOR = '\\u0020\\u00a0';
+  /*
+   * The same pair, reversed, for the one place a separator is PREPENDED.
+   *
+   * Order is decided by position. Appended, the plain space sits between the
+   * text and the non-breaking space and survives. Prepended, that same space
+   * would be LEADING whitespace inside the element and is thrown away - which
+   * is exactly what happened: a numbered heading printed "02" + non-breaking
+   * space + "EDUCATION", one token again. Non-breaking space first, plain
+   * space second, and the space is interior either way.
+   */
+  const SEPARATOR_BEFORE = '\\u00a0\\u0020';
   let added = 0;
 
   for (const parent of Array.from(document.querySelectorAll('body *'))) {
@@ -2551,7 +2589,7 @@ const SEPARATE_GLUED_RUNS_SCRIPT = `(() => {
     // makes the two read as one word.
     if (!box.height || !inner.height) continue;
     if (Math.min(box.bottom, inner.bottom) - Math.max(box.top, inner.top) < inner.height * 0.5) continue;
-    first.insertBefore(document.createTextNode(SEPARATOR), first.firstChild);
+    first.insertBefore(document.createTextNode(SEPARATOR_BEFORE), first.firstChild);
     added += 1;
   }
 
@@ -2563,6 +2601,100 @@ export async function separateGluedTextRuns(
 ): Promise<number> {
   const added = await page.evaluate(SEPARATE_GLUED_RUNS_SCRIPT);
   return typeof added === 'number' ? added : 0;
+}
+
+/**
+ * A space at the end of every wrapped line.
+ *
+ * REPORTED: copying a bullet out of a delivered PDF gives
+ *
+ *   "...through pricing APIs, applyingmodel-driven pricing and real-time
+ *    pricing methods to customer-facing guidance while maintaining
+ *    consistentprediction latency under load."
+ *
+ * Two keywords destroyed per wrap, on every bullet of every resume.
+ *
+ * WHY IT HAPPENS. Chrome writes each rendered LINE as its own run of
+ * positioned glyphs. Inside a line the spaces are real glyphs; at a soft wrap
+ * there is nothing at all, because the space the text wrapped on is trailing
+ * whitespace in the markup and CSS throws it away before it is ever drawn.
+ * Whether the words weld then depends entirely on the consumer: pdftotext and
+ * pdf.js compare the Y coordinates and insert a newline, so they read
+ * correctly, while a viewer's copy and any parser that concatenates runs read
+ * "applyingmodel". Measured on a delivered resume, the runs are
+ * "...pricing APIs," / "applying model-driven..." with no separator between.
+ *
+ * THE FIX IS `white-space: pre-wrap`, which keeps the space the line wrapped
+ * on instead of discarding it. Measured on the sentence above: `normal` gives
+ * "pricing APIs,applying" and does not reconstruct; `pre-wrap` gives
+ * "pricing APIs, applying" and reconstructs the sentence exactly, with and
+ * without justification.
+ *
+ * WHY IT IS DONE HERE AND NOT IN A STYLESHEET. `pre-wrap` also preserves the
+ * newlines and indentation of the HTML SOURCE, and templates are written with
+ * both - a bullet inside `<li>\n  {{text}}\n</li>` would gain a line break and
+ * an indent. So the whitespace is first collapsed exactly as `normal` would
+ * have collapsed it, and only then is the property set, element by element and
+ * only where the computed value was `normal`. Anything the template deliberately
+ * set to `nowrap` or `pre` - the date columns, for one - is left alone.
+ *
+ * NON-BREAKING SPACES ARE NOT TOUCHED. `separateGluedTextRuns` writes a space
+ * and a non-breaking space between two runs a reader sees apart, precisely
+ * because an ordinary one would be collapsed; collapsing it here would undo
+ * that fix. The character class below is "whitespace except U+00A0".
+ */
+const PRESERVE_WRAP_SPACE_SCRIPT = `(() => {
+  const ORDINARY_WHITESPACE = /[^\\S\\u00a0]+/g;
+  const SKIP = new Set(['SCRIPT', 'STYLE', 'PRE', 'CODE', 'TEXTAREA']);
+  let changed = 0;
+
+  for (const element of Array.from(document.body.querySelectorAll('*'))) {
+    if (SKIP.has(element.tagName)) continue;
+    if (element.closest('pre, code, script, style, textarea')) continue;
+
+    const computed = window.getComputedStyle(element);
+    // Only where the page was already wrapping normally. An element the
+    // template pinned to nowrap or pre means it, and this must not argue.
+    if (computed.whiteSpace !== 'normal') continue;
+
+    const texts = Array.from(element.childNodes).filter(
+      (node) => node.nodeType === 3 && node.nodeValue && node.nodeValue.length > 0
+    );
+    if (texts.length === 0) continue;
+    // Elements whose own text is only whitespace between child elements - a
+    // row holding two spans - have nothing to wrap and nothing to collapse.
+    if (!texts.some((node) => node.nodeValue.trim().length > 0)) continue;
+
+    for (const node of texts) node.nodeValue = node.nodeValue.replace(ORDINARY_WHITESPACE, ' ');
+    /*
+     * The leading and trailing space of a BLOCK are dropped by \`normal\` and
+     * would be printed by \`pre-wrap\`, so they go now.
+     *
+     * ONLY A BLOCK. Inside an inline box - a \`<span>\` or \`<strong>\` sitting
+     * in the middle of a sentence - that space is a word separator and the
+     * browser keeps it. Stripping it there deleted real spaces and moved the
+     * line breaks, which is how this was caught: the baselines of a
+     * two-column template shifted.
+     */
+    if (!computed.display.startsWith('inline')) {
+      const first = texts[0];
+      const last = texts[texts.length - 1];
+      if (first === element.firstChild) first.nodeValue = first.nodeValue.replace(/^ /, '');
+      if (last === element.lastChild) last.nodeValue = last.nodeValue.replace(/ $/, '');
+    }
+
+    element.style.whiteSpace = 'pre-wrap';
+    changed += 1;
+  }
+
+  return changed;
+})()`;
+
+export async function preserveWrapSpaces(
+  page: { evaluate: (script: string) => Promise<unknown> }
+): Promise<number> {
+  const changed = await page.evaluate(PRESERVE_WRAP_SPACE_SCRIPT);
+  return typeof changed === 'number' ? changed : 0;
 }
 
 export async function generateResumePDF(
@@ -2616,6 +2748,9 @@ export async function generateResumePDF(
     await timePdfStage('HTML load', () => activePage.setContent(fullHtml, { waitUntil: 'load' }));
     // After layout, because it asks the page where things ended up.
     await timePdfStage('separate glued runs', () => separateGluedTextRuns(activePage));
+    // After that one, because it writes a non-breaking space this must not
+    // collapse - and before the export, because it changes the DOM.
+    await timePdfStage('preserve wrap spaces', () => preserveWrapSpaces(activePage));
 
     const pdfFilename = getResumeOutputFilename(pathInfo, 'pdf');
     const relativePath = `${pathInfo.storagePathBase}/${pdfFilename}`;
@@ -2870,10 +3005,28 @@ const NAME_CASE_CSS =
   + '{text-transform:none !important}'
   + '</style>';
 
+/**
+ * A REAL CHARACTER between contact fields, not a non-breaking space.
+ *
+ * This used to inject a non-breaking space. It separated the fields visually,
+ * and on three templates it was the ONLY thing between them - measured, without
+ * it the line printed
+ * "(512) 555-0142j@example.comhttps://linkedin.com/in/jbAustin, TX".
+ *
+ * But a non-breaking space is not whitespace to every parser. Java's \s does not
+ * match it, and the application forms that matter are Java, so the whole contact
+ * line arrived as a single token: 37% of delivered resumes carried one welding
+ * two fields together. A middle dot is a character everything splits on, and it
+ * is what the templates that were already fine use in their own markup.
+ *
+ * `:not(:last-child)` so a line cannot end in a dangling separator, and no
+ * `::before`: one separator between two fields is one separator.
+ */
 const CONTACT_SEPARATOR_CSS =
   '<style id="resume-contact-separator">' +
-  '.contact>*::after,.contact-row>*::after,.contact-item::after,' +
-  '.contact>*::before,.contact-row>*::before{content:"\\00a0"}' +
+  '.contact>*:not(:last-child)::after,.contact-row>*:not(:last-child)::after,' +
+  '.contact-item:not(:last-child)::after' +
+  '{content:"\\0020\\00b7\\0020"}' +
   '</style>';
 
 /**

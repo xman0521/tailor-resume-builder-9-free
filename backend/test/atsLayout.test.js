@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const pdfParse = require('pdf-parse');
 
-const { launchBrowser } = require('../dist/config/browser');
+const { launchBrowser, closeBrowser } = require('../dist/config/browser');
 const {
   generatePreviewHTML,
   separateGluedTextRuns,
@@ -444,4 +444,115 @@ test('separating two glued fields never adds a blank line', async (t) => {
   }
 
   assert.deepEqual(grew, [], grew.join(String.fromCharCode(10)));
+});
+
+test('what an application parser reads: dates, order and splittable separators', async (t) => {
+  /*
+   * REPORTED AS "resumes don't parse well while applying". Four faults, all
+   * measured on delivered resumes before being fixed, all invisible in the
+   * markup and visible only in the printed file:
+   *
+   *   - a date range wrapped onto two lines, "03/2019 -" then "PRESENT", so a
+   *     parser found a start date and no end date: 11 per resume;
+   *   - contact fields welded by non-breaking spaces. Java's \s does not match
+   *     one and the forms that matter are Java, so the line arrived as a single
+   *     token: 37% of delivered resumes carried a weld;
+   *   - a bullet glyph written into the text stream as generated content;
+   *   - an entry led by the employer, so a form pre-filled the company as the
+   *     job title.
+   *
+   * The baseline fault - a date sitting 1.43pt above the role it labels - needs
+   * the PDF's geometry rather than its text, so it has a test of its own below.
+   */
+  const pinnedLook = process.env.SKILL_GROUP_STYLE;
+  process.env.SKILL_GROUP_STYLE = 'marker';
+  t.after(() => {
+    if (pinnedLook === undefined) delete process.env.SKILL_GROUP_STYLE;
+    else process.env.SKILL_GROUP_STYLE = pinnedLook;
+  });
+
+  const browser = await launchBrowser();
+  const faults = [];
+
+  try {
+    const page = await browser.newPage();
+    for (const file of ALL_TEMPLATES) {
+      const template = JSON.parse(fs.readFileSync(path.join(TEMPLATE_DIR, file), 'utf8'));
+      await page.setContent(await generatePreviewHTML(profile, template, tailored), { waitUntil: 'load' });
+      await separateGluedTextRuns(page);
+      const { text } = await pdfParse(Buffer.from(await page.pdf({ format: 'A4', printBackground: true })));
+
+      const welds = text.match(/[A-Za-z0-9)][ ]+[A-Za-z0-9(]/g) || [];
+      if (welds.length) faults.push(`${file}: ${welds.length} NBSP weld(s), e.g. ${JSON.stringify(welds[0])}`);
+
+      const squares = (text.match(/[▪●■]/g) || []).length;
+      if (squares) faults.push(`${file}: ${squares} bullet glyph(s) written as text`);
+
+      const dangling = text.split(/\r?\n/).filter((l) => /\d{4}\s*[-–]\s*$/.test(l.trim()));
+      if (dangling.length) faults.push(`${file}: ${dangling.length} date range(s) split across lines`);
+    }
+  } finally {
+    await closeBrowser(browser);
+  }
+
+  assert.deepEqual(faults, [], faults.join(String.fromCharCode(10)));
+});
+
+test('a date is aligned to its line\'s baseline, not to the top of the box', async () => {
+  /*
+   * MEASURED FROM A PRINTED PDF, then pinned here from the DOM.
+   *
+   * `align-items: flex-start` lines up the TOPS of two boxes. Where the right
+   * half of an entry head is a smaller font than the left - a 9.5pt date beside
+   * a 10.8pt role - their baselines then sit apart: measured at 1.43pt on one
+   * template and 0.68pt on another, and in the printed file NOT ONE date in 36
+   * shared a baseline with the role it labelled. A parser reading positions
+   * sorts such a date above its own entry, or onto the previous role's last
+   * bullet, which is what "the dates don't parse" turned out to mean.
+   *
+   * Asserted on the computed style rather than on glyph coordinates because
+   * reading those back needs pdfjs, which hangs under this test runner. The
+   * coordinates are in the comment above; this is the cause they come from.
+   */
+  const browser = await launchBrowser();
+  const wrong = [];
+
+  try {
+    const page = await browser.newPage();
+    for (const file of ALL_TEMPLATES) {
+      const template = JSON.parse(fs.readFileSync(path.join(TEMPLATE_DIR, file), 'utf8'));
+      await page.setContent(await generatePreviewHTML(profile, template, tailored), { waitUntil: 'load' });
+
+      // The page returns raw rows and the matching happens here: a regex
+      // written inside a template literal has to survive two layers of escaping,
+      // and it did not.
+      const rows = await page.evaluate(`(() => {
+        const out = [];
+        for (const node of Array.from(document.querySelectorAll('*'))) {
+          const style = getComputedStyle(node);
+          if (style.display.indexOf('flex') === -1) continue;
+          if (node.children.length < 2) continue;
+          const sizes = Array.from(node.children).map((c) => getComputedStyle(c).fontSize);
+          out.push({ align: style.alignItems, sizes, text: (node.innerText || '').slice(0, 200) });
+        }
+        return out;
+      })()`);
+
+      for (const row of rows) {
+        // Only a row that actually puts a date beside something else, and only
+        // one with MIXED font sizes: equal sizes share a baseline whatever the
+        // alignment, so they cannot have this fault.
+        if (!/(0?[1-9]|1[0-2])\/(19|20)\d{2}/.test(row.text)) continue;
+        if (new Set(row.sizes).size < 2) continue;
+        if (row.align === 'flex-start') {
+          wrong.push(`${file}: a date row aligns to flex-start with mixed sizes (${row.sizes.join('/')})`);
+          break;
+        }
+      }
+    }
+  } finally {
+    await closeBrowser(browser);
+  }
+
+  assert.deepEqual(wrong, [], wrong.join(String.fromCharCode(10)));
 });

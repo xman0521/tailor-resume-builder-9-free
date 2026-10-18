@@ -232,13 +232,34 @@ test('the revision prompt exists, resolves and renders', async () => {
   assert.ok(prompt, 'the revision prompt does not resolve');
   assert.deepEqual(prompt.validation.unknownVariables, []);
 
-  const rendered = await renderPromptByExactId('revise-resume-coverage', {
-    draftJson: '{"summary":"Engineer of 9 years."}',
-    missingTermsJson: '["Kubernetes","Artificial intelligence"]',
-    figuresNote: 'The draft carries enough figures. Do not add more.',
-  });
+  /*
+   * Every value the prompt names, supplied from the SAME function the run uses,
+   * so a variable added to one and not the other fails here rather than at the
+   * first revision of a live batch - which is how `softSkillsNote` was caught.
+   */
+  const { buildRevisionPromptValuesForTests } = require('../dist/services/resumeService');
+  const values = buildRevisionPromptValuesForTests(
+    { summary: 'Engineer of 9 years.', experience: [] },
+    {
+      missingTerms: ['Kubernetes', 'Artificial intelligence'],
+      missingImportant: [],
+      missingSoft: ['Mentoring', 'Ownership'],
+      figures: 6,
+      short: true,
+      reason: 'test',
+    }
+  );
+  const rendered = await renderPromptByExactId('revise-resume-coverage', values);
   assert.equal((rendered.match(/\[\[\w+\]\]/g) ?? []).length, 0, 'a placeholder was left unfilled');
   assert.match(rendered, /Kubernetes/);
+
+  // The soft skills are named in the call, not merely pooled into the term
+  // list: with no group in the skills block, a bullet is the only place they
+  // can appear, and the instruction most likely to be obeyed is the one that
+  // says which words and which sentences.
+  assert.match(rendered, /THE SOFT SKILLS ARE THE WEAKEST BAND ON THIS RESUME/);
+  assert.match(rendered, /Mentoring, Ownership/);
+  assert.match(rendered, /a bullet is the only place a scanner can find them/);
 
   // And it is the SMALL prompt: re-sending the tailoring rules is what made the
   // second call cost as much as the first.
@@ -261,4 +282,79 @@ test('the revision can be switched off, by either name', async () => {
       else process.env[name] = pinned;
     }
   }
+});
+
+test('a draft missing only its soft skills is sent back', async () => {
+  /*
+   * THE GAP THIS CLOSES. Soft skills used to be pooled with every other
+   * checklist term, so a draft missing two of them and nothing else fell under
+   * the floor of three and was shipped as it stood. That was tolerable while
+   * the skills block ended with a group of them - a scanner found them there
+   * whatever the sentences did - and stopped being tolerable when the group was
+   * removed: measured over the batch that prompted this, soft-skill presence
+   * fell from 8.8 terms per resume to 6.8, and the bullets picked up less than
+   * a third of what the block had been carrying.
+   *
+   * Everything else here is placed and the figure floor is clear, so the soft
+   * skills are the only thing buying the call.
+   */
+  const softSkillsMissing = draft(
+    [
+      'Built web applications in Go on Kubernetes and cut p99 latency from 180ms to 118ms.',
+      'Took full-stack development of the checkout path from 40 minutes of Terraform deploys to 6 minutes.',
+      'Shipped artificial intelligence features over Postgres and Kafka across 4 services, watching Datadog.',
+      'Reviewed 30 changes a month and kept 12 releases a quarter predictable.',
+    ],
+    'Engineer of 9 years on payment platforms.'
+  );
+
+  const { calls } = await withStub([softSkillsMissing, PATCH]);
+  assert.equal(calls.length, 2, 'two missing soft skills must buy the call on their own');
+
+  // And the call is TOLD about them, by name and by destination. Pooling them
+  // into the term list was what the draft already had and did not act on.
+  const note = calls[1].promptValues.softSkillsNote;
+  assert.match(note, /THE SOFT SKILLS ARE THE WEAKEST BAND/);
+  assert.match(note, /Communication skills/);
+  assert.match(note, /Ownership/);
+  assert.match(note, /a bullet is the only place a scanner can find them/);
+  // Not by asserting them: a term with nothing to attach to is left out.
+  assert.match(note, /leave it out rather than asserting it/);
+});
+
+test('one missing soft skill is not worth a call', async () => {
+  /*
+   * The floor is two, not one, and the reason is the bill: an earlier version
+   * of this gate revised whenever anything was missing and took a batch of 500
+   * from 0.84 hours to 2.21. One term is worth a fraction of a point.
+   */
+  const oneMissing = draft(
+    [
+      'Built web applications in Go on Kubernetes and cut p99 latency from 180ms to 118ms.',
+      'Took full-stack development of the checkout path from 40 minutes of Terraform deploys to 6 minutes.',
+      'Shipped artificial intelligence features over Postgres and Kafka across 4 services, watching Datadog.',
+      'Reviewed 30 changes a month, where communication skills kept 12 releases a quarter predictable.',
+    ],
+    'Engineer of 9 years on payment platforms.'
+  );
+
+  const { calls } = await withStub([oneMissing]);
+  assert.equal(calls.length, 1, 'a single missing soft skill should not buy a second call');
+});
+
+test('a draft carrying its soft skills is told not to add more', async () => {
+  // The other half of the note: a revision bought for some other reason must
+  // not take "soft skills" as an invitation to sprinkle them.
+  const noFigures = draft(
+    [
+      'Built web applications in Go on Kubernetes for the payments path.',
+      'Took full-stack development of the checkout path through Terraform, Postgres and Kafka.',
+      'Shipped artificial intelligence features, watching Datadog, where communication skills and ownership held.',
+    ],
+    'Engineer of 9 years on payment platforms.'
+  );
+  const { calls } = await withStub([noFigures, PATCH]);
+
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].promptValues.softSkillsNote, /Do not add more/);
 });

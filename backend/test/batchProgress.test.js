@@ -94,6 +94,19 @@ test('the stream is a real event-stream, and closes itself when the run ends', a
   try {
     const port = server.address().port;
     const frames = [];
+    /*
+     * The batch is driven only once the client is listening.
+     *
+     * This used to be a 50ms timer, which is a race: `watchBatch` sends its
+     * snapshot the moment a listener subscribes, so a run that starts and
+     * finishes before the HTTP connection is established delivers ONE frame -
+     * the final state - and the frame count below fails. 50ms is plenty on an
+     * idle machine and not always enough while the rest of the suite runs
+     * beside it, which is the kind of failure that teaches an operator to
+     * re-run a suite instead of reading it.
+     */
+    let subscribed;
+    const listening = new Promise((resolve) => { subscribed = resolve; });
 
     const finished = new Promise((resolve, reject) => {
       const request = http.get(
@@ -109,6 +122,9 @@ test('the stream is a real event-stream, and closes itself when the run ends', a
             for (const line of chunk.split('\n')) {
               if (line.startsWith('data: ')) frames.push(JSON.parse(line.slice(6)));
             }
+            // The first frame is the snapshot `watchBatch` sends on subscribe,
+            // so by here the listener is attached and no event can be missed.
+            subscribed();
           });
           response.on('end', resolve);
           response.on('error', reject);
@@ -117,12 +133,11 @@ test('the stream is a real event-stream, and closes itself when the run ends', a
       request.on('error', reject);
     });
 
-    setTimeout(() => {
-      startBatch('run-http', 2, 'Building resumes');
-      advanceBatch('run-http', { ok: true, profileName: 'A', companyName: 'X' });
-      advanceBatch('run-http', { ok: false, profileName: 'B', companyName: 'Y' });
-      finishBatch('run-http');
-    }, 50);
+    await listening;
+    startBatch('run-http', 2, 'Building resumes');
+    advanceBatch('run-http', { ok: true, profileName: 'A', companyName: 'X' });
+    advanceBatch('run-http', { ok: false, profileName: 'B', companyName: 'Y' });
+    finishBatch('run-http');
 
     await finished;
 
