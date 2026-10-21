@@ -145,7 +145,7 @@ test('the prompt asks for the 50 words the code enforces', () => {
   // The keyword rules still point at the bullets. Shortening the paragraph
   // makes this MORE important, not less: there is now one term's room in it.
   assert.match(content, /MORE BULLETS, NOT A LONGER PARAGRAPH/);
-  assert.match(content, /The summary is not the overflow bin/);
+  assert.match(content, /The summary is\s+not the overflow bin/);
   assert.match(content, /at 50 words it holds\s+one term at most/);
 });
 

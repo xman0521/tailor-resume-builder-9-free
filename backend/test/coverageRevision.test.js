@@ -196,11 +196,82 @@ test('a revision that is no better leaves the draft alone', async () => {
   assert.match(result.experience[0].achievements[0], /settlement services for the payments path\./);
 });
 
-test('a revision that fails, or answers with nothing, leaves the draft alone', async () => {
+test('a revision that answers with nothing leaves the draft alone', async () => {
+  // The model ANSWERED. An answer that changes nothing is a judgement about
+  // the draft, not a failure, and the draft standing is the right outcome.
   const empty = await withStub([THIN, JSON.stringify({})]);
   assert.equal(empty.calls.length, 2);
   assert.match(empty.result.experience[0].achievements[0], /settlement services/);
+});
 
+test('a revision call that FAILS fails the build, so the unit is retried', async () => {
+  /*
+   * REPORTED: "even when the account browsers didn't respond after receiving
+   * prompt, our program finished generating resumes saying 5 out of 5
+   * generated successfully." They had - the draft was complete and a PDF was
+   * written - and the browser that took the prompt and never answered left
+   * nothing behind but a console warning.
+   *
+   * A failed call is a failed build now, which is what puts it through the
+   * batch retry: that re-enters the tab pool and takes whichever browser is
+   * free, which is the only reason a second attempt has a chance.
+   */
+  const execution = require('../dist/services/ai/promptExecution');
+  const original = execution.createPromptCompletion;
+  const calls = [];
+  execution.createPromptCompletion = async () => {
+    calls.push(1);
+    if (calls.length === 1) return THIN;
+    throw new Error('claude.ai did not return at all within 545s');
+  };
+  try {
+    await assert.rejects(
+      () => tailorResume(profile(), analysis(), { provider: 'claude-web', modelName: 'chat' }),
+      /did not return at all/,
+      'the revision failure must reach the caller'
+    );
+    assert.equal(calls.length, 2, 'the draft was written before the revision was asked for');
+  } finally {
+    execution.createPromptCompletion = original;
+  }
+});
+
+test('the failure keeps the provider\'s own retry classification', async () => {
+  /*
+   * `isRetryableFailure` reads `retryable` off an AIProviderError, and that
+   * flag comes from the KIND. Wrapping the failure in a plain Error would make
+   * every one of them retryable - including `auth` and `locked`, which say
+   * something about the installation that three more attempts cannot change.
+   */
+  const { AIProviderError } = require('../dist/services/ai/errors');
+  const { isRetryableFailure } = require('../dist/services/ai/retry');
+  const execution = require('../dist/services/ai/promptExecution');
+  const original = execution.createPromptCompletion;
+
+  for (const [kind, retryable] of [['timeout', true], ['auth', false]]) {
+    const calls = [];
+    execution.createPromptCompletion = async () => {
+      calls.push(1);
+      if (calls.length === 1) return THIN;
+      throw new AIProviderError({ provider: 'claude-web', kind, detail: 'the tab never answered' });
+    };
+    try {
+      await tailorResume(profile(), analysis(), { provider: 'claude-web', modelName: 'chat' });
+      assert.fail(`a ${kind} failure should have reached the caller`);
+    } catch (error) {
+      assert.equal(isRetryableFailure(error), retryable, `${kind} should be retryable=${retryable}`);
+      // And it says which call failed, so a batch summary can be read.
+      assert.match(error.message, /coverage revision/);
+      assert.match(error.message, /the tab never answered/);
+    } finally {
+      execution.createPromptCompletion = original;
+    }
+  }
+});
+
+test('the old behaviour is one environment variable away', async () => {
+  // This change can turn a batch that was shipping into a batch that fails, so
+  // there has to be a way back that is not a code edit.
   const execution = require('../dist/services/ai/promptExecution');
   const original = execution.createPromptCompletion;
   const calls = [];
@@ -209,11 +280,13 @@ test('a revision that fails, or answers with nothing, leaves the draft alone', a
     if (calls.length === 1) return THIN;
     throw new Error('provider went away');
   };
+  process.env.RESUME_REVISION_SOFT_FAIL = '1';
   try {
     const result = await tailorResume(profile(), analysis(), { provider: 'claude-web', modelName: 'chat' });
     assert.equal(calls.length, 2);
     assert.match(result.experience[0].achievements[0], /settlement services/);
   } finally {
+    delete process.env.RESUME_REVISION_SOFT_FAIL;
     execution.createPromptCompletion = original;
   }
 });
@@ -357,4 +430,109 @@ test('a draft carrying its soft skills is told not to add more', async () => {
 
   assert.equal(calls.length, 2);
   assert.match(calls[1].promptValues.softSkillsNote, /Do not add more/);
+});
+
+test('a revised resume does not report its block as unlabelled', async () => {
+  /*
+   * The warning "entries arrived with no kind" means the tailoring prompt did
+   * not reach the model, which is worth seeing. The revision pass re-parses a
+   * block this app has ALREADY routed - plain names by then, their kinds spent
+   * on the first pass - so without a flag every revised resume would raise it,
+   * and a signal that cries wolf on half a batch is no signal.
+   */
+  const lines = [];
+  const realWarn = console.warn;
+  console.warn = (line) => lines.push(String(line));
+  try {
+    const noFigures = draft(
+      [
+        'Built web applications in Go on Kubernetes for the payments path.',
+        'Took full-stack development of the checkout path through Terraform, Postgres and Kafka.',
+        'Shipped artificial intelligence features, watching Datadog, where communication skills and ownership held.',
+      ],
+      'Engineer of 9 years on payment platforms.'
+    );
+    const { calls } = await withStub([noFigures, PATCH]);
+    assert.equal(calls.length, 2, 'this draft should have bought a revision');
+  } finally {
+    console.warn = realWarn;
+  }
+
+  /*
+   * ONE, NOT TWO. The fixture's block is bare strings, so the FIRST pass warns
+   * and is right to - that is the signal working. The revision re-parses the
+   * same block and must stay quiet, so a second identical line is the false
+   * alarm this test exists for.
+   */
+  const unlabelled = lines.filter((line) => /arrived with no kind/.test(line));
+  assert.equal(
+    unlabelled.length,
+    1,
+    `expected only the first pass to warn, got ${unlabelled.length}: ${unlabelled.join(' | ')}`
+  );
+});
+
+test('a term sitting in the skills block is not asked for again', async () => {
+  /*
+   * MEASURED, and the reason this changed: the checklist the coverage pass
+   * measures is `getKeywordChecklist`, which reads the posting's TOOLS,
+   * TECHNOLOGIES and PROTOCOLS along with its ideas - so most of what is on it
+   * belongs in the skills block and is put there, correctly, by the model. The
+   * measurement asked the PROSE only, so a draft that had done everything right
+   * came back "missing" its whole stack.
+   *
+   * On a posting naming Azure, GCP, Bash, LLMs and MCP: 30 of 30 terms counted
+   * missing, SIXTEEN of them printed in the block of the same resume. That list
+   * is what the revision call receives, and it is told a bullet may carry two
+   * or three of these - so the terms with nowhere else to go, the soft skills
+   * and the concepts, were competing against sixteen already on the page.
+   */
+  const blockCarriesTheStack = JSON.stringify({
+    title: 'Model Title',
+    summary: 'Engineer of 9 years on payment platforms.',
+    experience: [{
+      title: 'Senior Software Engineer', company: 'Acme', startDate: '01/2019', endDate: 'Present',
+      location: 'Remote', description: '',
+      achievements: ['Built settlement services for the payments path.'],
+    }],
+    skillGroups: [
+      { category: 'Languages & Frameworks', skills: ['Go'] },
+      { category: 'Cloud', skills: ['Kubernetes', 'Terraform'] },
+      { category: 'Data', skills: ['Postgres', 'Kafka'] },
+      { category: 'Monitoring', skills: ['Datadog'] },
+    ],
+    coverLetter: 'I build platforms, and I would like to build yours.',
+  });
+
+  const { calls } = await withStub([blockCarriesTheStack, PATCH]);
+  assert.equal(calls.length, 2, 'the draft is still thin enough to buy a call');
+  const asked = JSON.parse(calls[1].promptValues.missingTermsJson);
+
+  // Printed in the block, so not missing from the page, so not asked for.
+  for (const term of ['Kubernetes', 'Terraform', 'Postgres', 'Kafka', 'Datadog', 'Go']) {
+    assert.equal(
+      asked.some((t) => t.toLowerCase() === term.toLowerCase()),
+      false,
+      `${term} is in the skills block and should not be asked for again: ${calls[1].promptValues.missingTermsJson}`
+    );
+  }
+
+  // On no part of the page, so still asked for - which is the whole point of
+  // clearing the others out of the way.
+  assert.ok(
+    asked.some((t) => /artificial intelligence/i.test(t)),
+    `"artificial intelligence" is on no part of the page: ${calls[1].promptValues.missingTermsJson}`
+  );
+  assert.ok(
+    asked.some((t) => /communication skills|ownership/i.test(t)),
+    'the soft skills have nowhere but a bullet to go'
+  );
+});
+
+test('a block term still counts as missing when the block does not carry it', async () => {
+  // The other direction, so the change cannot be read as "stop asking".
+  const { calls } = await withStub([THIN, PATCH]);
+  const asked = JSON.parse(calls[1].promptValues.missingTermsJson);
+  assert.ok(asked.some((t) => t.toLowerCase() === 'kubernetes'),
+    `the THIN draft's block holds only Go: ${calls[1].promptValues.missingTermsJson}`);
 });

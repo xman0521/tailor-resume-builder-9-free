@@ -38,9 +38,11 @@ const tailored = {
   title: 'Software Engineer (Backend)', summary: 'Engineer of 9 years.',
   experience: profile.experience, strengths: [], softSkills: [], skills: [], hardSkills: [],
   unconfirmedHardSkills: [], unconfirmedSoftSkills: [],
+  // Five to a group, the shape the prompt asks for: these tests are about how
+  // a group LOOKS, so the block should look like one a resume would carry.
   skillGroups: [
-    { category: 'Cloud and Infrastructure', skills: ['AWS', 'Terraform', 'Kubernetes'] },
-    { category: 'DevOps and Delivery', skills: ['CI/CD', 'GitHub Actions'] },
+    { category: 'Cloud and Infrastructure', skills: ['AWS', 'Terraform', 'Kubernetes', 'Docker', 'Helm'] },
+    { category: 'DevOps and Delivery', skills: ['CI/CD', 'GitHub Actions', 'Jenkins', 'ArgoCD', 'Ansible'] },
   ],
   coverLetter: 'x',
 };
@@ -385,11 +387,11 @@ test('no look collapses a group, on any template', async (t) => {
   const crowded = {
     ...tailored,
     skillGroups: [
-      { category: 'Languages', skills: ['Java', 'Python', 'SQL', 'Go'] },
-      { category: 'Cloud and Infrastructure', skills: ['AWS', 'Terraform', 'Kubernetes'] },
-      { category: 'Data and Storage', skills: ['Postgres', 'Redis', 'Kafka'] },
-      { category: 'Monitoring', skills: ['Datadog', 'PagerDuty', 'Grafana'] },
-      { category: 'Professional Skills', skills: ['Communication skills', 'Troubleshooting'] },
+      { category: 'Languages', skills: ['Java', 'Python', 'SQL', 'Go', 'TypeScript'] },
+      { category: 'Cloud and Infrastructure', skills: ['AWS', 'Terraform', 'Kubernetes', 'Docker', 'Helm'] },
+      { category: 'Data and Storage', skills: ['Postgres', 'Redis', 'Kafka', 'Snowflake', 'MongoDB'] },
+      { category: 'Monitoring', skills: ['Datadog', 'PagerDuty', 'Grafana', 'Prometheus', 'Sentry'] },
+      { category: 'Testing and Quality', skills: ['pytest', 'JUnit', 'Jest', 'Playwright', 'ESLint'] },
     ],
   };
 

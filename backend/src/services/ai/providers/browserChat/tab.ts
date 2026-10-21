@@ -89,7 +89,7 @@ const DEFAULT_ACTION_MS = 15_000;
 const DEFAULT_POLL_MS = 1_500;
 
 /**
- * How far past the deadline the outer guard waits.
+ * How far past the CEILING the outer guard waits.
  *
  * The polling loop owns the ordinary timeout, and its message is the useful
  * one - it can say whether a reply ever rendered, which points at a signed-out
@@ -97,8 +97,41 @@ const DEFAULT_POLL_MS = 1_500;
  * reach: a DevTools call that never returns at all. Firing them at the same
  * instant made the two race, and the guard's vaguer message won about half the
  * time. A short grace lets the specific error through whenever there is one.
+ *
+ * PAST THE CEILING, not past the budget: see `turnCeilingMs`. Measured against
+ * the budget it fired 355s before the loop's own limit on a 180s browser turn,
+ * so it was not a backstop at all - it was the real timeout, and a shorter one
+ * than the loop believed it had.
  */
 const GUARD_GRACE_MS = 5_000;
+
+/**
+ * The longest a turn can run, which is the ONE number both clocks use.
+ *
+ * WHY IT IS A FUNCTION AND NOT TWO EXPRESSIONS. The guard below and the polling
+ * loop each derived their own limit from the same `deadlineMs`, and they
+ * disagreed: the loop spends its budget on SILENCE and pushes its expiry out by
+ * PROGRESS_GRACE_MS every time the answer grows, up to budget x
+ * PROGRESS_EXTENSION_LIMIT, while the guard was a flat `deadlineMs +
+ * GUARD_GRACE_MS` that never moved. At the 180s browser budget that is 540s
+ * against 185s, so EVERY answer still streaming at 185s was killed with 355s of
+ * its allowance unused - and the progress extension, which exists because slow
+ * ChatGPT windows were being cut off mid-sentence, could only ever help inside
+ * the first window.
+ *
+ * It cost a resume revision on every slow turn: the guard rejected, the caller
+ * logged "the revision failed", the draft was printed - and `turn()` is not
+ * cancelled when the guard wins, so the browser carried on writing the answer
+ * into a tab nobody was reading.
+ *
+ * The guard still exists for the case the loop cannot reach - a DevTools call
+ * that never returns - and it now fires past the ceiling rather than before it.
+ * A SILENT page is unaffected: the loop's own expiry only moves when the answer
+ * grows, so a frozen tab still fails at the budget, as it always did.
+ */
+export function turnCeilingMs(deadlineMs: number): number {
+  return deadlineMs * PROGRESS_EXTENSION_LIMIT;
+}
 
 /**
  * How long a turn waits before asking the page why it is silent, and how often.
@@ -693,10 +726,12 @@ export class ChatTab {
   /**
    * Sends one prompt and returns the finished reply.
    *
-   * `deadlineMs` bounds the whole turn. A turn cut off by it throws rather than
-   * returning what had arrived: this app's contract is that a completion is
-   * never partial, and half a tailored resume parses as valid JSON far too
-   * often to be caught downstream.
+   * `deadlineMs` is the turn's SILENCE budget, not its duration: the loop below
+   * pushes its expiry out every time the answer grows, up to the ceiling that
+   * `turnCeilingMs` returns, and the guard here fires past that same ceiling. A
+   * turn cut off by either throws rather than returning what had arrived: this
+   * app's contract is that a completion is never partial, and half a tailored
+   * resume parses as valid JSON far too often to be caught downstream.
    */
   async ask(body: string, deadlineMs: number, signal?: AbortSignal): Promise<string> {
     /**
@@ -715,18 +750,25 @@ export class ChatTab {
     // loop below already stops at the deadline, but a single CDP call can block
     // past it - a frozen background tab never answers one at all - and this
     // app's contract is that a completion never outlives its budget.
+    const ceiling = turnCeilingMs(deadlineMs);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const guard = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         reject(
           new ChatTurnError(
             'timeout',
-            `${this.site.label} stopped responding and did not answer within ` +
-              `${Math.round((deadlineMs + GUARD_GRACE_MS) / 1000)}s. If its tab is in another ` +
-              'window or minimised, Chrome may have frozen it.'
+            // NAMES ITS OWN CLOCK. The loop's timeout says what was on the page;
+            // this one fires when the loop said nothing at all, and the two were
+            // indistinguishable in a log - which is what made a guard firing
+            // 355s early take a source read to find.
+            `${this.site.label} did not return at all within ` +
+              `${Math.round((ceiling + GUARD_GRACE_MS) / 1000)}s - the outer ceiling, which is ` +
+              `the ${Math.round(deadlineMs / 1000)}s budget extended while an answer is growing. ` +
+              'The polling loop never reported, so a DevTools call never came back: if its tab ' +
+              'is in another window or minimised, Chrome may have frozen it.'
           )
         );
-      }, deadlineMs + GUARD_GRACE_MS);
+      }, ceiling + GUARD_GRACE_MS);
     });
 
     // An abandoned predecessor is waited out before this turn touches anything.
@@ -741,9 +783,11 @@ export class ChatTab {
     // It is bounded: the abandoned turn's own deadline has already passed, so
     // it exits at its next loop check, and the blocked call it is sitting in is
     // capped by the connection's protocol timeout.
-    await this.awaitAbandoned(deadlineMs);
+    // The ceiling, not the budget: an abandoned turn exits at its next loop
+    // check after ITS deadline, and that deadline is now the ceiling.
+    await this.awaitAbandoned(ceiling);
 
-    const running = this.turn(body, deadlineMs, signal, progress);
+    const running = this.turn(body, deadlineMs, signal, progress, ceiling);
     // Held so the NEXT turn can wait for this one if the guard walks away from
     // it, and swallowed here so that walking away does not raise an unhandled
     // rejection when the blocked call finally fails.
@@ -806,12 +850,15 @@ export class ChatTab {
     body: string,
     deadlineMs: number,
     signal?: AbortSignal,
-    progress: { sent: boolean } = { sent: false }
+    progress: { sent: boolean } = { sent: false },
+    // Passed in rather than recomputed, so the loop and the guard cannot drift
+    // apart again. See `turnCeilingMs`.
+    ceilingMs: number = turnCeilingMs(deadlineMs)
   ): Promise<string> {
     const prompt = composePrompt(body, this.site.nudge);
     // Extended while the answer is growing; see PROGRESS_GRACE_MS.
     let expiry = this.now() + deadlineMs;
-    const hardStop = this.now() + deadlineMs * PROGRESS_EXTENSION_LIMIT;
+    const hardStop = this.now() + ceilingMs;
     let longestSeen = 0;
     let grewAtLeastOnce = false;
 

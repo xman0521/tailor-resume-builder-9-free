@@ -107,9 +107,11 @@ test('parseTailoredResumeContent prints the skills the model returned', () => {
    * model now returns the block, grouped, and nothing here reshapes it.
    */
   const enriched = enrichProfileExperienceSkillsForJob(makeProfile(), makeJobAnalysis());
+  // Five to a group, the shape the prompt asks for: this test is about what
+  // reaches the page from the model, so the block should look real.
   const groups = [
-    { category: 'Languages', skills: ['TypeScript', 'Python'] },
-    { category: 'Cloud', skills: ['AWS Textract', 'AWS Lambda'] },
+    { category: 'Languages', skills: ['TypeScript', 'Python', 'Go', 'SQL', 'Java'] },
+    { category: 'Cloud', skills: ['AWS Textract', 'AWS Lambda', 'Terraform', 'Docker', 'Kubernetes'] },
   ];
   const content = JSON.stringify({
     title: 'Senior Software Engineer',
@@ -132,7 +134,7 @@ test('parseTailoredResumeContent prints the skills the model returned', () => {
   const parsed = parseTailoredResumeContent(content, enriched, makeJobAnalysis());
 
   assert.deepEqual(parsed.skillGroups, groups);
-  assert.deepEqual(parsed.hardSkills, ['TypeScript', 'Python', 'AWS Textract', 'AWS Lambda']);
+  assert.deepEqual(parsed.hardSkills, ['TypeScript', 'Python', 'Go', 'SQL', 'Java', 'AWS Textract', 'AWS Lambda', 'Terraform', 'Docker', 'Kubernetes']);
   // Including a term the library has never heard of, which used to be dropped.
   assert.ok(parsed.hardSkills.includes('AWS Textract'));
 });
@@ -369,10 +371,16 @@ test('a soft keyword from the posting is not bolted onto the summary', () => {
 
   const parsed = parseTailoredResumeContent(content, makeProfile(), jobAnalysis);
 
-  // The job asks in prose for someone adaptable. There is no Soft Skills
-  // section to catch that any more - it is a prose target now, and the
-  // keyword-placement report is what measures it.
-  assert.deepEqual(parsed.softSkills, []);
+  /*
+   * The job asks in prose for someone adaptable, and the library reads that.
+   * It reaches the Soft Skills SECTION, which is where a term like this now
+   * lives - and it does NOT reach the summary, which is the thing this test is
+   * about. The section is a list; the summary is the candidate's own paragraph.
+   */
+  assert.ok(
+    parsed.softSkills.some((s) => /adapt/i.test(s)),
+    `the posting asks for an adaptable engineer: ${parsed.softSkills.join(', ')}`
+  );
 
   // And the summary is the model's, untouched. Appending "Strengths include
   // ..." to catch the keyword is what made every summary end the same way.

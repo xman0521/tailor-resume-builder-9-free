@@ -40,12 +40,24 @@ const analysis = () => parseJobAnalysisContent(JSON.stringify({
   keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
 }), 'Backend role using Python, Kafka and AWS.');
 
+/*
+ * Five to a group, which is the shape the prompt asks for: 8 of 28 groups on a
+ * delivered batch held fewer, and thin groups are how a block of 35 becomes a
+ * block of 16. The fixture is realistic for the same reason the rule exists.
+ */
 const GROUPS = [
-  { category: 'Languages', skills: ['Python', 'TypeScript', 'Go'] },
+  { category: 'Languages', skills: ['Python', 'TypeScript', 'Go', 'SQL', 'Java'] },
   // Deliberately the shapes the old pipeline would have "fixed": a vendor
   // prefix beside its bare form, and two spellings of one API style.
-  { category: 'Data & Messaging', skills: ['Apache Kafka', 'Kinesis', 'Amazon Kinesis', 'PostgreSQL'] },
-  { category: 'Cloud', skills: ['AWS', 'Terraform'] },
+  /*
+   * "Kinesis" beside "Amazon Kinesis" used to live here, as a shape the old
+   * pipeline would have "fixed" and this one left alone. The code settles it
+   * now - a vendor in front of a name written in full is a qualifier - so the
+   * pair moved to the dedup test below, and this fixture is a block that
+   * passes through untouched, which is what these tests are about.
+   */
+  { category: 'Data & Messaging', skills: ['Apache Kafka', 'Amazon Kinesis', 'PostgreSQL', 'Redis', 'MongoDB'] },
+  { category: 'Cloud', skills: ['AWS', 'Terraform', 'Docker', 'Kubernetes', 'Helm'] },
 ];
 
 const answer = (groups = GROUPS) => JSON.stringify({
@@ -64,9 +76,9 @@ test('the groups come through exactly as the model returned them', () => {
   // Order, spelling and near-duplicates all survive: this block is the answer,
   // not a suggestion for code to improve on.
   assert.deepEqual(out.hardSkills, [
-    'Python', 'TypeScript', 'Go',
-    'Apache Kafka', 'Kinesis', 'Amazon Kinesis', 'PostgreSQL',
-    'AWS', 'Terraform',
+    'Python', 'TypeScript', 'Go', 'SQL', 'Java',
+    'Apache Kafka', 'Amazon Kinesis', 'PostgreSQL', 'Redis', 'MongoDB',
+    'AWS', 'Terraform', 'Docker', 'Kubernetes', 'Helm',
   ]);
   assert.deepEqual(out.skills, out.hardSkills);
 });
@@ -99,7 +111,11 @@ test('the same string is not printed twice, nor the same string plus filler', ()
     analysis()
   );
 
-  // First occurrence wins, in the model's own order, and the later copies go.
+  /*
+   * First occurrence wins, in the model's own order, and the later copies go.
+   * Nothing is folded: a thin group never receives another, and every group
+   * here is under five once the duplicates have gone.
+   */
   assert.deepEqual(out.skillGroups, [
     { category: 'Languages', skills: ['Python', 'SQL'] },
     { category: 'Cloud', skills: ['AWS', 'Docker', 'Terraform'] },
@@ -117,6 +133,8 @@ test('the same string is not printed twice, nor the same string plus filler', ()
     analysis()
   );
   assert.deepEqual(emptied.skillGroups, [{ category: 'Cloud', skills: ['AWS', 'Terraform'] }]);
+  // One group left, and it is the first: the first group is never folded away,
+  // because it is the required Languages & Frameworks slot on a real resume.
 
   // One entry plus nothing but filler: the operator's own examples, gone.
   const padded = parseTailoredResumeContent(
@@ -129,38 +147,45 @@ test('the same string is not printed twice, nor the same string plus filler', ()
     analysis()
   );
   /*
-   * "Performance" goes as a VAGUE WORD rather than as a restatement - a bare
-   * quality noun is the heading a group sits under, not a thing in it - and
-   * because that pass runs first, "Performance tuning" then has nothing left to
-   * restate and survives. The specific wording is promoted by the removal of
-   * the empty one, which is the right way round.
+   * NOTHING IS REMOVED HERE ANY MORE, and that is the refactor rather than a
+   * regression. These entries are bare strings, so they arrive unlabelled -
+   * and the padding they represent is now the model's to avoid by labelling
+   * "CI/CD tools" and "Performance tuning" as the practices they are, rather
+   * than this file's to guess at from a list of filler words.
+   *
+   * What a bare string still buys is the two rules that need no vocabulary:
+   * the same string twice, and one name under two spellings.
    */
   assert.deepEqual(padded.skillGroups, [
-    { category: 'Delivery', skills: ['CI/CD', 'Spring'] },
-    { category: 'Data', skills: ['Data pipelines'] },
-    { category: 'Monitoring', skills: ['Datadog'] },
+    { category: 'Delivery', skills: ['CI/CD', 'CI/CD tools', 'Spring', 'Spring Framework'] },
+    { category: 'Data', skills: ['Data pipelines', 'Data pipeline operations', 'Performance'] },
+    { category: 'Monitoring', skills: ['Performance tuning', 'Datadog'] },
   ]);
-  // "Performance tuning" goes as a CONCEPT - its head noun names an activity -
-  // and "CI/CD" stays, which is the line the operator drew: the block loses
-  // the practice and keeps the string a scanner weights most.
 
 
-  // And this is still not a synonym filter. Every pair here differs by a word
-  // that NAMES something - a vendor, a product, a protocol - so both entries
-  // stand, which is what keeps "AWS Lambda" on a resume that also says "AWS".
+  /*
+   * And this is still not a synonym filter. A VENDOR IN FRONT OF A PRODUCT is
+   * a different thing - "AWS Lambda" is not "AWS" - but a vendor in front of a
+   * name already written in full is a qualifier, and "Amazon Kinesis" is
+   * "Kinesis". Which side the extra words sit on is what decides it, and the
+   * qualified name is the one that survives: it says whose product it is.
+   */
   const keptApart = parseTailoredResumeContent(
     answer([
-      { category: 'Web', skills: ['CSS', 'SCSS', 'HTTP', 'HTTPS'] },
-      { category: 'Cloud', skills: ['AWS', 'AWS Lambda', 'Azure', 'Azure DevOps'] },
-      { category: 'Data & Messaging', skills: ['Kinesis', 'Amazon Kinesis', 'React', 'React Native'] },
+      { category: 'Web', skills: ['CSS', 'SCSS', 'HTTP', 'HTTPS', 'HTML'] },
+      { category: 'Cloud', skills: ['AWS', 'AWS Lambda', 'Azure', 'Azure DevOps', 'GCP'] },
+      // Six, so the group is still a realistic size once "Kinesis" has gone.
+      { category: 'Data & Messaging', skills: ['Kinesis', 'Amazon Kinesis', 'React', 'React Native', 'Kafka', 'Redis'] },
     ]),
     profile(),
     analysis()
   );
   assert.deepEqual(keptApart.skillGroups, [
-    { category: 'Web', skills: ['CSS', 'SCSS', 'HTTP', 'HTTPS'] },
-    { category: 'Cloud', skills: ['AWS', 'AWS Lambda', 'Azure', 'Azure DevOps'] },
-    { category: 'Data & Messaging', skills: ['Kinesis', 'Amazon Kinesis', 'React', 'React Native'] },
+    { category: 'Web', skills: ['CSS', 'SCSS', 'HTTP', 'HTTPS', 'HTML'] },
+    { category: 'Cloud', skills: ['AWS', 'AWS Lambda', 'Azure', 'Azure DevOps', 'GCP'] },
+    // "Kinesis" goes and "Amazon Kinesis" stays, in Kinesis's position: the
+    // prompt has always called these one skill, and now the code agrees.
+    { category: 'Data & Messaging', skills: ['Amazon Kinesis', 'React', 'React Native', 'Kafka', 'Redis'] },
   ]);
 });
 
@@ -240,8 +265,8 @@ test('the renderer prints the model grouping even when the profile asks for a fl
     ['Languages', 'Data & Messaging', 'Cloud']
   );
   // Templates that predate categories read `hardSkills`, one line per heading.
-  assert.equal(data.hardSkills[0], 'Languages: Python, TypeScript, Go');
-  assert.equal(data.hardSkills.at(-1), 'Cloud: AWS, Terraform');
+  assert.equal(data.hardSkills[0], 'Languages: Python, TypeScript, Go, SQL, Java');
+  assert.equal(data.hardSkills.at(-1), 'Cloud: AWS, Terraform, Docker, Kubernetes, Helm');
 });
 
 test('a thin block and a posting-shaped block are reported, not corrected', (t) => {
@@ -271,7 +296,9 @@ test('a thin block and a posting-shaped block are reported, not corrected', (t) 
   console.warn = realWarn;
 
   assert.deepEqual(thin.hardSkills, ['Python', 'Kafka', 'AWS'], 'the block is printed as returned');
-  const report = lines.find((line) => line.includes('[Resume skills]'));
+  // The COUNTING line specifically: there are several `[Resume skills]` lines
+  // now, and the first is the warning about entries that arrived with no kind.
+  const report = lines.find((line) => /\d+ skill\(s\) in \d+ group\(s\)/.test(line));
   assert.ok(report, `no skills report was logged: ${lines.join(' | ')}`);
   assert.match(report, /3 skill\(s\) in 1 group\(s\)/);
   assert.match(report, /UNDER the floor of 35/, 'a block under the floor has to say so');
@@ -294,11 +321,13 @@ test('every installed template renders the grouping, whatever its markup', async
   const path = require('node:path');
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
 
+  // Five to a group, the shape the prompt asks for: this sweep is about
+  // whether a template SHOWS the headings, so the block should look real.
   const groups = [
-    { category: 'Languages', skills: ['TypeScript', 'SQL'] },
-    { category: 'Backend & APIs', skills: ['Node.js', 'REST APIs'] },
-    { category: 'Databases', skills: ['PostgreSQL'] },
-    { category: 'Cloud & Infrastructure', skills: ['AWS'] },
+    { category: 'Languages', skills: ['TypeScript', 'SQL', 'Python', 'Go', 'Java'] },
+    { category: 'Backend & APIs', skills: ['Node.js', 'REST APIs', 'GraphQL', 'gRPC', 'Express'] },
+    { category: 'Databases', skills: ['PostgreSQL', 'MySQL', 'Redis', 'MongoDB', 'Snowflake'] },
+    { category: 'Cloud & Infrastructure', skills: ['AWS', 'Terraform', 'Docker', 'Kubernetes', 'Helm'] },
   ];
   const tailored = {
     ...parseTailoredResumeContent(answer(groups), profile(), analysis()),
@@ -319,4 +348,68 @@ test('every installed template renders the grouping, whatever its markup', async
   }
 
   assert.deepEqual(flat, [], `these templates do not show the grouping: ${flat.join(', ')}`);
+});
+
+test('labelled entries survive the service path, not just the router', () => {
+  /*
+   * THE BUG THIS WAS WRITTEN FOR, and it reached every resume in a batch:
+   *
+   *   LANGUAGES & FRAMEWORKS: [object Object]
+   *
+   * `normalizeTailoredContent` coerced every entry with `String(skill)` before
+   * the router ever saw it. That was right while an entry was a bare string;
+   * the moment the model started returning { name, kind } each one stringified
+   * to the same six characters, and the exact-duplicate rule - working exactly
+   * as designed - collapsed the whole block to a single entry.
+   *
+   * WHY THE SUITE MISSED IT. Every routing test called `tidySkillGroups`
+   * directly with objects, and every test of this path used bare strings. The
+   * two halves were each covered and the seam between them was not, which is
+   * the shape of fault an end-to-end assertion exists for.
+   */
+  const out = parseTailoredResumeContent(
+    answer([
+      {
+        category: 'Languages & Frameworks',
+        skills: [
+          { name: 'Python', kind: 'language' },
+          { name: 'React', kind: 'framework' },
+          { name: 'PostgreSQL', kind: 'database' },
+          { name: 'MCP', kind: 'protocol' },
+          { name: 'LLMs', kind: 'technology' },
+        ],
+      },
+      {
+        category: 'Ways of Working',
+        skills: [
+          { name: 'Ownership', kind: 'soft' },
+          { name: 'observability', kind: 'practice' },
+          { name: 'Cloud', kind: 'category' },
+        ],
+      },
+    ]),
+    profile(),
+    analysis()
+  );
+
+  assert.deepEqual(out.skillGroups, [
+    { category: 'Languages & Frameworks', skills: ['Python', 'React', 'PostgreSQL', 'MCP', 'LLMs'] },
+  ]);
+  assert.deepEqual(out.hardSkills, ['Python', 'React', 'PostgreSQL', 'MCP', 'LLMs']);
+  // Nothing stringified: the names are the model's own, not "[object Object]".
+  for (const skill of out.hardSkills) {
+    assert.doesNotMatch(skill, /\[object/, 'an entry was coerced before it was parsed');
+  }
+});
+
+test('a block of bare strings still works, so an older prompt is not broken', () => {
+  // Unlabelled means "no opinion", which is kept. A router that emptied the
+  // block of a resume whose prompt predates the kinds would be worse than the
+  // padding it was built to remove.
+  const out = parseTailoredResumeContent(
+    answer([{ category: 'Languages', skills: ['Python', 'TypeScript', 'Go'] }]),
+    profile(),
+    analysis()
+  );
+  assert.deepEqual(out.skillGroups, [{ category: 'Languages', skills: ['Python', 'TypeScript', 'Go'] }]);
 });

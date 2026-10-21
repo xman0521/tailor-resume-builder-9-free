@@ -304,9 +304,17 @@ test('a chat tab in the background is driven in place, without being raised', as
 });
 
 test('a turn cannot outlive its deadline even if the page stops answering', async () => {
-  // The loop stops at the deadline, but a single CDP call can block past it.
-  // The contract is that a completion never outlives its budget, so the turn is
-  // raced against the deadline as a whole.
+  /*
+   * The loop stops on its own, but a single CDP call can block past it - here
+   * `activate()` never settles, as a frozen tab does - so the turn is raced
+   * against a guard.
+   *
+   * THE GUARD FIRES PAST THE CEILING, not past the budget. The loop spends its
+   * budget on SILENCE and pushes its expiry out while an answer grows, up to
+   * budget x 3; a guard at budget + 5s undercut that by 355s on a real browser
+   * turn and killed every answer still streaming at 185s. The guard is for the
+   * case the loop cannot reach, so it has to outlast the loop, not pre-empt it.
+   */
   const stalled = {
     currentUrl: () => 'about:blank',
     activate: () => new Promise(() => {}), // never settles, as a frozen tab does
@@ -324,11 +332,22 @@ test('a turn cannot outlive its deadline even if the page stops answering', asyn
   const startedAt = process.hrtime.bigint();
   await assert.rejects(
     () => tab.ask('anything', 1_200),
-    (error) => error.kind === 'timeout' && /stopped responding/i.test(error.message)
+    (error) =>
+      error.kind === 'timeout'
+      // NAMES ITS OWN CLOCK: the loop's timeout says what was on the page, this
+      // one says the loop never reported at all. They read identically before,
+      // which is what made a guard firing early take a source read to find.
+      && /did not return at all/i.test(error.message)
+      && /outer ceiling/i.test(error.message)
   );
   const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
-  // Deadline plus the guard's grace, and nothing like the 180s a blocked
-  // DevTools call would otherwise take.
+  /*
+   * The ceiling (1.2s x 3) plus the guard's grace, and nothing like the 180s a
+   * blocked DevTools call would otherwise take. The floor matters as much as
+   * the ceiling here: firing at 6.2s would mean the guard is back to pre-empting
+   * the loop.
+   */
+  assert.ok(elapsedMs >= 8_000, `the guard fired before the ceiling, at ${Math.round(elapsedMs)}ms`);
   assert.ok(elapsedMs < 12_000, `the guard must fire, took ${Math.round(elapsedMs)}ms`);
 });
 
@@ -424,4 +443,40 @@ test('the page text is read from the END, where a banner sits below the prompt',
   } finally {
     await browser.close();
   }
+});
+
+test('an answer still streaming past its budget is not killed by the guard', async () => {
+  /*
+   * THE BUG THIS WAS WRITTEN FOR. The polling loop spends its budget on SILENCE
+   * - every time the answer grows its expiry moves out, up to the budget times
+   * PROGRESS_EXTENSION_LIMIT - and the outer guard was a flat `budget + 5s`
+   * that never moved. At the 180s browser budget that is 540s against 185s, so
+   * every answer still streaming at 185s was killed with 355s of its allowance
+   * unused, and the progress extension could only ever help inside the first
+   * window.
+   *
+   * It cost a resume revision on every slow turn: the guard rejected, the
+   * caller logged "the revision failed" and printed the draft - and the turn is
+   * NOT cancelled when the guard wins, so the browser carried on writing into a
+   * tab nobody was reading. That is what an operator saw: "the browsers
+   * received the revision request, and the program finished the resume before
+   * the answer came back".
+   *
+   * Twelve chunks at 120ms is about 1.9s of work against a 900ms budget - over
+   * twice the budget - and the whole answer must still come back, because the
+   * page was never silent for long. It stays inside the 2.7s ceiling, which is
+   * the other half of the rule: an answer that grows forever still has to end.
+   */
+  await withPage('chunks=12&delay=120', async (page) => {
+    const tab = new ChatTab(wrapPuppeteerPage(page), siteAt('chunks=12&delay=120'), { pollMs: 50 });
+    const startedAt = process.hrtime.bigint();
+    const answer = await tab.ask('stream please', 900);
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+
+    assert.match(answer, /ANSWER-END$/, 'the whole answer must come back, not the part that fitted');
+    assert.ok(
+      elapsedMs > 900,
+      `the turn should have outlived its 900ms budget while growing, took ${Math.round(elapsedMs)}ms`
+    );
+  });
 });

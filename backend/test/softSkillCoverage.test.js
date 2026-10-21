@@ -95,9 +95,17 @@ test('both prompts ask for the work, in the copies that actually run', () => {
    * here cannot be recovered later.
    */
   assert.match(analyser, /behavioural requirements this posting makes/, 'the analyser still asks for soft skills');
-  assert.match(analyser, /NAMED FROM THE LIST BELOW and from nothing else/);
   assert.match(analyser, /Target: 6-12 entries/);
-  assert.doesNotMatch(analyser, /in the posting's own words/, 'the posting writes its values as recruiting copy');
+  /*
+   * THE LIST IS NOW A PREFERENCE, NOT A GATE. Keeping it as the only permitted
+   * vocabulary made every posting's soft skills come from the same forty-two
+   * words, and two scans reported three and four missing. What stopped the
+   * recruiting copy getting through was never the list itself - it is the
+   * slogan rule, which is still here and no longer depends on it.
+   */
+  assert.match(analyser, /NAME THEM FROM THE LIST BELOW WHERE THE LIST HAS THE WORD/);
+  assert.match(analyser, /WHERE IT DOES NOT, USE THE POSTING'S OWN WORD/);
+  assert.match(analyser, /A SLOGAN IS STILL NOT A SKILL/);
 
   const tailor = running('tailor-resume');
   assert.match(tailor, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);

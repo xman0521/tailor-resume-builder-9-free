@@ -78,6 +78,27 @@ const SECTION_MARKS = {
 };
 const ASKED_FOR = ['summary', 'education', 'skills', 'experience'];
 
+/**
+ * The order THIS template is supposed to print in.
+ *
+ * The house order above is imposed on every template that does not say
+ * otherwise. One that is designed around a different reading order declares it
+ * on its own body - `<body data-section-order="summary,skills,...">` - and the
+ * render pass obeys that, so a test asserting the house order on it would be
+ * asserting the opposite of what the template asked for. The declaration is
+ * read here from the same attribute the pass reads, and anything it leaves out
+ * keeps its house rank, exactly as the pass ranks it.
+ */
+const askedFor = (template) => {
+  const declared = /<body[^>]*\sdata-section-order=(["'])([^"']+)\1/i.exec(template.htmlContent || '');
+  if (!declared) return ASKED_FOR;
+
+  const named = declared[2].split(',').map((kind) => kind.trim().toLowerCase())
+    .filter((kind) => ASKED_FOR.includes(kind));
+  if (!named.length) return ASKED_FOR;
+  return [...named, ...ASKED_FOR.filter((kind) => !named.includes(kind))];
+};
+
 const linesOf = async (buffer) => {
   const data = await pdfParse(buffer);
   return data.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -131,7 +152,7 @@ test('every template reads summary, education, skills, experience', async (t) =>
        */
       const REQUIRED = ['education', 'skills', 'experience'];
       const missing = REQUIRED.filter((name) => !seen.includes(name));
-      const expected = ASKED_FOR.filter((name) => seen.includes(name));
+      const expected = askedFor(template).filter((name) => seen.includes(name));
       if (missing.length || seen.join(',') !== expected.join(',')) {
         wrong.push(
           `${file}: ${seen.join(' -> ') || '(no headings read)'}`
@@ -394,6 +415,60 @@ test('the reordering can be switched off', () => {
   assert.equal(ordered.match(/class="section"/g).length, 3);
 
   assert.equal(reorderResumeSections(markup, { RESUME_SECTION_ORDER_OFF: '1' }), markup);
+});
+
+test('a template that declares its own section order gets it', () => {
+  /*
+   * The house order is right for the 38 templates that were never designed
+   * around one. It is wrong for a template that was: this one is drawn skills
+   * first, under the summary, with education last, and imposing the house order
+   * on it would print the opposite of the design.
+   *
+   * Both halves are asserted here, because the risk runs in two directions. A
+   * declaration that silently does nothing is the bug that shipped first - the
+   * attribute was read with a mangled backreference, the match came back null,
+   * and the page printed the house order while the template asked for another.
+   * A declaration that leaks would be worse: it must change THIS template and
+   * no other.
+   */
+  const { reorderResumeSections } = require('../dist/generators/pdfGenerator');
+  const sections = '<div class="section section-summary">S</div>'
+    + '<div class="section section-skills">K</div>'
+    + '<div class="section section-experience">X</div>'
+    + '<div class="section section-education">E</div>';
+  const kindsOf = (html) => [...html.matchAll(/class="section section-(\w+)"/g)].map((m) => m[1]);
+
+  const declared = reorderResumeSections(
+    `<body data-section-order="summary,skills,experience,education">${sections}</body>`,
+    {}
+  );
+  assert.deepEqual(kindsOf(declared), ['summary', 'skills', 'experience', 'education']);
+
+  // The same markup with no declaration, which must still be reordered.
+  const house = reorderResumeSections(`<body>${sections}</body>`, {});
+  assert.deepEqual(kindsOf(house), ['summary', 'education', 'skills', 'experience']);
+
+  // A declaration naming only part of the resume moves only that part.
+  const partial = reorderResumeSections(
+    `<body data-section-order="skills">${sections}</body>`,
+    {}
+  );
+  assert.deepEqual(kindsOf(partial), ['skills', 'summary', 'education', 'experience']);
+});
+
+test('the template drawn for this order is the only one printing it', () => {
+  // The attribute is a per-template opt-in, so the count is part of the
+  // contract: a second template picking it up is a copy-paste, not a design.
+  const declaring = ALL_TEMPLATES.filter((file) => {
+    const template = JSON.parse(fs.readFileSync(path.join(TEMPLATE_DIR, file), 'utf8'));
+    return /data-section-order/i.test(template.htmlContent || '');
+  });
+
+  assert.deepEqual(declaring, ['one-column-banded-serif.json']);
+  const template = JSON.parse(
+    fs.readFileSync(path.join(TEMPLATE_DIR, declaring[0]), 'utf8')
+  );
+  assert.deepEqual(askedFor(template), ['summary', 'skills', 'experience', 'education']);
 });
 
 test('separating two glued fields never adds a blank line', async (t) => {

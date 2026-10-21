@@ -2208,16 +2208,53 @@ function moveSummaryBesideEducation(html: string): string {
   return cut.slice(0, insertAt) + dressed + '\n' + cut.slice(insertAt);
 }
 
+/**
+ * A template that asks for its own section order, and gets it.
+ *
+ * WHY THIS EXISTS. The order above is imposed on all 38 templates because
+ * editing them one at a time leaves the 39th wrong - and that is right for a
+ * house rule, wrong when one template is DESIGNED around a different order. A
+ * template declares its own by naming the kinds in order:
+ *
+ *   <body data-section-order="summary,skills,experience,education">
+ *
+ * Anything it leaves out keeps its usual rank, so a declaration names only what
+ * it wants moved. No attribute means the house order, which is every template
+ * that existed before this.
+ */
+function declaredSectionOrder(html: string): Record<ResumeSectionKind, number> | null {
+  const declared = /<body[^>]*\sdata-section-order=["']([^"']+)/i.exec(html);
+  if (!declared) return null;
+
+  const named = declared[1]
+    .split(',')
+    .map((kind) => kind.trim().toLowerCase())
+    .filter((kind): kind is ResumeSectionKind => kind in RESUME_SECTION_ORDER);
+  if (named.length === 0) return null;
+
+  // The declared kinds first, in the order given; everything else after, in the
+  // house order, so an unnamed section still lands somewhere predictable.
+  const order = { ...RESUME_SECTION_ORDER };
+  named.forEach((kind, index) => { order[kind] = index; });
+  for (const kind of Object.keys(order) as ResumeSectionKind[]) {
+    if (!named.includes(kind)) order[kind] = named.length + RESUME_SECTION_ORDER[kind];
+  }
+  // The contact block is not a section anybody reorders; it stays at the top.
+  order.contact = -1;
+  return order;
+}
+
 /** Orders each set of sibling sections by the order the resume is read in. */
 function orderSiblingSections(html: string): string {
   let output = html;
+  const order = declaredSectionOrder(html) ?? RESUME_SECTION_ORDER;
 
   // Backwards, so that rewriting a run cannot move the offsets of a run not yet
   // done.
   const runs = runsOfSiblingSections(output, findResumeSections(output));
   for (const run of [...runs].reverse()) {
     if (run.length < 2) continue;
-    const ordered = [...run].sort((a, b) => RESUME_SECTION_ORDER[a.kind] - RESUME_SECTION_ORDER[b.kind]);
+    const ordered = [...run].sort((a, b) => order[a.kind] - order[b.kind]);
     if (ordered.every((block, index) => block === run[index])) continue;
 
     const separator = output.slice(run[0].end, run[1].start) || '\n';
@@ -2298,6 +2335,64 @@ export function reorderResumeSections(html: string, env: NodeJS.ProcessEnv = pro
   return output;
 }
 
+/**
+ * A Soft Skills section, for a template that has nowhere to print one.
+ *
+ * WHY THIS IS A RENDER PASS AND NOT 16 TEMPLATE EDITS. The operator asked for
+ * the section back - "Make soft skill section under skill section", 8 to 10
+ * entries - and of the ten templates profiles are actually rendered with,
+ * EIGHT have no soft-skills markup at all. The rest of this file already
+ * settles cross-template questions here for the same reason: editing them one
+ * at a time leaves the next one wrong.
+ *
+ * MODELLED ON THE TEMPLATE'S OWN SKILLS SECTION rather than invented. The
+ * wrapper tag, the heading tag and their classes are copied from the technical
+ * block that sits above it, so the new section inherits whatever that template
+ * does with a section - the rule above the heading, the banded title, the
+ * margins - without this file knowing anything about its stylesheet. Only the
+ * heading text and the list are ours.
+ *
+ * It is a SENTENCE OF COMMA-SEPARATED TERMS, not a grid of chips: these are
+ * eight to ten short phrases, and the shapes templates use for the technical
+ * block assume headings with lists under them.
+ *
+ * Templates that already have one are left alone, and so is a template with no
+ * skills section to copy - there is nothing to model the markup on, and
+ * guessing produces the unstyled box this is written to avoid.
+ */
+function ensureSoftSkillsSection(html: string): string {
+  if (/\bsection-soft-skills\b/i.test(html)) return html;
+  // A template that prints softSkills in its own way already has somewhere for
+  // them, even without the wrapper class.
+  if (/\{\{#(?:if|each)\s+softSkills/.test(html)) return html;
+
+  const sections = findResumeSections(html);
+  const skills = sections.find((section) => section.kind === 'skills');
+  if (!skills) return html;
+
+  // The wrapper's opening tag, and the first title-ish element inside it.
+  const opening = /^<([a-z0-9]+)\b[^>]*>/i.exec(skills.html);
+  const heading = /<([a-z0-9]+)\b([^>]*class="[^"]*(?:title|heading)[^"]*"[^>]*)>([\s\S]*?)<\/\1>/i
+    .exec(skills.html);
+  if (!opening || !heading) return html;
+
+  const wrapperTag = opening[0].replace(
+    /class="([^"]*)"/i,
+    (_full, classes: string) => `class="${classes} section-soft-skills"`
+  );
+  const wrapper = /class=/i.test(opening[0])
+    ? wrapperTag
+    : opening[0].replace(/^<([a-z0-9]+)/i, '<$1 class="section-soft-skills"');
+
+  const body = `<div class="soft-skills-line">{{join softSkills ", "}}</div>`;
+  const section =
+    `{{#if softSkills.length}}${wrapper}`
+    + `<${heading[1]}${heading[2]}>Soft Skills</${heading[1]}>`
+    + `${body}</${opening[1]}>{{/if}}`;
+
+  return `${html.slice(0, skills.end)}\n${section}\n${html.slice(skills.end)}`;
+}
+
 function normalizeTemplateSkillsSections(html: string): string {
   // Soft skills are rendered, not stripped. The pipeline has always produced
   // them - matched against the skill library, merged with the job analysis and
@@ -2339,7 +2434,7 @@ function normalizeTemplateSkillsSections(html: string): string {
         '{{#each skillCategories}}<li><strong>{{category}}</strong><br>{{join skills ", "}}</li>{{/each}}')
     );
 
-  return guardEmptyCategoryHeadings(groupRemainingSkillLoops(output));
+  return ensureSoftSkillsSection(guardEmptyCategoryHeadings(groupRemainingSkillLoops(output)));
 }
 
 /**
@@ -2653,9 +2748,25 @@ const PRESERVE_WRAP_SPACE_SCRIPT = `(() => {
     if (element.closest('pre, code, script, style, textarea')) continue;
 
     const computed = window.getComputedStyle(element);
-    // Only where the page was already wrapping normally. An element the
-    // template pinned to nowrap or pre means it, and this must not argue.
-    if (computed.whiteSpace !== 'normal') continue;
+    /*
+     * Two values are handled, and they get different replacements.
+     *
+     * "normal" becomes "pre-wrap": wrapping as before, and the space the line
+     * wrapped on is kept.
+     *
+     * "nowrap" becomes "pre", which is nowrap that keeps its spaces. Skipping
+     * these was the bug: a date column is pinned to nowrap so that
+     * "11/2021 - Present" cannot be split across lines, and skipping it meant
+     * the element got no separator either - so the end date welded to whatever
+     * came next and read as "PresentCut p99 latency". The pinned behaviour is
+     * kept; what changes is only that the trailing space survives.
+     *
+     * Anything already preserving its own spaces is left exactly alone: the
+     * template meant it.
+     */
+    const preserving =
+      computed.whiteSpace === 'normal' ? 'pre-wrap' : computed.whiteSpace === 'nowrap' ? 'pre' : '';
+    if (!preserving) continue;
 
     const texts = Array.from(element.childNodes).filter(
       (node) => node.nodeType === 3 && node.nodeValue && node.nodeValue.length > 0
@@ -2676,14 +2787,49 @@ const PRESERVE_WRAP_SPACE_SCRIPT = `(() => {
      * line breaks, which is how this was caught: the baselines of a
      * two-column template shifted.
      */
-    if (!computed.display.startsWith('inline')) {
+    if (computed.display !== 'inline') {
       const first = texts[0];
       const last = texts[texts.length - 1];
       if (first === element.firstChild) first.nodeValue = first.nodeValue.replace(/^ /, '');
       if (last === element.lastChild) last.nodeValue = last.nodeValue.replace(/ $/, '');
     }
 
-    element.style.whiteSpace = 'pre-wrap';
+    /*
+     * AND A SEPARATOR WHERE THE BLOCK ENDS.
+     *
+     * The wrap case above is one element's own text running onto a second
+     * line. This is the other half: two BLOCKS, one after the other, which a
+     * reader sees on separate lines and the text stream joins with nothing at
+     * all. On a delivered resume that read
+     *
+     *   "Senior Software Engineer IEverbridge  11/2021 - PresentCut p99..."
+     *
+     * - the title welded to the employer, and the end date welded to the first
+     * bullet. A parser that compares Y coordinates recovers both; a viewer's
+     * copy, and any parser that concatenates runs, gets "PresentCut" and no
+     * end date at all.
+     *
+     * A trailing space at the end of a line hangs - it costs no width and does
+     * not move centred or justified text - and pre-wrap, set just above, is
+     * what keeps it from being thrown away before it is drawn.
+     *
+     * ONLY "display: inline" IS SKIPPED, because its text continues the line
+     * its siblings are on and a space there would land mid-sentence. An
+     * inline-BLOCK is an atomic box whose text ends where the box ends, so it
+     * is treated as a block - and a section heading on new_leo is exactly
+     * that, which is why "EXPERIENCE" welded into the first date until this
+     * told the two apart.
+     */
+    if (computed.display !== 'inline') {
+      const last = texts[texts.length - 1];
+      if (last === element.lastChild && !/[\s ]$/.test(last.nodeValue)) {
+        // Concatenated, not a template literal: this script is itself inside
+        // one, and an inner backtick ends it.
+        last.nodeValue = last.nodeValue + ' ';
+      }
+    }
+
+    element.style.whiteSpace = preserving;
     changed += 1;
   }
 

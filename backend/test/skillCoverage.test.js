@@ -53,15 +53,43 @@ function tailor(profile, analysis) {
  * are attached to something the candidate actually did, and the prose
  * checklist below is what pins that.
  */
-test('the resume carries no soft-skills block, whatever the posting names', () => {
+test('the soft skills the posting names reach their own section', () => {
+  /*
+   * This asserted the opposite for several rounds - `softSkills` was forced to
+   * [] on the way out, while everything that built the list still ran. The
+   * operator asked for the section back, 8 to 10 entries, under the technical
+   * block.
+   */
   const rich = tailor(
     profileFor(),
     analysisFor('Python dev needing communication, ownership, mentoring and leadership.', {
       soft: ['communication', 'ownership', 'mentoring', 'leadership'],
     })
   );
-  assert.deepEqual(rich.softSkills, []);
-  assert.deepEqual(tailor(profileFor(), analysisFor('We need a Python developer.')).softSkills, []);
+  for (const term of ['Communication', 'Ownership', 'Mentoring', 'Leadership']) {
+    assert.ok(
+      rich.softSkills.some((s) => s.toLowerCase() === term.toLowerCase()),
+      `${term} was named by the posting: ${rich.softSkills.join(', ')}`
+    );
+  }
+  assert.ok(rich.softSkills.length <= 10, `${rich.softSkills.length} is over the ceiling`);
+
+  // None of them in the TECHNICAL block: the section is separate, not a group.
+  for (const soft of rich.softSkills) {
+    assert.ok(
+      !rich.hardSkills.some((hard) => hard.toLowerCase() === soft.toLowerCase()),
+      `"${soft}" is in both the technical block and the soft skills section`
+    );
+  }
+});
+
+test('a posting that names no soft skills still gets what the library finds, or nothing', () => {
+  // Never padded to reach the floor: the terms come from the posting and the
+  // library, and inventing two more would put words on the page nothing asked
+  // for. Under the floor is a warning, not a fabrication.
+  const bare = tailor(profileFor(), analysisFor('We need a Python developer.'));
+  assert.ok(Array.isArray(bare.softSkills));
+  assert.ok(bare.softSkills.length <= 10);
 });
 
 test('the concepts kept out of the skills block are handed to the prompt', () => {

@@ -20,135 +20,34 @@
  */
 
 /*
- * ─── One entry per real skill ────────────────────────────────────────────────
+ * ─── The same product under two names ────────────────────────────────────────
  *
- * REPORTED AS keyword stuffing: "data pipelines, data pipeline operations,
- * production pipeline operations, pipeline monitoring, data pipeline
- * management". Measured over 70 delivered resumes, 3.1 entries per resume were
- * another entry of the same block plus a word or two - "performance" beside
- * "performance tuning", "GitHub Copilot" beside "GitHub Copilot app", "agent
- * runtime" beside "agent runtime execution".
+ * MEASURED on five delivered blocks: the removal passes took NOTHING out of
+ * four of them, and a reader could see "AWS" beside "Amazon Web Services",
+ * "Azure" beside "Microsoft Azure", "Copilot" beside "GitHub Copilot",
+ * "Secrets Manager" beside "AWS Secrets Manager", and "API, APIs, REST, REST
+ * APIs" in one group.
  *
- * THE RULE IS DELIBERATELY NARROW. The entry is only dropped when its extra
- * words are ALL from the list below: words that describe an activity or a
- * quality around a thing and are never the distinguishing part of a product's
- * name. That is what keeps "AWS Lambda" beside "AWS", "SQL Server" beside
- * "SQL", "Azure DevOps" beside "Azure" and "React Native" beside "React" -
- * every one of those would die under a plain "one entry's words are inside
- * another's" test, and each is a different thing from its prefix.
+ * WHY `restatesSkill` MISSED THEM ALL. It only drops an entry whose extra words
+ * are filler, and it exempts a vendor prefix outright so that "AWS Lambda"
+ * survives beside "AWS". Both of those are right, and between them they let
+ * every pair above through: "Amazon Web Services" shares no words with "AWS",
+ * and "AWS Secrets Manager" is exempt for being vendor-prefixed.
  *
- * What the list cannot catch - "production pipeline operations" against "data
- * pipelines", where the head words differ - stays a judgement, and judgements
- * stay in the prompt.
+ * So three narrower rules, each of which answers one shape.
  */
-const FILLER_SKILL_WORDS = [
-  'operation',
-  'operations',
-  'management',
-  'administration',
-  'optimization',
-  'optimisation',
-  'tuning',
-  'execution',
-  'lifecycle',
-  'methodology',
-  'methodologies',
-  'practice',
-  'practices',
-  'process',
-  'processes',
-  'procedures',
-  'workflow',
-  'workflows',
-  'strategy',
-  'strategies',
-  'technique',
-  'techniques',
-  'skill',
-  'skills',
-  'expertise',
-  'experience',
-  'knowledge',
-  'proficiency',
-  'fundamentals',
-  'concepts',
-  'principles',
-  'mindset',
-  'outcome',
-  'outcomes',
-  'app',
-  'apps',
-  'application',
-  'applications',
-  'framework',
-  'frameworks',
-  'library',
-  'libraries',
-  'tool',
-  'tools',
-  'tooling',
-  'platform',
-  'system',
-  'systems',
-  'technology',
-  'technologies',
-  'stack',
-  'development',
-  'engineering',
-  'programming',
-  'scripting',
-  'usage',
-  /*
-   * Added after nine delivered blocks were read entry by entry. Each of these
-   * turned up only as padding on a term already in the same block:
-   * "Observability implementation", "AI compliance implementation", "automated
-   * testing implementation", "Kubernetes orchestration", "model registry
-   * integration", "Infrastructure migration", "requirements gap handling",
-   * "risk identification", "emerging techniques adoption". Forty-five such
-   * pairs, none of which the first list caught.
-   */
-  'implementation',
-  'integration',
-  'orchestration',
-  'migration',
-  'validation',
-  'identification',
-  'adoption',
-  'handling',
-];
 
 /**
- * Products whose name ends in one of those words.
- *
- * "integration" earns its place on the list above and also ends the name of a
- * real product, so the pair "Spring" and "Spring Integration" would lose the
- * product. These are checked before anything is dropped. The list is short
- * because it only needs the cases where BOTH halves of the pair would be in
- * one block - a product standing alone is never compared to anything.
- */
-const PRODUCTS_ENDING_IN_FILLER = new Set([
-  'spring integration',
-  'azure integration services',
-  'oracle integration cloud',
-  'sap integration suite',
-  'adobe experience platform',
-  'power platform',
-  'power apps',
-  'azure automation',
-  'camel integration',
-]);
-
-/**
- * A skill as a list of words, lower-cased and with plurals folded in.
+ * A name as a list of words, lower-cased and with plurals folded in.
  *
  * `+`, `#` and `.` survive the split, because they are part of the name in
  * "C++", "C#" and "Node.js". A trailing "s" comes off anything longer than
- * three letters, so "data pipelines" and "data pipeline" are the same two
- * words - and "AWS", "ops" and "js" are short enough to be left alone.
+ * three letters, so "AWS", "ops" and "js" are left alone - and a word with a
+ * dot keeps its "s", because "Node.js" wears it as part of the name.
  *
- * A word with a dot in it keeps its "s": "Node.js" and "Next.js" wear it as
- * part of the name, and a plural rule that turned them into "node.j" would be
- * comparing a product against something that does not exist.
+ * All that is left of the word-shape machinery: `duplicateOf` compares two
+ * names that are both labelled things, and needs to know that "REST API" and
+ * "REST APIs" are one of them.
  */
 export function skillWords(skill: string): string[] {
   const singular = (word: string) =>
@@ -161,342 +60,263 @@ export function skillWords(skill: string): string[] {
     .map(singular);
 }
 
-const FILLER_WORD_SET = new Set(FILLER_SKILL_WORDS.flatMap((word) => skillWords(word)));
+/** Names of one thing, where a scanner reads two strings. */
+const EQUIVALENT_NAMES: ReadonlyArray<readonly string[]> = [
+  ['aws', 'amazon web services', 'amazon web service'],
+  ['azure', 'microsoft azure', 'ms azure'],
+  ['gcp', 'google cloud', 'google cloud platform'],
+  ['k8s', 'kubernetes'],
+  ['postgres', 'postgresql', 'postgre sql'],
+  ['javascript', 'js'],
+  ['typescript', 'ts'],
+  ['github actions', 'gh actions'],
+  ['node', 'node.js', 'nodejs'],
+  ['dotnet', '.net', 'dot net'],
+];
+
+const EQUIVALENCE_OF = new Map<string, number>();
+EQUIVALENT_NAMES.forEach((names, index) => {
+  for (const name of names) EQUIVALENCE_OF.set(name, index);
+});
 
 /**
- * Whether `longer` is `shorter` with nothing added but filler.
+ * Words that identify WHOSE product it is.
  *
- * Both are compared as sets of words, so "pipeline operations data" would count
- * as well - a reordering is the same padding written differently.
+ * "Secrets Manager" and "AWS Secrets Manager" are one thing; "AWS" and "AWS
+ * Lambda" are two, because Lambda is the product and AWS is the vendor. The
+ * difference is which side the extra words sit on: a vendor in FRONT of a name
+ * already written in full is a qualifier, not a different product.
  */
-export function restatesSkill(shorter: string, longer: string): boolean {
-  if (PRODUCTS_ENDING_IN_FILLER.has(longer.trim().toLowerCase().replace(/\s+/g, ' '))) return false;
+const VENDOR_WORDS = new Set([
+  'aws',
+  'amazon',
+  'azure',
+  'microsoft',
+  'ms',
+  'google',
+  'gcp',
+  'github',
+  'gitlab',
+  'apache',
+  'oracle',
+  'ibm',
+  'atlassian',
+  'hashicorp',
+  'elastic',
+  'confluent',
+  'redhat',
+  'jetbrains',
+]);
 
-  const base = new Set(skillWords(shorter));
-  const extended = new Set(skillWords(longer));
-  if (base.size === 0 || extended.size <= base.size) return false;
+/** Names whose final "s" is part of the word, not a plural. */
+const NOT_A_PLURAL = new Set([
+  'https',
+  'sass',
+  'less',
+  'css',
+  'aws',
+  'ios',
+  'redis',
+  'kubernetes',
+  'jenkins',
+  'prometheus',
+  'express',
+  'rails',
+  'docs',
+  'nats',
+]);
 
-  for (const word of base) {
-    if (!extended.has(word)) return false;
+const normalizedName = (skill: string) => skill.trim().toLowerCase().replace(/\s+/g, ' ');
+
+/** The two entries name one thing, and this says which one to keep. */
+export type DuplicateVerdict = { keep: string; drop: string } | null;
+
+export function duplicateOf(first: string, second: string): DuplicateVerdict {
+  const a = normalizedName(first);
+  const b = normalizedName(second);
+  if (!a || !b || a === b) return null;
+
+  // 1. An abbreviation beside its expansion. The FIRST WRITTEN survives, as
+  //    everywhere else here: the model orders the block most relevant first,
+  //    and the prompt tells it to lead with the form the posting leads with.
+  const left = EQUIVALENCE_OF.get(a);
+  const right = EQUIVALENCE_OF.get(b);
+  if (left !== undefined && left === right) return { keep: first, drop: second };
+
+  const aWords = skillWords(first);
+  const bWords = skillWords(second);
+
+  /*
+   * 2. The same name in singular and plural: "API" and "APIs", "REST API" and
+   *    "REST APIs". Compared as STRINGS rather than as singularised words,
+   *    because the word-level rule read "HTTPS" as the plural of "HTTP" and
+   *    deleted it - and the same trap waits for SASS against SAS. The pair has
+   *    to differ by exactly a trailing "s", and the few names that end in one
+   *    by coincidence are listed.
+   */
+  const plural = (short: string, long: string) =>
+    long === `${short}s` && short.length >= 3 && !NOT_A_PLURAL.has(long);
+  if (plural(a, b)) return { keep: first, drop: second };
+  if (plural(b, a)) return { keep: second, drop: first };
+
+  // 3. A bare product name beside its vendor-qualified form. The QUALIFIED one
+  //    survives here, unlike every other rule in this file: "AWS Secrets
+  //    Manager" says whose it is and "Secrets Manager" is ambiguous, and the
+  //    same goes for "GitHub Copilot" against "Copilot".
+  const qualified = (shortWords: string[], longWords: string[]) =>
+    longWords.length > shortWords.length
+    && longWords.slice(longWords.length - shortWords.length).every((word, i) => word === shortWords[i])
+    && longWords.slice(0, longWords.length - shortWords.length).every((word) => VENDOR_WORDS.has(word));
+
+  if (qualified(aWords, bWords)) return { keep: second, drop: first };
+  if (qualified(bWords, aWords)) return { keep: first, drop: second };
+
+  return null;
+}
+
+export type RestatedSkill = { kept: string; dropped: string };
+
+/*
+ * TWO RESTATEMENT PASSES LIVED HERE - `dropRestatedSkills` and its group-aware
+ * twin - and both are gone with the filler list they depended on. Their job was
+ * to spot "Observability" beside "Observability implementation", which the
+ * model's own label now settles: the second is a practice and leaves the block
+ * before any comparison happens. What is left of that work is `duplicateOf`
+ * above, which answers a different question - one name, two spellings - and
+ * needs no judgement about what a thing is.
+ */
+
+/*
+ * ─── The block is routed by LABEL, not guessed from word shapes ──────────────
+ *
+ * WHAT THIS REPLACED, and why. Deciding whether "MCP", "Prompt Engineering",
+ * "Observability implementation" or "Agile" belonged in the skills block used
+ * to be done here, from the shape of the words: an activity noun at the end, a
+ * phrase with no capitals, a filler word bolted onto another entry. That took
+ * nineteen hand-maintained lists and 480 terms, and it did not converge - every
+ * complaint added one more. "MCP" needed a list entry. "Agile" needed another.
+ * "LangGraph" would have needed a third, and whatever ships next quarter a
+ * fourth.
+ *
+ * It was also wrong in both directions at once: it deleted "Prompt Engineering"
+ * (an activity noun) while keeping "agent tooling" (none), because word shape
+ * is not what makes something a tool.
+ *
+ * SO THE MODEL SAYS WHAT EACH ENTRY IS, as it writes it, and this routes by
+ * that. The model has the posting and the candidate's history in front of it
+ * and knows that MCP is a protocol and that "accuracy obsession" is not a
+ * skill; a list in a file never will.
+ *
+ * THE KINDS BELOW ARE A SCHEMA, NOT A VOCABULARY. Thirteen words that describe
+ * the KIND of a thing. They do not grow when the industry invents a tool, which
+ * is the whole difference between this and the lists it replaced.
+ *
+ * NOTHING IS DELETED, IT IS ROUTED. An entry whose kind belongs in prose is
+ * taken out of the block and reported, and the prompt requires it in a bullet -
+ * because a string that leaves the page costs a keyword match, and 37% of what
+ * the old rules removed vanished from the resume entirely.
+ */
+
+/** Kinds that are things: a reader screens for these, a scanner scores them. */
+export const BLOCK_KINDS = [
+  'language',
+  'framework',
+  'library',
+  'tool',
+  'platform',
+  'database',
+  'protocol',
+  'methodology',
+  /*
+   * A named technology or standard a scanner scores as a hard skill even
+   * though it is not a product anybody installs: LLMs, RAG, CI/CD, APIs.
+   *
+   * THIS IS WHY IT IS A KIND AND NOT AN EXCEPTION LIST. Those four were a
+   * hand-kept list of six strings, bolted onto a rule that would otherwise
+   * have deleted them - and the list needed an entry every time the industry
+   * named something. As a kind, the model decides what qualifies, which is the
+   * whole point of routing on the label.
+   */
+  'technology',
+] as const;
+
+/** Kinds that belong in a sentence, attached to work that was done. */
+export const PROSE_KINDS = [
+  'practice',
+  'concept',
+  'soft',
+  'domain',
+  'category',
+] as const;
+
+const BLOCK_KIND_SET = new Set<string>(BLOCK_KINDS);
+const PROSE_KIND_SET = new Set<string>(PROSE_KINDS);
+
+export type SkillEntry = { name: string; kind: string };
+
+/**
+ * One block entry, from whichever shape the model returned.
+ *
+ * A BARE STRING IS KEPT, not dropped. An older prompt - or a custom one an
+ * admin wrote - returns `["Python", "React"]` with no labels at all, and a
+ * router that deleted everything it could not classify would empty the block of
+ * a resume that was fine. Unlabelled means "no opinion", which is treated as a
+ * thing, and the report says how many arrived that way.
+ */
+export function parseSkillEntry(raw: unknown): SkillEntry | null {
+  if (typeof raw === 'string') {
+    const name = raw.trim().replace(/\s+/g, ' ');
+    return name ? { name, kind: 'unlabelled' } : null;
   }
+  if (!raw || typeof raw !== 'object') return null;
 
-  for (const word of extended) {
-    if (!base.has(word) && !FILLER_WORD_SET.has(word)) return false;
+  const record = raw as Record<string, unknown>;
+  const name = String(record.name ?? record.skill ?? record.term ?? '').trim().replace(/\s+/g, ' ');
+  if (!name) return null;
+
+  const kind = String(record.kind ?? record.type ?? '').trim().toLowerCase();
+  return { name, kind: kind || 'unlabelled' };
+}
+
+/** Whether an entry's own label says it belongs in the block. */
+/**
+ * A capability phrase the POSTING named, which the block may carry after all.
+ *
+ * WHY THE EXCEPTION STOPPED BEING A LIST. The prompt has always carved out
+ * "CI/CD", "APIs", "REST", "LLM", "RAG", "AI" and a dozen AI/ML terms, for a
+ * reason that is right and general: each is a string a scanner weights
+ * heavily, and taking it off the block costs more than the tidiness is worth.
+ * The carve-out itself was twenty-one hardcoded terms, so a security posting
+ * got none of it.
+ *
+ * MEASURED on two scans of delivered resumes: of fourteen skills the scanner
+ * reported missing, ELEVEN were capability or category phrases - "Threat
+ * hunting", "Data Modeling", "Cloud infrastructure", "Security Solutions" -
+ * every one of them named in the job description, every one of them on no part
+ * of the page.
+ *
+ * So the test is no longer what the phrase is, it is who said it. A phrase the
+ * employer wrote down is a keyword; the same shape invented by the model -
+ * "agent orchestration", "latency optimization", "fast iteration" - is the
+ * padding the operator objected to, and it stays out.
+ */
+function namedByPosting(name: string, postingTerms: ReadonlySet<string>): boolean {
+  if (postingTerms.size === 0) return false;
+  return postingTerms.has(normalizedName(name));
+}
+
+export function belongsInBlock(entry: SkillEntry, postingTerms?: ReadonlySet<string>): boolean {
+  if (PROSE_KIND_SET.has(entry.kind)) {
+    return postingTerms ? namedByPosting(entry.name, postingTerms) : false;
   }
-
+  // Block kinds and anything unlabelled or unrecognised: kept. A kind this
+  // schema has never heard of is the model inventing one, which says nothing
+  // about whether the thing is a tool.
   return true;
 }
 
-/** The two entries of a pair, in the order they were written. */
-export type RestatedSkill = { kept: string; dropped: string };
-
-/**
- * Removes the entries that only restate one already in the block.
- *
- * THE SHORTER WORDING SURVIVES, in the EARLIER one's position.
- *
- * Measured over 198 delivered resumes, the pairs this finds are mostly a
- * posting's own term beside a padded version of it - "CI/CD" against "CI/CD
- * operations", "APIs" against "API development", "Ownership" against
- * "Ownership mindset", "GitHub Copilot" against "GitHub Copilot app". A
- * scanner matches strings, and the short form is the one the posting wrote and
- * the one it will match, so keeping whichever happened to be written first
- * threw away the better half of five pairs out of seven.
- *
- * The POSITION is kept rather than the wording, because the model is asked to
- * write the block most relevant first and that order is its judgement. So the
- * survivor sits where the first of the pair sat, spelled as the shorter of the
- * two.
- *
- * This is also what the prompt tells the model to do - "keep the shorter and
- * delete the longer" - and the two have to agree, or the prompt is describing
- * an application that does something else.
- */
-export function dropRestatedSkills(skills: readonly string[]): {
-  skills: string[];
-  restated: RestatedSkill[];
-} {
-  const kept: string[] = [];
-  const restated: RestatedSkill[] = [];
-
-  for (const skill of skills) {
-    // `restatesSkill(a, b)` is true when b is a plus filler, so a is the
-    // shorter of the two in the first branch and the longer in the second.
-    const longerAt = kept.findIndex((earlier) => restatesSkill(skill, earlier));
-    if (longerAt >= 0) {
-      restated.push({ kept: skill, dropped: kept[longerAt] });
-      kept[longerAt] = skill;
-      continue;
-    }
-
-    const shorter = kept.find((earlier) => restatesSkill(earlier, skill));
-    if (shorter) restated.push({ kept: shorter, dropped: skill });
-    else kept.push(skill);
-  }
-
-  return { skills: kept, restated };
-}
-
-/**
- * The same removal, across the groups the block is printed in.
- *
- * One pass over the whole block rather than one per group: the pairs an
- * operator sees are often a group apart - "Performance" under Monitoring and
- * "Performance tuning" under Databases - and the prompt bans the same thing in
- * two groups for exactly that reason. A survivor that arrives later keeps the
- * earlier entry's place, group included, for the reason given above.
- */
-export function dropRestatedSkillsFromGroups<T extends { category: string; skills: string[] }>(
-  groups: readonly T[]
-): { groups: T[]; restated: RestatedSkill[] } {
-  const result = groups.map((group) => ({ ...group, skills: [] as string[] }));
-  const restated: RestatedSkill[] = [];
-  // Where each surviving entry sits, so a shorter wording arriving later can
-  // take the place of the longer one it replaces.
-  const placed: Array<{ skill: string; group: number; index: number }> = [];
-
-  groups.forEach((group, groupIndex) => {
-    for (const skill of group.skills) {
-      const longer = placed.find((entry) => restatesSkill(skill, entry.skill));
-      if (longer) {
-        restated.push({ kept: skill, dropped: longer.skill });
-        result[longer.group].skills[longer.index] = skill;
-        longer.skill = skill;
-        continue;
-      }
-
-      const shorter = placed.find((entry) => restatesSkill(entry.skill, skill));
-      if (shorter) {
-        restated.push({ kept: shorter.skill, dropped: skill });
-        continue;
-      }
-
-      result[groupIndex].skills.push(skill);
-      placed.push({ skill, group: groupIndex, index: result[groupIndex].skills.length - 1 });
-    }
-  });
-
-  return { groups: result as T[], restated };
-}
-
-/*
- * ─── The block is a list of names, not a list of phrases ─────────────────────
- *
- * REPORTED, with nine delivered blocks as the evidence: "Redis-backed caching
- * and rate limiting", "security controls implementation", "debugging and
- * diff-based validation", "AI product engineering roadmap", "requirements gap
- * handling". Measured over those 399 entries, 20% were three words or longer
- * and 43% ended in an abstract suffix. A reader scans this block in about two
- * seconds, and a sentence in it costs more than the keyword it carries.
- *
- * A PROPER NAME IS ALLOWED TO BE LONG. "Large Language Models", "Infrastructure
- * as Code", "Model Context Protocol" and "Amazon Web Services" are all three
- * words or more and all belong, so length alone cannot decide it. What decides
- * it is whether the thing is NAMED: a product carries its capitals, and a
- * description does not.
- */
-
-/** Words a name may contain in lower case without being a description. */
-const NAME_PARTICLES = new Set(['as', 'of', 'for', 'in', 'on', 'to', 'the', 'a', 'an', 'with', 'by']);
-
-/**
- * Whether an entry describes a thing rather than naming one.
- *
- * Deliberately not applied to one and two word entries: "unit testing",
- * "k-fold cross-validation" and "data pipelines" are how an engineer would
- * write them, and a rule that reached them would be rewriting the block rather
- * than tidying it.
- */
-export function looksLikeADescription(entry: string): boolean {
-  const text = entry.trim();
-  if (!text) return false;
-
-  /*
-   * A bare past-tense verb, which reached a delivered block as "owned". The
-   * analyser is asked for past-tense verbs under `keywords.actionVerbs` - they
-   * are what a bullet opens with - and they go onto the same prose checklist as
-   * everything else, so the model parked one in the skills block. It is
-   * something the candidate DID, not something they know.
-   *
-   * "Embedded" is the exception a reader would object to: embedded work is a
-   * field, and the word is a skill in a way "owned" never is. Three letters
-   * before the "ed", so "Red" and "Fred" are not read as verbs.
-   */
-  if (/^[a-z]{3,}ed$/i.test(text) && text.toLowerCase() !== 'embedded') return true;
-  // A name joining two things with "and" is a sentence fragment, at any length:
-  // "instrumentation and monitoring" is two entries written as one.
-  if (/\band\b/i.test(text)) return true;
-
-  const words = text.split(/\s+/);
-  if (words.length < 3) return false;
-
-  const significant = words.filter((word) => !NAME_PARTICLES.has(word.toLowerCase()));
-  const named = significant.filter((word) => /^[A-Z0-9]/.test(word)).length;
-  return named < significant.length;
-}
-
-/*
- * ─── The soft-skill group is a short list of recognisable skills ─────────────
- *
- * REPORTED: "ambiguity tolerance", "early sharing", "decision agility", "high
- * bar for quality", "fast-paced execution", "reversible decision-making",
- * "working closely with design", "trust calibration for AI tools", "default to
- * collaborative action", "opinionated engineering judgments", "taste-driven
- * engineering decisions", "iteration and willingness to discard work". Eighty
- * of 399 entries - a fifth of every block - came from one instruction telling
- * the model to fill the last group with the soft skills the posting named,
- * "spelled as the posting spells them". The posting spells them as its own
- * recruiting copy, so that is what the resume printed.
- *
- * AN ALLOWLIST, NOT A BAN LIST, because the shapes are endless and a company
- * writes a new one every quarter. These are the terms a reader recognises as a
- * skill and a scanner scores as one; anything else is the posting describing
- * itself.
- *
- * THE COST, STATED PLAINLY: where a posting writes "ambiguity tolerance" and
- * the resume writes "Adaptability", a scanner matching that exact string does
- * not match. That is the trade the operator chose after seeing nine blocks of
- * it, and it is a trade rather than a win.
- */
-export const SOFT_SKILL_VOCABULARY = [
-  'accountability',
-  'adaptability',
-  'analytical thinking',
-  'attention to detail',
-  'coaching',
-  'code review',
-  'collaboration',
-  'communication',
-  'communication skills',
-  'conflict management',
-  'continuous learning',
-  'critical thinking',
-  'cross-functional collaboration',
-  'customer focus',
-  'decision making',
-  'design review',
-  'documentation',
-  'empathy',
-  'flexibility',
-  'initiative',
-  'knowledge sharing',
-  'leadership',
-  'mentoring',
-  'negotiation',
-  'onboarding',
-  'ownership',
-  'presentation skills',
-  'prioritization',
-  'prioritisation',
-  'problem solving',
-  'project management',
-  'relationship building',
-  'requirements gathering',
-  'root cause analysis',
-  'self-motivated',
-  'stakeholder communication',
-  'stakeholder management',
-  'teamwork',
-  'technical writing',
-  'time management',
-  'troubleshooting',
-  'verbal communication',
-  'written communication',
-];
-
-/**
- * The same terms as a posting might hyphenate or pluralise them.
- *
- * Only spelling variants of a term already on the list - this is not a synonym
- * table, and "ambiguity tolerance" does not map to "Adaptability". A phrase the
- * list does not hold is refused, not translated, because translating it would
- * put words in the candidate's mouth that the posting chose.
- */
-const SOFT_SKILL_SPELLINGS = new Set(
-  SOFT_SKILL_VOCABULARY.flatMap((term) => [
-    term,
-    term.replace(/-/g, ' '),
-    term.replace(/\s/g, '-'),
-    `${term}s`,
-    `${term} skills`,
-  ])
-);
-
-/**
- * Vague category words, which the operator named beside the soft skills.
- *
- * "Cloud" and "Infrastructure" are not things anybody installs; they are the
- * heading a group of real tools sits under, printed as though they were one of
- * the tools. A block that lists AWS, Terraform AND "Infrastructure" has said
- * the same thing twice, once with nothing in it.
- */
-const VAGUE_SKILL_WORDS = new Set([
-  'cloud',
-  'cloud platforms',
-  'cloud platform',
-  'infrastructure',
-  'platform',
-  'platforms',
-  'systems',
-  'data',
-  'software',
-  'technology',
-  'technologies',
-  'tools',
-  'tooling',
-  'applications',
-  'engineering practices',
-  'practices',
-  'best practices',
-  'methodologies',
-  'frameworks',
-  'libraries',
-  /*
-   * Single abstract nouns, which the analyser and the old skill library both
-   * produced and which survived the first pass of this rule: "Focus",
-   * "Innovation", "Reliability", "Responsibility", "Acceptance", "Precision",
-   * "Clarity", "Execution", "Analytical" all printed in delivered blocks. None
-   * is a thing anybody installs or a skill anybody screens for, and unlike
-   * "Logs" or "Echo" none is also a product, so there is nothing to weigh.
-   */
-  'focus',
-  'accuracy',
-  'innovation',
-  'reliability',
-  'responsibility',
-  'acceptance',
-  'precision',
-  'clarity',
-  'execution',
-  'analytical',
-  'quality',
-  'efficiency',
-  'performance',
-  'scalability',
-  'availability',
-  'maintainability',
-]);
-
-/** Whether an entry names a category rather than a thing. */
-export function isVagueSkill(entry: string): boolean {
-  return VAGUE_SKILL_WORDS.has(entry.trim().toLowerCase().replace(/\s+/g, ' '));
-}
-
-/**
- * Whether an entry is a soft skill.
- *
- * NOW A DETECTOR, NOT AN ALLOWLIST. It was written to decide which soft skills
- * could stand in the block's last group; the operator then asked for no soft
- * skills in the block at all - "show them through bullets instead" - so the
- * same list now says which entries to take OUT, wherever they appear. The
- * prose rules are untouched: every one of these is still required in a
- * sentence, under SOFT SKILLS ARE PROSE, which is where a reader believes them.
- */
-export function isAllowedSoftSkill(entry: string): boolean {
-  const text = entry.trim().toLowerCase().replace(/\s+/g, ' ');
-  if (!text) return false;
-  return SOFT_SKILL_SPELLINGS.has(text) || SOFT_SKILL_SPELLINGS.has(text.replace(/ skills$/, ''));
-}
+/** What a removal says about itself, for the report and for the prose check. */
+export type RoutedSkill = { name: string; kind: string };
 
 /*
  * ─── Forty, enforced where it is counted ─────────────────────────────────────
@@ -514,6 +334,7 @@ export function isAllowedSoftSkill(entry: string): boolean {
  * soft-skill group, which the prompt puts last on purpose.
  */
 export const MAX_SKILL_BLOCK_SIZE = 45;
+
 
 export function capSkillBlock<T extends { category: string; skills: string[] }>(
   groups: readonly T[],
@@ -535,305 +356,232 @@ export function capSkillBlock<T extends { category: string; skills: string[] }>(
   return { groups: result as T[], dropped };
 }
 
-/*
- * ─── A concept is not a thing you install ────────────────────────────────────
+/**
+ * The most headings the block may print.
  *
- * ASKED FOR: "I don't need concepts in skill section, instead add real tools.
- * And regarding concepts, don't remove but add them to bullets of experience
- * section." Both halves matter: the block loses the concept, the resume does
- * not. The prompt has said this for a long time - A CONCEPT BECOMES THE TOOL IT
- * IS BUILT WITH, and the concept itself goes in a sentence - and nothing ever
- * checked, so delivered blocks carried "tool calling", "agent orchestration",
- * "quota enforcement", "security hardening", "latency optimization", "feature
- * extraction", "fast iteration" and "research-driven goals".
- *
- * WHY NOT `isConceptSkill`, which already exists in hardSkillSelection. It was
- * built to choose entries out of a 1,492-row library, and measured against
- * these blocks it disagrees with the operator in both directions at once: it
- * takes out "CI/CD", "APIs", "Observability", "DevOps" and "Large Language
- * Models" - the highest-value strings a scanner matches - while leaving "tool
- * calling", "agent orchestration", "feature extraction" and "fast iteration"
- * in. A second, narrower rule is worth more than a shared one that is wrong.
+ * MEASURED ACROSS 100 DELIVERED RESUMES: a mean of 7.2 groups, a median of 7
+ * and a maximum of 11, with 36% of them over the seven the prompt asks for -
+ * while the blocks themselves averaged 35.3 entries against a ceiling of 45,
+ * and 45% came in UNDER the floor of 35. The budget was going on headings
+ * rather than on skills, and the rule saying so was a warning nobody enforced.
  */
+export const MAX_SKILL_GROUPS = 7;
 
 /**
- * The last word of a practice.
+ * Brings the block down to that many headings WITHOUT re-filing anything.
  *
- * "Capacity Planning", "Data Modeling", "Experiment Tracking", "API design",
- * "quota enforcement", "latency optimization", "security hardening" - the head
- * noun names an activity, and the thing it is done WITH is what the block
- * wants. Case-insensitive on purpose: the posting's capitalisation decides
- * nothing here, and "Prompt Engineering" is the same entry as "prompt
- * engineering".
+ * THIS IS THE SECOND ATTEMPT AND THE DIFFERENCE IS THE HEADING. The first one
+ * folded a thin group into a related one and kept the destination's name, so a
+ * block with a two-entry AI group printed "LLM" and "RAG" under "CLOUD &
+ * INFRASTRUCTURE" - filed under a heading that did not describe them, which is
+ * worse than a short group and was reverted on sight.
+ *
+ * So nothing moves to a heading that does not name it: the two SMALLEST groups
+ * are joined and so are their names, "Monitoring" and "Security" becoming
+ * "Monitoring & Security". Every entry still sits under its own category, the
+ * page loses a heading rather than a skill, and the report says which pairs
+ * were joined so the operator can see it happen.
+ *
+ * Ties are broken by the shorter combined heading, which keeps the joined name
+ * printable: a heading is drawn inline before its skills, and two long ones
+ * joined would take the line the skills were supposed to go on.
+ *
+ * THE FLOOR IS NOT ENFORCED HERE and cannot be. Reaching five groups from three
+ * means splitting a category or inventing one, and both are this file deciding
+ * what a skill is - the judgement the whole refactor took out. A block under
+ * the floor is reported and printed as it stands.
  */
-const CONCEPT_HEAD_WORDS = new Set([
-  'engineering',
-  'optimization',
-  'optimisation',
-  'automation',
-  'orchestration',
-  'management',
-  'monitoring',
-  'planning',
-  'tracking',
-  'modeling',
-  'modelling',
-  'validation',
-  'scoring',
-  'hardening',
-  'enforcement',
-  'limiting',
-  'troubleshooting',
-  'identification',
-  'iteration',
-  'calling',
-  'tuning',
-  'testing',
-  'analysis',
-  'design',
-  'deployment',
-  'governance',
-  'provisioning',
-  'instrumentation',
-  'administration',
-  'maintenance',
-  'refactoring',
-  'debugging',
-  'extraction',
-  'transformation',
-  'ingestion',
-  'migration',
-  'integration',
-  'integrations',
-  'lifecycle',
-  'readiness',
-  'resilience',
-  'weighting',
-  'serving',
-  'explanations',
-  'practices',
-  'methodology',
-  'methodologies',
-  'principles',
-  'strategy',
-  'goals',
-  'logic',
-  // Added after reading the first pass over nine delivered blocks: these got
-  // through, and each named an activity. "Observability implementation" is the
-  // one worth naming - it survived because its shorter half, "Observability",
-  // had already been removed as a concept, so nothing was left for it to
-  // restate.
-  'implementation',
-  'operations',
-  'operation',
-  'compliance',
-  'oversight',
-]);
+export function capSkillGroups<T extends { category: string; skills: string[] }>(
+  groups: readonly T[],
+  cap: number = MAX_SKILL_GROUPS
+): { groups: Array<{ category: string; skills: string[] }>; merged: Array<{ kept: string; joined: string }> } {
+  const result = groups.map((group) => ({ category: group.category, skills: [...group.skills] }));
+  const merged: Array<{ kept: string; joined: string }> = [];
+  if (cap < 1) return { groups: result, merged };
 
-/** Concepts that are one word, or whose head noun is ordinary. */
-const CONCEPT_EXACT = new Set([
-  'observability',
-  'devops',
-  'mlops',
-  'dataops',
-  'devsecops',
-  'authentication',
-  'authorization',
-  'authorisation',
-  'microservices',
-  'serverless',
-  'event-driven',
-  'event driven',
-  'infrastructure as code',
-  'continuous integration',
-  'continuous delivery',
-  'continuous deployment',
-  'agile',
-  'scrum',
-  'kanban',
-  'test-driven development',
-  'pair programming',
-  'event sourcing',
-  'feature flags',
-  'error budgets',
-  'api contracts',
-  'backtesting',
-  'autoscaling',
-  'telephony',
-  'embeddings',
-]);
+  while (result.length > cap) {
+    // The pair that costs the page least: fewest entries moved, and of those
+    // the shortest heading to print.
+    let best = { first: -1, second: -1, size: Infinity, heading: Infinity };
+    for (let i = 0; i < result.length; i += 1) {
+      for (let j = i + 1; j < result.length; j += 1) {
+        const size = result[i].skills.length + result[j].skills.length;
+        const heading = result[i].category.length + result[j].category.length;
+        if (size < best.size || (size === best.size && heading < best.heading)) {
+          best = { first: i, second: j, size, heading };
+        }
+      }
+    }
+    if (best.first === -1) break;
 
-/**
- * Lowercase names that really are products.
- *
- * The second rule below reads an all-lowercase phrase as a description of work,
- * which is true of "tool calling" and "feature extraction" and false of these.
- * A product missing from this list is reported and removed, which is the cost
- * of the rule - so it holds the ones this stack actually uses.
- */
-const LOWERCASE_PRODUCTS = new Set([
-  'dbt',
-  'httpx',
-  'asyncio',
-  'aiohttp',
-  'scikit-learn',
-  'numpy',
-  'pandas',
-  'pytest',
-  'pytorch',
-  'nginx',
-  'npm',
-  'pnpm',
-  'yarn',
-  'webpack',
-  'vite',
-  'eslint',
-  'prettier',
-  'pgvector',
-  'psycopg',
-  'sqlalchemy',
-  'fastapi',
-  'uvicorn',
-  'gunicorn',
-  'celery',
-  'kubectl',
-  'helm',
-  'terraform',
-  'ansible',
-  'grpc',
-  'graphql',
-  'webhooks',
-  'websockets',
-  'cron',
-  'bash',
-  'curl',
-  'git',
-  'jq',
-]);
+    const kept = result[best.first];
+    const [joined] = result.splice(best.second, 1);
+    merged.push({ kept: kept.category, joined: joined.category });
+    // The earlier group keeps its position, because the model orders the block
+    // most relevant first and a merge is not a reason to move a heading up.
+    kept.category = `${kept.category} & ${joined.category}`;
+    kept.skills.push(...joined.skills);
+  }
 
-/**
- * Whether a block entry names a practice rather than a thing.
- *
- * TWO RULES, and both are narrow on purpose:
- *
- *   1. The head noun is an activity: "Capacity Planning", "API design".
- *      Case-insensitive, so the posting's capitals cannot smuggle one through.
- *   2. Every word is lower case and there are two or more of them: "tool
- *      calling", "context graph", "text data", "research-driven goals". A
- *      product keeps its capitals - Redis, Airflow, PostgreSQL, tRPC - and the
- *      lowercase ones that do not are named above.
- *
- * WHAT THIS DELIBERATELY LEAVES IN: "CI/CD", "APIs", "REST", "Large Language
- * Models", "RAG", "AI". Each is a concept by a strict reading and each is among
- * the strings a scanner weights most, so taking them out of the block would
- * cost more than the tidiness is worth. They are also required in the prose,
- * where they are attached to work - which is the half of the rule that makes
- * leaving them here defensible rather than lazy.
- */
-export function isConceptEntry(entry: string): boolean {
-  const text = entry.trim().replace(/\s+/g, ' ');
-  if (!text) return false;
-
-  const lower = text.toLowerCase();
-  if (LOWERCASE_PRODUCTS.has(lower)) return false;
-  if (CONCEPT_EXACT.has(lower)) return true;
-
-  const words = lower.split(/[\s]+/).filter(Boolean);
-  const head = words[words.length - 1].replace(/[^a-z-]/g, '');
-  if (CONCEPT_HEAD_WORDS.has(head)) return true;
-
-  // Rule 2: a phrase written the way work is described, not the way a product
-  // is named. One word is not enough to tell - "telephony" and "genomics" read
-  // the same as "kubectl" - so those are decided by the lists above alone.
-  if (words.length < 2) return false;
-  if (/[A-Z0-9]/.test(text)) return false;
-  return !words.some((word) => LOWERCASE_PRODUCTS.has(word));
+  return { groups: result, merged };
 }
 
 /**
  * Everything the application takes out of the block, in one pass.
  *
  * The block is still the model's answer: nothing here reorders it, renames a
- * group, translates a term or adds anything. Each removal is a rule the prompt
- * already states, applied where it can be counted - and the prompt says so, so
- * that the two describe the same application.
+ * group, translates a term or adds anything. Two kinds of removal remain, and
+ * neither needs a vocabulary:
+ *
+ *   - the same thing twice, which is arithmetic on strings;
+ *   - an entry whose own label says it belongs in a sentence, which is the
+ *     model's judgement rather than this file's.
+ *
+ * What left on a label is reported with that label, so the caller can check it
+ * reached a bullet. A string that leaves the page costs a keyword match.
  */
 export type SkillBlockTidyReport = {
   repeated: string[];
-  restated: RestatedSkill[];
-  described: string[];
-  softOrVague: string[];
-  concepts: string[];
+  /** Taken out because the model labelled them as belonging in the prose. */
+  routedToProse: RoutedSkill[];
+  /** One name under two spellings; see `duplicateOf`. */
+  duplicates: RestatedSkill[];
+  /** Arrived with no label at all, kept, and worth knowing about. */
+  unlabelled: string[];
   trimmed: string[];
+  /** Headings joined to bring the block within `MAX_SKILL_GROUPS`. */
+  mergedGroups: Array<{ kept: string; joined: string }>;
+  /**
+   * Capability phrases kept because the POSTING named them.
+   *
+   * Reported so the share is visible: these are the entries that would have
+   * been routed out under the old rule, and a block where they outnumber the
+   * products is the one worth looking at.
+   */
+  keptByPosting: RoutedSkill[];
 };
 
-export function tidySkillGroups<T extends { category: string; skills: string[] }>(
+/**
+ * At most this share of the block may be posting-named capability phrases.
+ *
+ * The exception above is a door, not a licence. A block that is half phrases is
+ * the keyword-stuffed list the operator sent screenshots of, whoever wrote the
+ * phrases - so the named products stay the bulk of it, and the phrases ride
+ * along in the slots left over. The ones past the share are routed to the prose
+ * like any other concept, most relevant first, so what is lost is the tail.
+ */
+const MAX_PHRASE_SHARE = 0.25;
+
+export function tidySkillGroups<T extends { category: string; skills: unknown[] }>(
   groups: readonly T[],
-  options: { cap?: number } = {}
-): { groups: T[]; report: SkillBlockTidyReport } {
+  options: { cap?: number; groupCap?: number; postingTerms?: Iterable<string> } = {}
+): { groups: Array<{ category: string; skills: string[] }>; report: SkillBlockTidyReport } {
   const report: SkillBlockTidyReport = {
     repeated: [],
-    restated: [],
-    described: [],
-    softOrVague: [],
-    concepts: [],
+    routedToProse: [],
+    duplicates: [],
+    unlabelled: [],
     trimmed: [],
+    mergedGroups: [],
+    keptByPosting: [],
   };
 
-  // 1. The same string twice, first written winning. The oldest rule here, and
-  //    the only one that was ever enforced.
+  const postingTerms = options.postingTerms
+    ? new Set([...options.postingTerms].map((term) => normalizedName(term)).filter(Boolean))
+    : undefined;
+  // Counted against the whole block, so the share is a share of what prints.
+  const totalEntries = groups.reduce((n, group) => n + (group.skills?.length ?? 0), 0);
+  const phraseBudget = Math.floor(totalEntries * MAX_PHRASE_SHARE);
+  let phrasesKept = 0;
+
+  // 1. Parse whatever shape arrived, and route on the label.
   const seen = new Set<string>();
-  let working = groups.map((group) => ({
-    ...group,
-    skills: group.skills.filter((skill) => {
-      const key = skill.toLowerCase();
+  const working = groups.map((group) => {
+    const kept: string[] = [];
+    for (const raw of group.skills ?? []) {
+      const entry = parseSkillEntry(raw);
+      if (!entry) continue;
+
+      // The same string twice, first written winning. The oldest rule here.
+      const key = entry.name.toLowerCase();
       if (seen.has(key)) {
-        report.repeated.push(skill);
-        return false;
+        report.repeated.push(entry.name);
+        continue;
       }
       seen.add(key);
-      return true;
-    }),
-  }));
 
-  // 2. Descriptions and off-vocabulary soft skills, before the restatement
-  //    pass, so a phrase cannot survive by being the shorter half of a pair.
-  working = working.map((group) => ({
-    ...group,
-    skills: group.skills.filter((skill) => {
-      // Soft skills and category words, wherever they sit. Checked by what the
-      // entry IS rather than which group it is under, because the group that
-      // carried them was named by the model and it renamed it freely - "Ways
-      // of Working", "Team and Collaboration", "Professional Skills".
-      if (isAllowedSoftSkill(skill) || isVagueSkill(skill) || isValuesPhrase(skill)) {
-        report.softOrVague.push(skill);
-        return false;
+      const isPhrase = PROSE_KIND_SET.has(entry.kind);
+      const admitted = belongsInBlock(entry, postingTerms) && (!isPhrase || phrasesKept < phraseBudget);
+      if (!admitted) {
+        report.routedToProse.push({ name: entry.name, kind: entry.kind });
+        continue;
       }
-      if (looksLikeADescription(skill)) {
-        report.described.push(skill);
-        return false;
+      if (isPhrase) {
+        phrasesKept += 1;
+        report.keptByPosting.push({ name: entry.name, kind: entry.kind });
       }
-      // A practice rather than a thing. The entry leaves the block and the
-      // caller checks that the bullets picked it up: the operator asked for
-      // concepts moved, not deleted.
-      if (isConceptEntry(skill)) {
-        report.concepts.push(skill);
-        return false;
-      }
-      return true;
-    }),
-  }));
+      if (entry.kind === 'unlabelled') report.unlabelled.push(entry.name);
+      kept.push(entry.name);
+    }
+    return { category: group.category, skills: kept };
+  });
 
-  // 3. One entry that is another plus filler.
-  const restatement = dropRestatedSkillsFromGroups(working);
-  report.restated = restatement.restated;
+  /*
+   * 2. One name under two spellings.
+   *
+   * A LABEL CANNOT SETTLE THIS: "AWS" and "Amazon Web Services" are both tools
+   * and both correctly labelled, and a reader still sees one thing written
+   * twice. `duplicateOf` is mechanical - an abbreviation beside its expansion, a
+   * singular beside its plural, a bare name beside its vendor-qualified form -
+   * and it is the one place a short table of names survives, because those
+   * three shapes are facts about English and about vendors rather than
+   * judgements about what a thing is.
+   */
+  const placed: Array<{ name: string; group: number; index: number }> = [];
+  const deduped = working.map((group) => ({ category: group.category, skills: [] as string[] }));
+  working.forEach((group, groupIndex) => {
+    for (const name of group.skills) {
+      const clash = placed
+        .map((entry) => ({ entry, verdict: duplicateOf(entry.name, name) }))
+        .find((pair) => pair.verdict !== null);
+
+      if (clash && clash.verdict) {
+        const { keep, drop } = clash.verdict;
+        report.duplicates.push({ kept: keep, dropped: drop });
+        if (keep === name) {
+          // The new one wins: it takes the earlier one's place, so the model's
+          // ordering survives the substitution.
+          deduped[clash.entry.group].skills[clash.entry.index] = name;
+          clash.entry.name = name;
+        }
+        continue;
+      }
+
+      deduped[groupIndex].skills.push(name);
+      placed.push({ name, group: groupIndex, index: deduped[groupIndex].skills.length - 1 });
+    }
+  });
+
+  /*
+   * 3. The heading count, before the entry ceiling and after the removals.
+   *
+   * BEFORE THE CEILING because the ceiling drops from the tail of the LONGEST
+   * group, and joining two groups changes which one that is. AFTER the
+   * removals because a group emptied by the router is not a heading anybody
+   * has to merge - it is about to be filtered out below.
+   */
+  const withHeadings = capSkillGroups(
+    deduped.filter((group) => group.category && group.skills.length > 0),
+    options.groupCap
+  );
+  report.mergedGroups = withHeadings.merged;
 
   // 4. The ceiling, last, so it counts what will actually be printed.
-  const capped = capSkillBlock(restatement.groups, options.cap);
+  const capped = capSkillBlock(withHeadings.groups, options.cap);
   report.trimmed = capped.dropped;
 
   return {
-    groups: capped.groups.filter((group) => group.category && group.skills.length > 0) as T[],
+    groups: capped.groups.filter((group) => group.category && group.skills.length > 0),
     report,
   };
 }

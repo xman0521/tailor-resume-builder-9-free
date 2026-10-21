@@ -52,6 +52,13 @@ const DOCUMENT = `<!doctype html><html><head><meta charset="utf-8"><style>
   <p class="dates">01/2019 - Present</p>
 </body></html>`;
 
+/** A browser closed with the test, for the single-page probes below. */
+async function launchBrowserFor(t) {
+  const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+  t.after(async () => { await closeBrowser(browser); });
+  return browser;
+}
+
 async function render(t, { fix }) {
   const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ft-wrap-'));
@@ -127,10 +134,25 @@ test('an element the template pinned to nowrap keeps its own rule', async (t) =>
   await page.setContent(DOCUMENT, { waitUntil: 'load' });
   await preserveWrapSpaces(page);
 
-  const whiteSpace = await page.evaluate(
-    '(() => document.querySelector(".dates").style.whiteSpace || window.getComputedStyle(document.querySelector(".dates")).whiteSpace)()'
+  const probe = await page.evaluate(
+    '(() => { const el = document.querySelector(".dates");'
+    + ' return JSON.stringify({ whiteSpace: getComputedStyle(el).whiteSpace, text: el.textContent }); })()'
   );
-  assert.equal(whiteSpace, 'nowrap');
+  const { whiteSpace, text } = JSON.parse(probe);
+
+  /*
+   * "pre", not "nowrap", and the behaviour is what the rule was for: a date
+   * range must not be split across two lines, and both values guarantee that.
+   *
+   * WHY IT CHANGED. The pass used to SKIP anything pinned to nowrap, out of
+   * respect for the template - and skipping it meant the element got no
+   * trailing separator either, so a delivered resume read "11/2021 -
+   * PresentCut p99 latency" and the end date did not parse. "pre" is nowrap
+   * that keeps its spaces, so the pinned behaviour survives and the separator
+   * arrives.
+   */
+  assert.ok(['nowrap', 'pre'].includes(whiteSpace), `a date column must not wrap, got ${whiteSpace}`);
+  assert.match(text, /^01\/2019 - Present /, 'the separator the weld needed');
 });
 
 test('every template in use carries the wrap space, with the same layout', async (t) => {
@@ -246,4 +268,57 @@ test('every template in use carries the wrap space, with the same layout', async
       `${file}: the text moved to different baselines`
     );
   }
+});
+
+test('a date does not weld to what follows it', async (t) => {
+  /*
+   * REPORTED ON A DELIVERED RESUME: the dates "do not parse well". The range
+   * itself was intact and on its own line - a parser that compares Y
+   * coordinates read it correctly, which is why it survived every earlier
+   * check - but concatenated, the way a viewer's copy and a coordinate-blind
+   * parser read it, the page said:
+   *
+   *   "Senior Software Engineer IEverbridge  11/2021 - PresentCut p99 latency"
+   *
+   * Three welds in one line: the title into the employer, and the END DATE
+   * into the first bullet. "PresentCut" matches no date pattern anywhere, so
+   * the role had no end date at all.
+   *
+   * Both are block boundaries, where the text stream carries no separator and
+   * the line break exists only in the geometry.
+   */
+  const page = await (await launchBrowserFor(t)).newPage();
+  await page.setContent(
+    `<!doctype html><html><head><meta charset="utf-8"><style>
+       @page { size: letter; margin: 0.6in; }
+       body { font-family: Georgia, serif; font-size: 10.5pt; }
+       .head { display: flex; justify-content: space-between; }
+       .job-date { white-space: nowrap; }
+     </style></head><body>
+       <div class="entry">
+         <div class="head">
+           <div><div class="job-title">Senior Software Engineer I</div><div class="company">Everbridge</div></div>
+           <div><div class="job-date">11/2021 - Present</div></div>
+         </div>
+         <ul><li>Cut p99 latency from 180ms to 118ms on the settlement path.</li></ul>
+       </div>
+     </body></html>`,
+    { waitUntil: 'load' }
+  );
+  await separateGluedTextRuns(page);
+  await preserveWrapSpaces(page);
+
+  const buffer = Buffer.from(await page.pdf({ format: 'letter', printBackground: true }));
+  const runs = [];
+  await pdfParse(buffer, {
+    pagerender: (pageData) =>
+      pageData.getTextContent({ normalizeWhitespace: false, disableCombineTextItems: false })
+        .then((content) => { runs.push(...content.items.map((item) => item.str)); return ''; }),
+  });
+  const joined = runs.join('');
+
+  assert.equal(joined.includes('PresentCut'), false, 'the end date welded into the bullet');
+  assert.equal(joined.includes('IEverbridge'), false, 'the title welded into the employer');
+  // And the range is still whole, which is the rule the nowrap was there for.
+  assert.match(joined.replace(/\s+/g, ' '), /11\/2021 - Present /);
 });

@@ -47,6 +47,37 @@ export function renderedProse(content: {
 }
 
 /**
+ * The skills block as one string a term can be looked for in.
+ *
+ * SEPARATE FROM `renderedProse` ON PURPOSE, and the two answer different
+ * questions. Prose answers "was this written into a sentence", which is what
+ * the placement report measures and what the prompt's own 90% rule means. This
+ * answers "is this term on the page at all", which is what a scanner asks and
+ * what the revision call needs to know before it spends a bullet on something.
+ *
+ * Joined with a separator no term can span, so a lookup cannot match across two
+ * entries that happen to sit next to each other - "REST" and "API" printed in
+ * that order must not satisfy a checklist asking for "REST API".
+ */
+export const SKILL_ENTRY_SEPARATOR = ' | ';
+
+export function renderedSkillBlock(content: {
+  skillGroups?: Array<{ category?: string; skills?: unknown[] }>;
+  hardSkills?: string[];
+}): string {
+  const fromGroups = (content.skillGroups ?? []).flatMap((group) =>
+    (group?.skills ?? []).map((skill) => (typeof skill === 'string' ? skill : String((skill as { name?: unknown })?.name ?? '')))
+  );
+  // `hardSkills` as well, because the two disagree by design on some paths: a
+  // profile using the flat layout has no groups at all, and a block measured
+  // off an empty array reads as a page carrying no skills.
+  return [...fromGroups, ...(content.hardSkills ?? [])]
+    .map((skill) => skill.trim())
+    .filter(Boolean)
+    .join(SKILL_ENTRY_SEPARATOR);
+}
+
+/**
  * Whether a term is present as a term, rather than as a coincidence.
  *
  * Bounded on both sides so "Go" does not match "Google" and "AI" does not match

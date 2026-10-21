@@ -3,6 +3,7 @@ import { describeAiChoice } from '../config/aiPreferences';
 import { Profile } from '../types/profile';
 import type { AIProvider, JobAnalysis, RawNestedJobAnalysis, TailoredContent } from '../types/template';
 import { createPromptCompletion, DEFAULT_PROVIDER } from './ai';
+import { AIProviderError, isAIProviderError } from './ai/errors';
 import {
   analysisCacheKey,
   readAnalysisCache,
@@ -29,10 +30,12 @@ import {
   measurePlacement,
   placementFloor,
   renderedProse,
+  renderedSkillBlock,
   type PlacementReport,
 } from './utils/placementCoverage';
 import {
   MAX_SKILL_BLOCK_SIZE,
+  MAX_SKILL_GROUPS,
   bulletsNamingATool,
   findAnachronisms,
   findBrokenBullets,
@@ -217,6 +220,20 @@ function capitalizeFirstCharacter(value: string): string {
 const MAX_ROLE_BRIEF_LENGTH = 900;
 const MIN_EXPERIENCE_SKILLS = 10;
 const MAX_SOFT_SKILLS = 10;
+
+/**
+ * And the floor, which is the half that was missing.
+ *
+ * ASKED FOR: "I need around 8 to 10 soft skills in soft skill section, at least
+ * 8." The ceiling has been 10 throughout; nothing ever said how few was too
+ * few, and for several rounds the answer was none at all - the list was built,
+ * validated, capped, and then thrown away one line later.
+ *
+ * Reported rather than padded. The entries come from the posting and the
+ * library, and inventing two more to reach eight would put words on the page
+ * that nothing asked for.
+ */
+const MIN_SOFT_SKILLS = 8;
 const SOFT_SKILL_SIGNALS = [
   'accountability',
   'communication',
@@ -654,6 +671,14 @@ type CoverageGap = {
   missingImportant: string[];
   /** Of those, the soft skills, which now have nowhere else to appear. */
   missingSoft: string[];
+  /**
+   * On the page, in the skills block, and in no sentence.
+   *
+   * Not missing - that is the point of counting them apart - but worth a line
+   * in the log, because the size of this list is the size of the mistake the
+   * prose-only measurement used to make.
+   */
+  inBlockOnly: string[];
   figures: number;
   short: boolean;
   reason: string;
@@ -697,7 +722,35 @@ function measureCoverageGap(
     ...getProseChecklist(jobAnalysis),
     ...getSoftSkills(jobAnalysis),
   ]);
-  const missingTerms = wanted.filter((term) => !containsTerm(prose, term));
+
+  /*
+   * MISSING MEANS MISSING FROM THE PAGE, not missing from the sentences.
+   *
+   * This used to ask `renderedProse` alone, and the checklist it asks is not a
+   * prose checklist: `getKeywordChecklist` reads the posting's tools,
+   * technologies and protocols along with its ideas, so most of what is on it
+   * belongs in the skills block and is PUT there, correctly, by the model.
+   *
+   * MEASURED on a posting naming Azure, GCP, Bash, LLMs and MCP: a draft that
+   * had done everything right - every technology in the block, bullets about
+   * work - was scored as missing 30 of 30 terms, SIXTEEN of them sitting in its
+   * own skills block. That list is what the revision call receives. It is told
+   * a bullet may carry two or three of these and that a role may not exceed
+   * eight bullets, so the terms genuinely absent - "artificial intelligence",
+   * the soft skills, the concepts that have nowhere else to go - were
+   * competing for bullet space against sixteen that were already printed.
+   *
+   * The prose-only number is still measured and still reported, by
+   * `reportPlacement`, which answers the different question the prompt's own
+   * 90% rule asks: how much of this was written into a sentence.
+   */
+  const block = renderedSkillBlock(content);
+  const missingTerms = wanted.filter(
+    (term) => !containsTerm(prose, term) && !containsTerm(block, term)
+  );
+  const inBlockOnly = wanted.filter(
+    (term) => !containsTerm(prose, term) && containsTerm(block, term)
+  );
   // Bullets only, matching the floor's own wording: "five measurable results in
   // bullet points". The summary is 50 words and contributes at most one.
   const figures = countFigures({ experience: content.experience });
@@ -738,6 +791,7 @@ function measureCoverageGap(
     missingTerms,
     missingImportant,
     missingSoft,
+    inBlockOnly,
     figures,
     short: reasons.length > 0,
     reason: reasons.join(', '),
@@ -872,6 +926,51 @@ function coverageRevisionEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
 }
 
 /**
+ * Does a revision call that FAILED take the build down with it?
+ *
+ * YES, AND THE REPORT THAT CHANGED IT: "even when the account browsers didn't
+ * respond after receiving prompt, our program finished generating resumes
+ * saying 5 out of 5 generated successfully." They had. The draft was complete,
+ * a PDF was written, and the only trace of a browser that took the prompt and
+ * never answered was a console warning nobody was reading.
+ *
+ * A failed call is now a failed build, which puts it through `withUnitRetry`
+ * like any other transient browser fault - a retry re-enters the tab pool and
+ * takes whichever browser is free, which is the whole reason a retry has a
+ * chance of going differently. A revision correctly REJECTED for being no
+ * better is untouched by this: the model answered, the answer was judged, and
+ * the draft standing is the right outcome rather than a failure.
+ *
+ * THE WAY BACK, because this can turn a batch that was shipping into a batch
+ * that fails: set RESUME_REVISION_SOFT_FAIL to keep the old behaviour, or
+ * RESUME_REVISION_OFF to stop making the call at all.
+ */
+function coverageRevisionFailureIsFatal(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !env.RESUME_REVISION_SOFT_FAIL;
+}
+
+/**
+ * The same failure, said in a way that names the stage it happened at.
+ *
+ * REBUILT RATHER THAN WRAPPED IN A PLAIN ERROR, because `isRetryableFailure`
+ * reads `retryable` off an AIProviderError and that flag is derived from the
+ * KIND. Carrying the kind across carries the decision: `auth`, `disabled`,
+ * `locked` and `binaryMissing` still say "do not try again", and a timeout
+ * still says "do".
+ */
+function asRevisionFailure(error: unknown): unknown {
+  if (!isAIProviderError(error)) return error;
+  return new AIProviderError({
+    provider: error.provider,
+    kind: error.kind,
+    detail: `coverage revision: ${error.detail ?? error.message}`,
+    adminAction: error.adminAction,
+    retryAfterSeconds: error.retryAfterSeconds,
+    cause: error,
+  });
+}
+
+/**
  * The skills-block instruction an admin cannot edit away.
  *
  * Appended to the user body on every call, which makes it the LAST thing the
@@ -885,7 +984,7 @@ function coverageRevisionEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
  * It no longer takes a heading, because there is no soft-skill group to head.
  */
 const finalSkillOverride = () => `FINAL SKILL OVERRIDE:
-Return "skillGroups": an array of { "category": string, "skills": string[] }, 5-7 groups, 5-9 skills each and never fewer than five in a group, ordered as you want them read. The FIRST group is "Languages & Frameworks" and it is required on every resume - the languages this candidate writes and the frameworks they build with - because it is the first thing a technical reader looks for. Concrete tools, languages, frameworks and platforms ONLY. NO soft skills anywhere in the block - not "Ownership", "Communication", "Collaboration", "Mentoring", "Accountability", "Troubleshooting", nor any other - and no category words such as "Cloud", "Infrastructure", "Platforms", "Systems", "Data", "Tools" or "Technologies": the application deletes both wherever they appear, so writing them only makes the group shorter. No entry of three or more words unless it is a proper name with its capitals, and no entry joining two things with "and". NO CONCEPTS OR PRACTICES - write the TOOL instead: Datadog not "Observability", Terraform not "Infrastructure as Code", pytest not "unit testing", MLflow not "Experiment Tracking", Kong or Redis not "rate limiting". An entry goes if its last word names an activity (engineering, optimization, automation, orchestration, monitoring, planning, tracking, modeling, validation, testing, design, deployment, integration, implementation, operations) or if it is two or more words with no capital letter in it; "CI/CD", "APIs", "REST", "Large Language Models" and "RAG" are the exceptions and stay. The concept itself goes in an experience bullet, spelled as the posting spells it - it is moved, not dropped, and the application checks that it arrived. No past-tense verb as a skill. One entry per real thing: where one entry's words are all inside another's, write the shorter. Count the skills before returning: AT LEAST 35 in total - thirty-five is a floor, and five groups need seven entries each, six need six, seven need five - never more than 45, and anything past 45 is deleted from the end of the longest group. Reach thirty-five by naming the stack one layer at a time rather than by writing one thing several ways: the cloud alone is Lambda, S3, ECS, RDS, CloudWatch and IAM rather than the single word "AWS". Infer what the described work could not have been done without, never a tool from an industry they have not worked in and never a competitor beside the tool they used; if thirty-five would need a line nobody could be asked about, return what is true and stop short - fill up from the technologies this posting names and the ones the candidate's own roles imply, so the block answers the posting without reading as a copy of it. A tool is not gated by the profile; a DOMAIN is - nothing from an industry this candidate has not worked in. Beyond those removals it is printed exactly as returned - nothing reorders it, merges it or tops it up - so no duplicates of one product, no concepts, no invented versions. Never invent a metric, an employer, a title or a date. Omit "skills", "hardSkills", "softSkills", "unconfirmedHardSkills" and "unconfirmedSoftSkills": there is no soft-skills section, and the flat lists are derived from skillGroups.`;
+Return "skillGroups": an array of { "category": string, "skills": [{ "name": string, "kind": string }] }, 5-7 groups, 5-9 skills each and never fewer than five in a group, ordered as you want them read. EVERY ENTRY CARRIES ITS KIND: language, framework, library, tool, platform, database, protocol, methodology or technology belong in the block; practice, concept, soft, domain and category are taken out of it before printing, so write those into a bullet first and label them honestly rather than mislabelling them to keep them. An entry whose kind you cannot name is not a thing and does not go in. The FIRST group is "Languages & Frameworks" and it is required on every resume - the languages this candidate writes and the frameworks they build with - because it is the first thing a technical reader looks for. Concrete tools, languages, frameworks and platforms ONLY. NO soft skills anywhere in the block - not "Ownership", "Communication", "Collaboration", "Mentoring", "Accountability", "Troubleshooting", nor any other - and no category words such as "Cloud", "Infrastructure", "Platforms", "Systems", "Data", "Tools" or "Technologies": both leave the block when you label them honestly - kind soft, kind category - and both are PRINTED when you label one a tool, because the label is the only thing read. No entry of three or more words unless it is a proper name with its capitals, and no entry joining two things with "and". NO CONCEPTS OR PRACTICES - write the TOOL instead: Datadog not "Observability", Terraform not "Infrastructure as Code", pytest not "unit testing", MLflow not "Experiment Tracking", Kong or Redis not "rate limiting". An entry goes if its last word names an activity (engineering, optimization, automation, orchestration, monitoring, planning, tracking, modeling, validation, testing, design, deployment, integration, implementation, operations) or if it is two or more words with no capital letter in it - UNLESS THIS POSTING NAMED IT, in which case it may stay, spelled as the posting spells it, because a phrase the employer wrote down is a keyword a scanner scores: "CI/CD", "APIs", "REST", "Large Language Models", "RAG" and whatever else this posting asked for - "Threat hunting", "Data Modeling", "Cloud infrastructure". The same shape you invented does not stay: "agent orchestration", "latency optimization", "fast iteration". Keep the named products the bulk of the block and let these ride in the slots left over, never more than a quarter; the application enforces that share and routes the rest to the prose. The concept itself goes in an experience bullet, spelled as the posting spells it - it is moved, not dropped, and the application checks that it arrived. No past-tense verb as a skill. One entry per real thing: where one entry's words are all inside another's, write the shorter. Count the skills before returning: AT LEAST 35 in total - thirty-five is a floor, and five groups need seven entries each, six need six, seven need five - never more than 45, and anything past 45 is deleted from the end of the longest group. Reach thirty-five by naming the stack one layer at a time rather than by writing one thing several ways: name the cloud PLATFORM - "AWS", "Azure", "GCP", whichever this posting names - and then its services, Lambda, S3, ECS, RDS, CloudWatch and IAM, because the platform's own name is what a scanner searches for and a block listing only services matches none of them. Infer what the described work could not have been done without, never a tool from an industry they have not worked in; a competitor beside the tool they used is allowed WHEN THIS POSTING NAMES IT, and left out when the posting is silent. If thirty-five would need a line nobody could be asked about, return what is true and stop short - fill up from the technologies this posting names and the ones the candidate's own roles imply, so the block answers the posting without reading as a copy of it. A tool is not gated by the profile; a DOMAIN is - nothing from an industry this candidate has not worked in. Beyond those removals it is printed as returned - nothing reorders it, renames a group or tops it up, and the only merge is that the two smallest headings are joined, both names kept, when you send more than seven groups - so no duplicates of one product, no concepts, no invented versions. Never invent a metric, an employer, a title or a date. Return "softSkills" as well: a flat array of 8 to 10 terms, at least 8, taken from the posting's own soft skills and spelled as it spells them, most relevant first - they print as a Soft Skills section under this block, and every one of them also goes into an experience bullet. Omit "skills", "hardSkills", "unconfirmedHardSkills" and "unconfirmedSoftSkills": those flat lists are derived from skillGroups.`;
 
 function usesJobPriorityHardSkillOrdering(profile?: Profile): boolean {
   return getProfileHardSkillOrdering(profile) === 'job-priority';
@@ -1334,6 +1433,22 @@ function getConceptKeywords(jobAnalysis?: JobAnalysis, librarySkills: string[] =
       ...getSkillTools(jobAnalysis),
       ...getTechnologies(jobAnalysis),
       ...getProtocols(jobAnalysis),
+      /*
+       * AND THE FIELD THE ANALYSER PUTS CONCEPTS IN, which this read for a
+       * long time and did not.
+       *
+       * `domainKnowledge` is defined to the analyser as "business and technical
+       * concepts the candidate understands deeply", 10-20 entries - so it is
+       * where "Data Modeling", "Cloud infrastructure", "Threat hunting" and
+       * "Business Systems" land. Leaving it out meant those never reached
+       * `conceptKeywordsJson`, the one list the prompt says something specific
+       * about, and arrived instead among two dozen undifferentiated keywords.
+       *
+       * MEASURED on two scans: eleven of fourteen reported misses were phrases
+       * of exactly this shape, every one named by the posting and none of them
+       * anywhere on the page.
+       */
+      ...getDomainKnowledge(jobAnalysis),
     ])
   );
 }
@@ -2151,7 +2266,33 @@ function buildLibraryAugmentedPromptLists(jobAnalysis: JobAnalysis): {
 } {
   const sourceText = getTailoringSourceText(jobAnalysis);
   const extractedKeywords = getKeywordChecklist(jobAnalysis);
-  const matchedTechSkills = removeBroaderCoveredSkills(getLibraryMatches(sourceText, technicalSkills));
+  /*
+   * The library's matches, AND the technologies this posting named outright.
+   *
+   * WHY THE SECOND HALF EXISTS. `promptSkills` is what the prompt calls "a
+   * starting point for skillGroups" - the list the skills block is built from -
+   * and it was library matches alone. The library is 1,247 rows with no entry
+   * for MCP, LLM, LLMs or Large Language Models, so a posting that names them
+   * every other line put them on `keywordsJson` instead, whose preamble says
+   * those are PROSE targets. Measured on one posting: skillsJSON came back as
+   * ["RAG","Scrum"] while keywordsJson carried LLMs, MCP, Large Language
+   * Models, RAG, MCP server and LLM.
+   *
+   * So a resume arrived with "Large Language Models" and "RAG" in its bullets
+   * and neither in its block, and the model was obeying: they reached it on the
+   * list labelled prose. Naming them in the prompt as block-legal only asks the
+   * model to cross that boundary, and it did so on two resumes in five. This
+   * puts them on the right list instead.
+   *
+   * TOOLS, TECHNOLOGIES AND PROTOCOLS ONLY - what `getJobNamedHardSkills`
+   * returns. Not domainKnowledge, which rule 3 forbids for an industry the
+   * candidate has not worked in; not skills.soft; and not keywords.actionVerbs,
+   * the field that once put "owned" in a skills block.
+   */
+  const matchedTechSkills = normalizeSkillsList([
+    ...removeBroaderCoveredSkills(getLibraryMatches(sourceText, technicalSkills)),
+    ...getJobNamedHardSkills(jobAnalysis),
+  ]);
   const matchedSoftSkills = getLibraryMatches(sourceText, softSkills);
   const categorizedSkills = buildCategorizedLibrarySkills(matchedTechSkills);
 
@@ -2716,9 +2857,119 @@ function sortHardSkillsByLibraryPriority(skills: string[]): string[] {
   });
 }
 
-function finalizeSoftSkills(skills: string[]): string[] {
-  const condensed = prioritizeSoftSkills(normalizeSkillsList(skills)).map(condenseSoftSkill);
-  return uniqueCaseInsensitive(condensed).slice(0, MAX_SOFT_SKILLS);
+/**
+ * "Collaboration" and "Collaboration skills" are one soft skill.
+ *
+ * MEASURED ON THE FIRST RUN WITH THE SECTION BACK: a ten-term list came back
+ * holding "Collaboration" beside "Collaboration skills" and "Problem Solving"
+ * beside "Strong problem-solving skills" - two of its ten slots spent saying
+ * the same thing twice, in a section eight to ten terms long. The entries come
+ * from three sources that spell them differently: the posting's own soft
+ * skills, the library's rows, and whatever the model returned.
+ *
+ * `condenseSoftSkill` does not catch it, by design: it only rewrites an entry
+ * that is too LONG to print, and "Collaboration skills" is short enough to pass.
+ *
+ * The key is the term with the decoration taken off - a leading intensifier, a
+ * trailing "skills", the hyphens that make "problem-solving" a different string
+ * from "problem solving". Six stop words rather than a vocabulary: this is
+ * English grammar around a term, not a judgement about what the term means.
+ */
+const SOFT_SKILL_INTENSIFIERS = /^(?:strong|excellent|exceptional|great|proven|solid)\s+/;
+const SOFT_SKILL_TRAILERS = /\s+(?:skills?|abilities|ability)$/;
+
+function softSkillKey(skill: string): string {
+  let key = skill.toLowerCase().replace(/[-_/]+/g, ' ').replace(/\s+/g, ' ').trim();
+  key = key.replace(SOFT_SKILL_INTENSIFIERS, '');
+  key = key.replace(SOFT_SKILL_TRAILERS, '');
+  // "problem solving" and "problem solve" are the same claim.
+  return key.replace(/\b(\w+?)ing\b/g, '$1').trim();
+}
+
+function dedupeSoftSkills(skills: string[]): string[] {
+  const bestByKey = new Map<string, string>();
+  const order: string[] = [];
+
+  for (const skill of skills) {
+    const key = softSkillKey(skill);
+    if (!key) continue;
+    const held = bestByKey.get(key);
+    if (held === undefined) {
+      bestByKey.set(key, skill);
+      order.push(key);
+      continue;
+    }
+    // The plainest spelling wins: shortest, and the first seen on a tie, so the
+    // priority order above decides when two forms are the same length.
+    if (skill.length < held.length) bestByKey.set(key, skill);
+  }
+
+  /*
+   * AND THE GENERIC INSIDE THE SPECIFIC. "Empathy" beside "Customer empathy",
+   * "Communication" beside "Written communication" - the library carries the
+   * bare noun and the posting asked for the qualified one, and both printed.
+   * In a section eight to ten long that is a slot spent saying a weaker
+   * version of the line above it.
+   *
+   * THE FIRST ONE SURVIVES, which is the whole point of ordering by source
+   * first: the posting's "Customer empathy" arrives before the library's
+   * "Empathy", so the qualified term is the one kept. A scanner looking for
+   * the bare noun still matches it inside the longer phrase, because a term is
+   * matched on word boundaries rather than as a whole string.
+   */
+  const kept: string[] = [];
+  for (const key of order) {
+    const skill = bestByKey.get(key) as string;
+    const words = key.split(' ').filter(Boolean);
+    const coveredByEarlier = kept.some((earlier) => {
+      const earlierWords = softSkillKey(earlier).split(' ').filter(Boolean);
+      if (earlierWords.length <= words.length) {
+        // The earlier one is the shorter: is it the tail of this one?
+        return earlierWords.length > 0
+          && earlierWords.join(' ') === words.slice(words.length - earlierWords.length).join(' ');
+      }
+      return words.join(' ') === earlierWords.slice(earlierWords.length - words.length).join(' ');
+    });
+    if (!coveredByEarlier) kept.push(skill);
+  }
+
+  return kept;
+}
+
+/**
+ * The list as it will print: deduped, capped, and IN THE ORDER IT ARRIVED.
+ *
+ * `prioritizeSoftSkills` used to run here, and it was the second half of the
+ * same defect as the merge order above. It re-sorts the whole list by how many
+ * of a fixed set of signal words each term contains, which threw away the
+ * source ordering the caller had just established - and then the ten-entry cap
+ * took the top of a list ordered by that count.
+ *
+ * MEASURED on a posting asking for eight specific soft skills: "Bias for
+ * action", "Ambiguity tolerance" and "Technical mentorship" were all dropped,
+ * while "Reliability", "Empathy", "Mentorship" and "Collaboration" - none of
+ * which the posting named - survived into the printed ten. The posting's own
+ * relevance order, which the prompt asks the model for explicitly, was being
+ * discarded one step before the cap.
+ *
+ * The sort is still there for callers that want it; what changed is that this
+ * function no longer imposes it on a list whose order already means something.
+ *
+ * A POSTING TERM IS NOT REWRITTEN. `condenseSoftSkill` shortens an entry too
+ * long to print, and its fallbacks rewrite the words - "Technical mentorship"
+ * would become "Mentorship", which is a different string to a scanner, and the
+ * prompt spends two sections insisting the posting's spelling is a quotation.
+ * So terms the posting named are left exactly as they are and only the rest
+ * are condensed.
+ */
+function finalizeSoftSkills(skills: string[], fromPosting: Iterable<string> = []): string[] {
+  const protectedTerms = new Set(
+    [...fromPosting].map((term) => term.trim().toLowerCase()).filter(Boolean)
+  );
+  const shaped = normalizeSkillsList(skills).map((skill) =>
+    protectedTerms.has(skill.trim().toLowerCase()) ? skill : condenseSoftSkill(skill)
+  );
+  return dedupeSoftSkills(uniqueCaseInsensitive(shaped)).slice(0, MAX_SOFT_SKILLS);
 }
 
 function buildFallbackExperienceDescription(title: string, jobAnalysis?: JobAnalysis): string {
@@ -3197,12 +3448,22 @@ function reportSkillBlock(
   if (thin) console.warn(line);
   else console.log(line);
 
+  /*
+   * Groups too small to stand, reported and not touched.
+   *
+   * Code did fold them for one batch, into whichever heading shared the most
+   * words - and a resume came back with "LLM, APIs, Webhooks, OpenAPI,
+   * PostgreSQL, RAG, ETL Pipelines" under CLOUD & INFRASTRUCTURE. The target
+   * was a guess every time, and a wrong heading reads worse than a short
+   * group, so the merging went back to the prompt where the model knows what
+   * the entries are. This counts them.
+   */
   const small = groups.filter((group) => group.skills.length < MIN_SKILLS_PER_GROUP);
   if (small.length > 0) {
     console.warn(
       `[Resume skills] ${profileName}: ${small.length} group(s) under ${MIN_SKILLS_PER_GROUP} entries - `
         + `${small.map((group) => `${group.category} (${group.skills.length})`).join(', ')}. `
-        + `A thin group is how a block of 35 becomes a block of 17.`
+        + `A thin group is how a block of 35 becomes a block of 16.`
     );
   }
 
@@ -3226,17 +3487,23 @@ function reportSkillBlock(
    * would have to come from somewhere, and a group of languages this candidate
    * does not write is worse than a block without the heading.
    */
-  const hasLanguages = groups.some((group) => /language/i.test(group.category));
+  const hasLanguages = groups.some((group) => /\blanguage/i.test(group.category));
   if (!hasLanguages) {
     console.warn(
       `[Resume skills] ${profileName}: no Languages group in the block - `
         + `${groups.map((group) => group.category).join(', ')}.`
     );
   }
-  if (groups.length < MIN_SKILL_GROUPS || groups.length > MAX_SKILL_GROUPS) {
+  /*
+   * The floor only. The ceiling is enforced before this runs - `capSkillGroups`
+   * joins headings until the block is within it - so a warning about too many
+   * groups here could only ever fire on a block this code had already fixed,
+   * and the merge says so in its own line.
+   */
+  if (groups.length < MIN_SKILL_GROUPS) {
     console.warn(
-      `[Resume skills] ${profileName}: ${groups.length} group(s), outside the `
-        + `${MIN_SKILL_GROUPS}-${MAX_SKILL_GROUPS} the prompt asks for.`
+      `[Resume skills] ${profileName}: ${groups.length} group(s), under the `
+        + `${MIN_SKILL_GROUPS} the prompt asks for.`
     );
   }
 
@@ -3278,9 +3545,17 @@ const ORDINARY_WORD_SKILLS = new Set([
  */
 const MIN_SKILL_BLOCK_SIZE = 35;
 
-/** And the shape it asks for: see TECHNICAL SKILLS in the prompt. */
+/*
+ * And the shape it asks for: see TECHNICAL SKILLS in the prompt.
+ *
+ * The maximum is imported rather than written again here, because it is now
+ * ENFORCED - `capSkillGroups` joins headings until the block is within it - and
+ * a second copy of an enforced number is a copy that drifts. The floor stays
+ * local and stays a warning: reaching five groups from three would mean
+ * splitting or inventing a category, which is the judgement this code does not
+ * make.
+ */
 const MIN_SKILL_GROUPS = 5;
-const MAX_SKILL_GROUPS = 7;
 
 /**
  * Five to a group, because the arithmetic of the floor depends on it.
@@ -3291,7 +3566,12 @@ const MAX_SKILL_GROUPS = 7;
  */
 const MIN_SKILLS_PER_GROUP = 5;
 
-function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAnalysis, profile?: Profile): TailoredContent {
+function normalizeTailoredContent(
+  content: TailoredContent,
+  jobAnalysis?: JobAnalysis,
+  profile?: Profile,
+  options: { alreadyRouted?: boolean } = {}
+): TailoredContent {
   /*
    * The skills block, as the model returned it, printed unchanged.
    *
@@ -3331,16 +3611,40 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
    * The flat list is kept in step because templates, the DOCX writer and the
    * keyword measurement all read `hardSkills`.
    */
+  /*
+   * The entries are passed through UNTOUCHED, because they carry their kind.
+   *
+   * This used to coerce each one with `String(skill)`, which was right while an
+   * entry was a bare string and became the bug that printed "LANGUAGES &
+   * FRAMEWORKS: [object Object]" on every resume the moment the model started
+   * labelling them: every entry stringified to the same six words, and the
+   * exact-duplicate rule then collapsed the whole block to one. `parseSkillEntry`
+   * takes either shape and does the trimming this used to do.
+   */
   const modelSkillGroups = (content.skillGroups ?? [])
     .map((group) => ({
       category: String(group?.category ?? '').trim(),
-      skills: (Array.isArray(group?.skills) ? group.skills : [])
-        .map((skill) => String(skill ?? '').trim().replace(/\s+/g, ' '))
-        .filter(Boolean),
+      skills: Array.isArray(group?.skills) ? (group.skills as unknown[]) : [],
     }))
     .filter((group) => group.category);
 
-  const tidied = tidySkillGroups(modelSkillGroups);
+  /*
+   * EVERYTHING THIS POSTING NAMED, in one set, so the router can tell a
+   * keyword from an invention.
+   *
+   * Read from the analysis rather than from a list in code: these are the
+   * employer's own words for this one job, which is the only thing that makes
+   * the exception safe. `getKeywordChecklist` is the widest of them - tools,
+   * technologies, protocols, methodologies, domain knowledge and the
+   * must-include list - and a capability phrase reaches it from whichever
+   * field the analyser filed it under.
+   */
+  const postingVocabulary = normalizeSkillsList([
+    ...getKeywordChecklist(jobAnalysis),
+    ...getConceptKeywords(jobAnalysis),
+  ]);
+
+  const tidied = tidySkillGroups(modelSkillGroups, { postingTerms: postingVocabulary });
   const skillGroups = tidied.groups;
 
   const said: string[] = [];
@@ -3349,29 +3653,48 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
   if (tidied.report.repeated.length > 0) {
     said.push(`${tidied.report.repeated.length} repeated (${list(tidied.report.repeated, 6)})`);
   }
-  if (tidied.report.described.length > 0) {
-    said.push(`${tidied.report.described.length} descriptions rather than names (${list(tidied.report.described, 4)})`);
-  }
-  if (tidied.report.softOrVague.length > 0) {
+  if (tidied.report.routedToProse.length > 0) {
     said.push(
-      `${tidied.report.softOrVague.length} soft skill(s) and category word(s) `
-        + `(${list(tidied.report.softOrVague, 4)})`
+      `${tidied.report.routedToProse.length} the model labelled for the prose `
+        + `(${list(tidied.report.routedToProse.slice(0, 4).map((entry) => `${entry.name} [${entry.kind}]`), 4)})`
     );
   }
-  if (tidied.report.restated.length > 0) {
+  if (tidied.report.duplicates.length > 0) {
     said.push(
-      `${tidied.report.restated.length} restated `
-        + `(${list(tidied.report.restated.slice(0, 4).map((pair) => `${pair.dropped} -> ${pair.kept}`), 4)})`
+      `${tidied.report.duplicates.length} one name under two spellings `
+        + `(${list(tidied.report.duplicates.slice(0, 4).map((pair) => `${pair.dropped} -> ${pair.kept}`), 4)})`
     );
-  }
-  if (tidied.report.concepts.length > 0) {
-    said.push(`${tidied.report.concepts.length} concept(s) rather than tools (${list(tidied.report.concepts, 4)})`);
   }
   if (tidied.report.trimmed.length > 0) {
     said.push(`${tidied.report.trimmed.length} past the ${MAX_SKILL_BLOCK_SIZE}-entry ceiling (${list(tidied.report.trimmed, 4)})`);
   }
+  /*
+   * An unlabelled block is an older prompt answering, or a custom one an admin
+   * wrote. It is kept rather than emptied - see `parseSkillEntry` - and said
+   * out loud, because nothing is being routed on a resume that arrives this way
+   * and the block is only as clean as the model made it.
+   */
+  if (tidied.report.unlabelled.length > 0 && !options.alreadyRouted) {
+    console.warn(
+      `[Resume skills] ${profile?.name ?? 'resume'}: ${tidied.report.unlabelled.length} entry(ies) `
+        + `arrived with no kind, so nothing could be routed on them - ${list(tidied.report.unlabelled, 5)}. `
+        + `Is the tailoring prompt the current one?`
+    );
+  }
   if (said.length > 0) {
     console.log(`[Resume skills] ${profile?.name ?? 'resume'}: removed ${said.join('; ')}.`);
+  }
+  /*
+   * Said apart from the removals above, because nothing was removed: a merge
+   * costs the page a heading and keeps every skill under it.
+   */
+  if (tidied.report.mergedGroups.length > 0) {
+    console.log(
+      `[Resume skills] ${profile?.name ?? 'resume'}: joined `
+        + `${tidied.report.mergedGroups.length} heading(s) to reach the ${MAX_SKILL_GROUPS}-group `
+        + `maximum - ${tidied.report.mergedGroups
+          .map((pair) => `${pair.kept} + ${pair.joined}`).join('; ')}.`
+    );
   }
 
   const hardSkills = skillGroups.length > 0
@@ -3382,6 +3705,30 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
 
   reportSkillBlock(profile?.name ?? 'resume', skillGroups, hardSkills, jobAnalysis);
 
+  /*
+   * HOW MUCH OF THE BLOCK THIS POSTING ACTUALLY ASKED FOR.
+   *
+   * MEASURED across five jobs for one profile: only five entries recurred on
+   * every resume - C#, Docker, Git, Jenkins, Unreal Engine - but three of
+   * those five appear ZERO times in the candidate's history and all three are
+   * named as examples in this prompt's own layer checklist. Separately, 78 of
+   * 183 delivered entries (43%) were product names the prompt uses as
+   * illustrations.
+   *
+   * So the number worth watching is not the block's size, it is how much of it
+   * the employer asked for. Counted here rather than argued about later.
+   */
+  if (jobAnalysis && hardSkills.length > 0) {
+    const asked = new Set(postingVocabulary.map((term) => term.toLowerCase()));
+    const matched = hardSkills.filter((skill) => asked.has(skill.toLowerCase()));
+    console.log(
+      `[Resume block] ${profile?.name ?? 'resume'}: ${hardSkills.length} entries, `
+        + `${matched.length} named by this posting `
+        + `(${Math.round((matched.length / hardSkills.length) * 100)}%); the rest come from the `
+        + `candidate's history or are inferred from it.`
+    );
+  }
+
   // Ordering used to happen here - job-priority first, or the library's own
   // priority column. Neither applies now: the model returns the block in the
   // order it wants it read, and that order is part of the answer.
@@ -3389,18 +3736,74 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
   const softFromModel = normalizeSkillsList(content.softSkills);
   const softFromAnalysis = getSoftSkills(jobAnalysis);
   const softFromLibrary = getMatchedLibrarySoftSkills(jobAnalysis);
+  /*
+   * THE POSTING'S OWN WORDS FIRST, THE CANNED VOCABULARY LAST.
+   *
+   * MEASURED across a delivered batch of five: a Data Developer role, an AI
+   * Lead role and an Applied AI role came back with near-identical soft-skill
+   * sections - "Supportive, Leadership, Reliability, Communication,
+   * Collaboration skills, Cross-functional team" - because the nine canned
+   * canonicals in ATS_SOFT_SKILL_RULES were merged FIRST and a list capped at
+   * ten has no room left by the time the posting's own terms arrive.
+   *
+   * A scanner matches strings. A section that says "Cross-functional team" to
+   * a posting that asked for "stakeholder management" matches nothing, and it
+   * is also the clearest possible tell that nobody read the job.
+   *
+   * So the order is now by SOURCE: what the model returned (it read the
+   * posting and is told to spell terms as the posting spells them), then what
+   * the analyser extracted from the posting, then the library's matches
+   * against the posting text, and only then the canonicals - which are a
+   * fallback for a posting that named almost nothing, not a headline.
+   */
   const softMerged = normalizeSkillsList([
-    ...atsSoftPriority,
     ...softFromModel,
     ...softFromAnalysis,
-    // Last, so it fills the list out rather than displacing what the analysis
-    // named outright. These are the terms the job asked for in prose.
     ...softFromLibrary,
+    ...atsSoftPriority,
   ]);
   const softVerdicts = partitionSkills(softMerged, validateSoftSkill);
   reportRejectedSkills('soft', softVerdicts.rejected);
-  const softLimited = finalizeSoftSkills(softVerdicts.accepted);
-  void softLimited;
+  /*
+   * THE POSTING'S CULTURE LANGUAGE DOES NOT GET A LINE IN THIS SECTION.
+   *
+   * `validateSoftSkill` passes "accuracy obsession", "valued all voices" and
+   * "relentless bias toward action" - they are soft-skill shaped, and the
+   * analyser hands them over under `skills.soft`. The first run with the
+   * section back printed all three. A row of slogans is the thing the operator
+   * objected to when the old group was removed, and bringing the section back
+   * is not a reason to bring them with it. The same filter already keeps them
+   * out of the prompt's checklists and out of the coverage measurement, so all
+   * three agree about what belongs on the page.
+   */
+  const softWithoutValues = withoutValuesPhrases(softVerdicts.accepted);
+  // The posting's own words, which are the ones that may not be rewritten.
+  const postingSoft = normalizeSkillsList([...softFromModel, ...softFromAnalysis]);
+  const softLimited = finalizeSoftSkills(softWithoutValues.terms, postingSoft);
+
+  /*
+   * WHERE THE PRINTED TERMS CAME FROM, because the alternative is arguing
+   * about it. A section built out of the canned canonicals rather than the
+   * posting is the defect this ordering was changed to fix, and the only way
+   * to see it on the next batch is to count it on this one.
+   */
+  const postingSet = new Set(postingSoft.map((term) => term.toLowerCase()));
+  const fromPosting = softLimited.filter((term) => postingSet.has(term.toLowerCase()));
+  console.log(
+    `[Resume soft section] ${profile?.name ?? 'resume'}: ${softLimited.length} printed, `
+      + `${fromPosting.length} of them the posting's own words`
+      + `${softLimited.length > fromPosting.length
+        ? ` - filled out with ${softLimited.filter((t) => !postingSet.has(t.toLowerCase())).join(', ')}`
+        : ''}.`
+  );
+  if (softLimited.length < MIN_SOFT_SKILLS) {
+    console.warn(
+      `[Resume soft section] ${profile?.name ?? 'resume'}: ${softLimited.length} entry(ies) for the `
+        + `Soft Skills section, under the ${MIN_SOFT_SKILLS} asked for - `
+        + `${softLimited.join(', ') || '(none)'}. The posting and the library between them named `
+        + `no more; nothing is invented to reach the floor.`
+    );
+  }
 
   const trimIncompleteEnd = (s: string): string =>
     s.trim().replace(/,+\s*$/, '').replace(/\s+(and|or)\s*$/i, '').trim();
@@ -3587,6 +3990,37 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
   }, jobAnalysis);
 
   /*
+   * A technology the posting NAMED that reached the prose and not the block.
+   *
+   * REPORTED BY THE OPERATOR as "MCP and LLMs missing from the skills section
+   * even though they are in the JD". Measured on a delivered resume: "Large
+   * Language Models" and "RAG" were in the bullets and in neither group of the
+   * block. The cause was upstream - those terms arrived on the PROSE checklist
+   * because the skill library has no row for them - and that is fixed where
+   * `promptSkills` is built. This is the check that says whether it held.
+   *
+   * Named technologies only, and only where the prose shows the model knew the
+   * term: a posting term nobody wrote anywhere is an ordinary coverage miss and
+   * the placement report above already counts it.
+   */
+  // A separator no term can span, so `containsTerm` cannot match across two
+  // entries that happen to sit next to each other.
+  const SKILL_TEXT_SEPARATOR = ' | ';
+  const named = getJobNamedHardSkills(jobAnalysis);
+  if (named.length > 0 && hardSkills.length > 0) {
+    const blockText = hardSkills.join(SKILL_TEXT_SEPARATOR);
+    const proseText = [finalSummary, ...normalizedExperience.flatMap((role) => role.achievements ?? [])].join(SKILL_TEXT_SEPARATOR);
+    const proseOnly = named.filter((term) => containsTerm(proseText, term) && !containsTerm(blockText, term));
+    if (proseOnly.length > 0) {
+      console.warn(
+        `[Resume skills] ${profile?.name ?? 'resume'}: ${proseOnly.length} technology(ies) this posting `
+          + `named are in the bullets but not the block - ${proseOnly.slice(0, 6).join(', ')}`
+          + `${proseOnly.length > 6 ? ', ...' : ''}`
+      );
+    }
+  }
+
+  /*
    * A concept taken out of the block has to turn up in a bullet.
    *
    * ASKED FOR: "regarding concepts, don't remove but add them to bullets of
@@ -3600,19 +4034,60 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
    * the sentence around it, and a bullet written by this file is the thing the
    * whole prompt exists to avoid.
    */
-  if (tidied.report.concepts.length > 0) {
-    const bullets = normalizedExperience.flatMap((role) => role.achievements ?? []).join(' \n ');
-    const stranded = tidied.report.concepts.filter((term) => !containsTerm(bullets, term));
+  // A separator no term can span, so a match cannot straddle two bullets.
+  const PROSE_SEPARATOR = ' | ';
+  if (tidied.report.routedToProse.length > 0) {
+    const bullets = normalizedExperience.flatMap((role) => role.achievements ?? []).join(PROSE_SEPARATOR);
+    const prose = `${finalSummary}${PROSE_SEPARATOR}${bullets}`;
+    const stranded = tidied.report.routedToProse.filter((entry) => !containsTerm(prose, entry.name));
     if (stranded.length > 0) {
       console.warn(
-        `[Resume concepts] ${profile?.name ?? 'resume'}: ${stranded.length} of `
-          + `${tidied.report.concepts.length} concept(s) removed from the block are in no bullet `
-          + `either - ${stranded.slice(0, 6).join(', ')}${stranded.length > 6 ? ', ...' : ''}`
+        `[Resume routing] ${profile?.name ?? 'resume'}: ${stranded.length} of `
+          + `${tidied.report.routedToProse.length} entry(ies) the model moved out of the block are `
+          + `on no part of the page - `
+          + `${stranded.slice(0, 6).map((entry) => `${entry.name} [${entry.kind}]`).join(', ')}`
+          + `${stranded.length > 6 ? ', ...' : ''}. Each is a keyword the resume no longer has.`
       );
     } else {
       console.log(
-        `[Resume concepts] ${profile?.name ?? 'resume'}: all ${tidied.report.concepts.length} `
-          + `concept(s) removed from the block appear in the bullets.`
+        `[Resume routing] ${profile?.name ?? 'resume'}: all ${tidied.report.routedToProse.length} `
+          + `entry(ies) moved out of the block appear in the prose.`
+      );
+    }
+  }
+
+  /*
+   * THE HOLE THE CHECK ABOVE LEAVES, and the one the scans fell through.
+   *
+   * That check only looks at entries the MODEL wrote into the block and the
+   * router then moved out. A concept the posting named and the model never
+   * wrote anywhere is checked by nothing at all: it is not in the block, so
+   * the router never saw it; it is not in a sentence; and it leaves no trace.
+   *
+   * MEASURED on two delivered resumes, against the scanner's own report: of
+   * fourteen skills called missing, all fourteen were on no part of the page,
+   * and eleven were concept or category phrases of exactly this kind.
+   *
+   * Reported, never inserted - the same rule as everywhere else here. What it
+   * buys is the revision call, because `measureCoverageGap` counts these too.
+   */
+  if (jobAnalysis) {
+    const blockText = hardSkills.join(SKILL_TEXT_SEPARATOR);
+    const bullets = normalizedExperience.flatMap((role) => role.achievements ?? []).join(PROSE_SEPARATOR);
+    const wholePage = `${finalSummary}${PROSE_SEPARATOR}${bullets}${PROSE_SEPARATOR}${blockText}`;
+    const conceptsWanted = withoutValuesPhrases(getConceptKeywords(jobAnalysis)).terms;
+    const neverWritten = conceptsWanted.filter((term) => !containsTerm(wholePage, term));
+    if (neverWritten.length > 0) {
+      console.warn(
+        `[Resume concepts] ${profile?.name ?? 'resume'}: ${neverWritten.length} of `
+          + `${conceptsWanted.length} concept(s) this posting named are on NO part of the page - `
+          + `${neverWritten.slice(0, 8).join(', ')}${neverWritten.length > 8 ? ', ...' : ''}. `
+          + `A scanner counts each of these as a hard skill.`
+      );
+    } else if (conceptsWanted.length > 0) {
+      console.log(
+        `[Resume concepts] ${profile?.name ?? 'resume'}: all ${conceptsWanted.length} `
+          + `concept(s) this posting named reached the page.`
       );
     }
   }
@@ -3650,13 +4125,23 @@ function normalizeTailoredContent(content: TailoredContent, jobAnalysis?: JobAna
     hardSkills,
     skillGroups,
     /*
-     * No soft-skills block. It was a row of nouns nobody reads - and 44 of the
-     * library's entries are the exact register the operator asked to be rid
-     * of: "Innovation", "Creative solutions", "Proactiveness", "Visionary
-     * Leadership". The soft skills a posting names are still written into the
-     * prose, where they are attached to something the candidate did.
+     * The Soft Skills section, printed under the technical block.
+     *
+     * IT WAS EMPTY HERE FOR SEVERAL ROUNDS, and not because the list could not
+     * be built: everything above - the posting's own soft skills, the library
+     * matches, the validation and the cap - ran exactly as it does now, and the
+     * result was dropped on the next line. The operator asked for the section
+     * back, 8 to 10 entries.
+     *
+     * What was right about removing it is kept: 44 of the library's entries are
+     * the register the operator objected to - "Innovation", "Creative
+     * solutions", "Proactiveness", "Visionary Leadership" - and
+     * `validateSoftSkill` is what holds them out. And these terms still have to
+     * be written into the bullets as well: the section satisfies a scanner, a
+     * sentence is what makes a reader believe it, and SOFT SKILLS ARE PROSE in
+     * the prompt still asks for every one of them.
      */
-    softSkills: [],
+    softSkills: softLimited,
     strengths: normalizedStrengths,
     // Keep legacy field aligned with hard skills for older templates/components.
     skills: hardSkills,
@@ -3904,11 +4389,20 @@ export function buildTailorResumePromptValues(
 export function parseTailoredResumeContent(
   content: string,
   profile: Profile,
-  jobAnalysis: JobAnalysis
+  jobAnalysis: JobAnalysis,
+  /*
+   * Set by the revision pass, which re-parses a block this function has
+   * already routed. Those entries are plain strings by then - their kinds were
+   * spent on the first pass - and without this every revised resume would
+   * report "arrived with no kind", which is the warning that means the prompt
+   * did not reach the model. A false alarm on a real failure signal is worth
+   * one parameter.
+   */
+  options: { alreadyRouted?: boolean } = {}
 ): TailoredContent {
   const jsonText = extractJSON(content);
   const parsed = JSON.parse(jsonText) as TailoredContent;
-  const finalResult = normalizeTailoredContent(parsed, jobAnalysis, profile);
+  const finalResult = normalizeTailoredContent(parsed, jobAnalysis, profile, options);
   const tailoringSourceText = getTailoringSourceText(jobAnalysis);
 
   const {
@@ -3940,10 +4434,12 @@ export function parseTailoredResumeContent(
 
   return {
     ...finalResult,
-    // Empty on purpose: there is no soft-skills block on the resume any more.
-    // The reconciliation above still runs, because the Unconfirmed Skills
-    // panel is built from it and an operator still catalogues terms there.
-    softSkills: [],
+    // Carried through rather than blanked. This used to empty the list because
+    // there was no section to print it in; there is one again, and emptying it
+    // here would undo the work done upstream without saying so. The
+    // reconciliation above still runs either way - the Unconfirmed Skills panel
+    // is built from it.
+    softSkills: finalResult.softSkills,
     unconfirmedHardSkills,
     unconfirmedSoftSkills,
     skills: finalResult.hardSkills,
@@ -4026,6 +4522,13 @@ export async function tailorResume(
    * the draft stands: a thin resume is worth more than no resume.
    */
   const gap = measureCoverageGap(tailored, jobAnalysis);
+  if (gap.inBlockOnly.length > 0) {
+    console.log(
+      `[Resume coverage] ${profile.name}: ${gap.inBlockOnly.length} checklist term(s) are in the `
+        + `skills block and in no sentence. Counted as placed, not asked for again - `
+        + `${gap.inBlockOnly.slice(0, 8).join(', ')}${gap.inBlockOnly.length > 8 ? ', ...' : ''}`
+    );
+  }
   const hasBullets = (tailored.experience ?? []).some((role) => (role.achievements ?? []).length > 0);
   if (!gap.short || !hasBullets || !coverageRevisionEnabled()) {
     if (gap.missingTerms.length > 0) {
@@ -4072,7 +4575,9 @@ export async function tailorResume(
       experience: merged.experience,
       skillGroups: merged.skillGroups,
       coverLetter: merged.coverLetter,
-    }), profile, jobAnalysis);
+      // The block came back from the first pass already routed, so its entries
+      // are names without kinds and there is nothing left to route.
+    }), profile, jobAnalysis, { alreadyRouted: true });
     const after = measureCoverageGap(revised, jobAnalysis);
     // Better on either axis, worse on neither: a revision that places three
     // terms by dropping two figures has not helped.
@@ -4086,13 +4591,47 @@ export async function tailorResume(
       );
       return revised;
     }
+    /*
+     * WHICH CONDITION FAILED, and both numbers for each.
+     *
+     * "No better" covered three different outcomes - fewer terms placed, fewer
+     * figures, or neither axis moved - and an operator reading it could not
+     * tell which. The one that matters is a revision REJECTED for losing a
+     * checklist term while adding the figures a page was short of: the gate
+     * takes it whole or not at all, so a draft under the figure floor ships.
+     */
+    const lostTerms = after.missingTerms.length > gap.missingTerms.length;
+    const lostFigures = after.figures < gap.figures;
+    const why = lostTerms && lostFigures
+      ? 'it lost ground on both'
+      : lostTerms
+        ? 'it placed more figures but lost a checklist term, and the gate takes the revision whole'
+        : lostFigures
+          ? 'it placed more terms but lost a figure, and the gate takes the revision whole'
+          : 'neither axis moved';
     console.warn(
-      `[Resume coverage] ${profile.name}: the revision was no better `
-        + `(${after.missingTerms.length} still missing, ${after.figures} figure(s)). Keeping the draft.`
+      `[Resume coverage] ${profile.name}: the revision was rejected - ${why}. `
+        + `Missing terms ${gap.missingTerms.length} -> ${after.missingTerms.length}, `
+        + `figures ${gap.figures} -> ${after.figures} (floor ${FIGURE_FLOOR}). Keeping the draft.`
     );
   } catch (error) {
+    const said = error instanceof Error ? error.message : String(error);
+    /*
+     * THE CALL FAILED, which is a different thing from the answer being no
+     * better - and the two used to end in the same place, this catch, with the
+     * draft shipping either way.
+     */
+    if (coverageRevisionFailureIsFatal()) {
+      console.warn(
+        `[Resume coverage] ${profile.name}: the revision call failed (${said}). `
+          + `Failing the build so it is retried rather than shipped short. `
+          + `Set RESUME_REVISION_SOFT_FAIL to keep the draft instead.`
+      );
+      throw asRevisionFailure(error);
+    }
     console.warn(
-      `[Resume coverage] ${profile.name}: the revision failed (${error instanceof Error ? error.message : String(error)}). Keeping the draft.`
+      `[Resume coverage] ${profile.name}: the revision failed (${said}). Keeping the draft `
+        + `(RESUME_REVISION_SOFT_FAIL).`
     );
   }
   return tailored;
