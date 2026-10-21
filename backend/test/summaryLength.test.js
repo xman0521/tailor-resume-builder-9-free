@@ -130,8 +130,8 @@ test('the prompt asks for the 50 words the code enforces', () => {
   const content = JSON.parse(fs.readFileSync(file, 'utf8')).content;
 
   assert.match(content, /Summary: 2-3 sentences, AT MOST 50 words/);
-  assert.match(content, /the role and how long they have done it/, 'the three facts it has room for');
-  assert.match(content, /ONE proof point/);
+  assert.match(content, /LEAD WITH WHAT SETS THIS PERSON APART/, 'differentiator-first summary');
+  assert.match(content, /The span of experience goes in the/, 'years are not the opener');
   assert.match(content, /Normal sentence\s+capitalisation/);
   assert.match(content, /no "Known for X and Y\."/, 'the shape the spec named is banned by name');
 

@@ -53,12 +53,11 @@ function tailor(profile, analysis) {
  * are attached to something the candidate actually did, and the prose
  * checklist below is what pins that.
  */
-test('the soft skills the posting names reach their own section', () => {
+test('the soft skills section is empty after removal', () => {
   /*
-   * This asserted the opposite for several rounds - `softSkills` was forced to
-   * [] on the way out, while everything that built the list still ran. The
-   * operator asked for the section back, 8 to 10 entries, under the technical
-   * block.
+   * The section has been through three positions: removed → restored at
+   * operator request for 8-10 → removed again after a reviewer found only 12
+   * distinct lists across 60 resumes. softSkills is now always [].
    */
   const rich = tailor(
     profileFor(),
@@ -66,30 +65,19 @@ test('the soft skills the posting names reach their own section', () => {
       soft: ['communication', 'ownership', 'mentoring', 'leadership'],
     })
   );
+  assert.deepEqual(rich.softSkills, [], 'softSkills should be empty');
+  // None of them in the TECHNICAL block either.
   for (const term of ['Communication', 'Ownership', 'Mentoring', 'Leadership']) {
     assert.ok(
-      rich.softSkills.some((s) => s.toLowerCase() === term.toLowerCase()),
-      `${term} was named by the posting: ${rich.softSkills.join(', ')}`
-    );
-  }
-  assert.ok(rich.softSkills.length <= 10, `${rich.softSkills.length} is over the ceiling`);
-
-  // None of them in the TECHNICAL block: the section is separate, not a group.
-  for (const soft of rich.softSkills) {
-    assert.ok(
-      !rich.hardSkills.some((hard) => hard.toLowerCase() === soft.toLowerCase()),
-      `"${soft}" is in both the technical block and the soft skills section`
+      !rich.hardSkills.some((hard) => hard.toLowerCase() === term.toLowerCase()),
+      `"${term}" should not be in the technical block`
     );
   }
 });
 
-test('a posting that names no soft skills still gets what the library finds, or nothing', () => {
-  // Never padded to reach the floor: the terms come from the posting and the
-  // library, and inventing two more would put words on the page nothing asked
-  // for. Under the floor is a warning, not a fabrication.
+test('a posting that names no soft skills returns an empty array', () => {
   const bare = tailor(profileFor(), analysisFor('We need a Python developer.'));
-  assert.ok(Array.isArray(bare.softSkills));
-  assert.ok(bare.softSkills.length <= 10);
+  assert.deepEqual(bare.softSkills, []);
 });
 
 test('the concepts kept out of the skills block are handed to the prompt', () => {

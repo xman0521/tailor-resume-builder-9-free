@@ -171,10 +171,152 @@ export function duplicateOf(first: string, second: string): DuplicateVerdict {
   if (qualified(aWords, bWords)) return { keep: second, drop: first };
   if (qualified(bWords, aWords)) return { keep: first, drop: second };
 
+  /*
+   * 4. The bare noun beside the same noun with a word in front of it.
+   *
+   * REPORTED BY A REVIEWER on a delivered batch, and MEASURED at 93% of 60
+   * resumes with a mean of 5.5 such pairs each: "Automation" beside "workflow
+   * automation", "APIs" beside "LLM APIs", "data scaling" beside "data
+   * normalization". Each pair spends two lines of a list a reader scans in two
+   * seconds on one idea, which is what reads as padding.
+   *
+   * THE HEAD NOUN HAS TO MATCH, and that is what keeps this off real products.
+   * "GitHub" and "GitHub Actions" end in different words, so do "Visual
+   * Studio" and "Visual Studio Code", "Python" and "Python 3", "React" and
+   * "React Native" - all four are two products and all four survive. What this
+   * catches is the same noun twice with a qualifier on one of them.
+   *
+   * THE MORE SPECIFIC ONE SURVIVES, unlike rule 2 above: "workflow automation"
+   * says what was automated and "Automation" says nothing, and a scanner
+   * looking for the bare noun still matches it inside the longer phrase
+   * because terms are matched on word boundaries.
+   */
+  const sameHeadNoun = (shortWords: string[], longWords: string[]) =>
+    longWords.length > shortWords.length
+    && shortWords.length >= 1
+    && longWords[longWords.length - 1] === shortWords[shortWords.length - 1]
+    && longWords.slice(longWords.length - shortWords.length).every((word, i) => word === shortWords[i]);
+
+  if (sameHeadNoun(aWords, bWords)) return { keep: second, drop: first };
+  if (sameHeadNoun(bWords, aWords)) return { keep: first, drop: second };
+
   return null;
 }
 
 export type RestatedSkill = { kept: string; dropped: string };
+
+/*
+ * ─── Two shapes a reviewer spots before a scanner does ───────────────────────
+ *
+ * Both were reported on a delivered batch and both are measurable, so they are
+ * counted rather than argued about.
+ */
+
+/**
+ * A soft skill bolted onto the end of a sentence about technical work.
+ *
+ * MEASURED at 87% of 60 resumes, 189 bullets: "Reviewed GitHub changes for
+ * online banking features, applying accountability during code review",
+ * "Practiced Curiosity when examining unfamiliar modules", "applying
+ * Cross-functional collaboration and Decision making to resolve issues".
+ *
+ * It is what a rule asking for every soft skill to be WRITTEN IN A BULLET
+ * produces: the sentence is finished, the keyword still has to go somewhere,
+ * and a participle clause is where it goes. A reader sees a resume that was
+ * filled in rather than written, which is the whole fault.
+ *
+ * The test is the shape, not the vocabulary: a soft-skill noun governed by one
+ * of the joining words that attach a trailing clause. "Mentored two engineers
+ * through their first on-call rotation" names no soft skill and trips nothing
+ * - which is the sentence the rule is trying to encourage.
+ */
+const SOFT_SKILL_NOUNS = [
+  'accountability', 'adaptability', 'ownership', 'collaboration', 'communication',
+  'mentoring', 'mentorship', 'initiative', 'teamwork', 'empathy', 'curiosity',
+  'attention to detail', 'problem solving', 'problem-solving', 'time management',
+  'documentation', 'leadership', 'transparency', 'autonomy', 'onboarding',
+  'decision making', 'critical thinking', 'flexibility', 'prioritization',
+];
+
+const BOLTED_ON = new RegExp(
+  '(?:,\\s*)?\\b(?:with|while|applying|demonstrating|showing|practicing|practised|practiced|through|using|leveraging)\\s+'
+  + '(?:[a-z-]+\\s+){0,2}(?:' + SOFT_SKILL_NOUNS.join('|') + ')\\b',
+  'i'
+);
+
+export function bulletsWithBoltedSoftSkills(
+  roles: ReadonlyArray<{ achievements?: string[] }>
+): string[] {
+  const hits: string[] = [];
+  for (const role of roles) {
+    for (const bullet of role.achievements ?? []) {
+      if (typeof bullet === 'string' && BOLTED_ON.test(bullet)) hits.push(bullet);
+    }
+  }
+  return hits;
+}
+
+/**
+ * A bullet that stops at the activity instead of saying what changed.
+ *
+ * MEASURED at 73% of 1,246 delivered bullets. "Did X using Y" is a duty; the
+ * shape that earns its line is "did X using Y, which changed Z". A figure is
+ * the commonest way to end on an outcome but not the only one - "ended the
+ * morning re-runs" is an outcome with no number in it - so this looks for the
+ * turn towards a result rather than for a digit.
+ */
+const OUTCOME_SIGNAL = new RegExp(
+  '\\b(?:cut|cutting|reduc\\w+|drop\\w+|rais\\w+|rose|grew|growing|sav\\w+|freed|ended|removed|'
+  + 'eliminat\\w+|halv\\w+|doubl\\w+|shorten\\w+|took\\s+\\w+\\s+from|which\\s+\\w+ed|'
+  + 'resulting in|so that|from\\s+[\\d$]|to\\s+[\\d$])\\b',
+  'i'
+);
+
+export function bulletsWithoutAnOutcome(
+  roles: ReadonlyArray<{ achievements?: string[] }>
+): string[] {
+  const hits: string[] = [];
+  for (const role of roles) {
+    for (const bullet of role.achievements ?? []) {
+      if (typeof bullet === 'string' && bullet.trim() && !OUTCOME_SIGNAL.test(bullet)) hits.push(bullet);
+    }
+  }
+  return hits;
+}
+
+/**
+ * A phrase of three or four words written three or more times on one resume.
+ *
+ * MEASURED at 62% of 60 resumes, 2.2 phrases each: "attention to detail" four
+ * times, "findings through technical documentation" three times. It is what a
+ * checklist demanding every term, against a page with room for fourteen to
+ * twenty-two sentences, produces.
+ */
+export function repeatedPhrases(
+  roles: ReadonlyArray<{ achievements?: string[] }>,
+  summary = ''
+): Array<{ phrase: string; count: number }> {
+  const text = [summary, ...roles.flatMap((role) => role.achievements ?? [])]
+    .join(' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ');
+  const words = text.split(/\s+/).filter(Boolean);
+  const counts = new Map<string, number>();
+  for (let size = 3; size <= 4; size += 1) {
+    for (let i = 0; i + size <= words.length; i += 1) {
+      const phrase = words.slice(i, i + size).join(' ');
+      counts.set(phrase, (counts.get(phrase) ?? 0) + 1);
+    }
+  }
+  // A phrase that only repeats because a longer one does is not a second
+  // finding, so the longest form of each run is what gets reported.
+  const repeated = [...counts.entries()].filter(([, count]) => count >= 3);
+  return repeated
+    .filter(([phrase, count]) => !repeated.some(([other, otherCount]) =>
+      other !== phrase && other.includes(phrase) && otherCount >= count))
+    .map(([phrase, count]) => ({ phrase, count }))
+    .sort((a, b) => b.count - a.count);
+}
 
 /*
  * TWO RESTATEMENT PASSES LIVED HERE - `dropRestatedSkills` and its group-aware

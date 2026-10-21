@@ -2360,7 +2360,20 @@ export function reorderResumeSections(html: string, env: NodeJS.ProcessEnv = pro
  * skills section to copy - there is nothing to model the markup on, and
  * guessing produces the unstyled box this is written to avoid.
  */
+/** Whether a Soft Skills section is printed at all. See `ensureSoftSkillsSection`. */
+const SOFT_SKILLS_SECTION_ENABLED = false;
 function ensureSoftSkillsSection(html: string): string {
+  /*
+   * OFF, AND LEFT STANDING ON PURPOSE.
+   *
+   * `softSkills` is empty before it reaches a template now - see the comment
+   * in `parseTailoredResumeContent` - so every soft-skills section is already
+   * hidden by its own `{{#if softSkills.length}}` guard and this pass has
+   * nothing to add. It stays because the section has now been removed and
+   * restored twice, and the next time it is wanted the work is to fill the
+   * field again rather than to rebuild this.
+   */
+  if (!SOFT_SKILLS_SECTION_ENABLED) return html;
   if (/\bsection-soft-skills\b/i.test(html)) return html;
   // A template that prints softSkills in its own way already has somewhere for
   // them, even without the wrapper class.

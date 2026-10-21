@@ -44,6 +44,9 @@ import {
   rolesWithoutScale,
   tidySkillGroups,
   withoutValuesPhrases,
+  bulletsWithBoltedSoftSkills,
+  bulletsWithoutAnOutcome,
+  repeatedPhrases,
 } from './utils/resumeQuality';
 import {
   partitionSkills,
@@ -856,14 +859,12 @@ function revisionPromptValues(content: TailoredContent, gap: CoverageGap): Recor
    * which sentences.
    */
   const softSkillsNote = gap.missingSoft.length > 0
-    ? `THE SOFT SKILLS ARE THE WEAKEST BAND ON THIS RESUME, and ${gap.missingSoft.length} of them `
-      + `are missing: ${gap.missingSoft.join(', ')}. There is no soft-skills section and no soft-skill `
-      + `group in the skills block, so a bullet is the only place a scanner can find them. Write each `
-      + `one INSIDE a sentence about work the draft already describes, spelled exactly as listed - `
-      + `"Took ownership of the settlement path after two outages, cutting repeat incidents from nine `
-      + `a quarter to one", not "Strong ownership and collaboration skills". Consecutive bullets may `
-      + `each carry one; two in one sentence may not, and no bullet exists in order to hold one. If a `
-      + `term has nothing in this draft to attach it to, leave it out rather than asserting it.`
+    ? `SOFT SKILLS STILL MISSING: ${gap.missingSoft.join(', ')}. `
+      + `Write each one INSIDE a sentence about work the draft already describes, so the skill is `
+      + `visible in the action rather than named after it. NEVER append one after a clause that has `
+      + `already finished - no ", applying X", no ", demonstrating X", no ", with attention to detail". `
+      + `If a term has nothing in this draft to attach to naturally, leave it out rather than bolting `
+      + `it on - a sentence whose last words are a keyword tells a reader exactly how the page was made.`
     : 'The draft carries the soft skills this posting asked for. Do not add more.';
 
   return {
@@ -984,7 +985,7 @@ function asRevisionFailure(error: unknown): unknown {
  * It no longer takes a heading, because there is no soft-skill group to head.
  */
 const finalSkillOverride = () => `FINAL SKILL OVERRIDE:
-Return "skillGroups": an array of { "category": string, "skills": [{ "name": string, "kind": string }] }, 5-7 groups, 5-9 skills each and never fewer than five in a group, ordered as you want them read. EVERY ENTRY CARRIES ITS KIND: language, framework, library, tool, platform, database, protocol, methodology or technology belong in the block; practice, concept, soft, domain and category are taken out of it before printing, so write those into a bullet first and label them honestly rather than mislabelling them to keep them. An entry whose kind you cannot name is not a thing and does not go in. The FIRST group is "Languages & Frameworks" and it is required on every resume - the languages this candidate writes and the frameworks they build with - because it is the first thing a technical reader looks for. Concrete tools, languages, frameworks and platforms ONLY. NO soft skills anywhere in the block - not "Ownership", "Communication", "Collaboration", "Mentoring", "Accountability", "Troubleshooting", nor any other - and no category words such as "Cloud", "Infrastructure", "Platforms", "Systems", "Data", "Tools" or "Technologies": both leave the block when you label them honestly - kind soft, kind category - and both are PRINTED when you label one a tool, because the label is the only thing read. No entry of three or more words unless it is a proper name with its capitals, and no entry joining two things with "and". NO CONCEPTS OR PRACTICES - write the TOOL instead: Datadog not "Observability", Terraform not "Infrastructure as Code", pytest not "unit testing", MLflow not "Experiment Tracking", Kong or Redis not "rate limiting". An entry goes if its last word names an activity (engineering, optimization, automation, orchestration, monitoring, planning, tracking, modeling, validation, testing, design, deployment, integration, implementation, operations) or if it is two or more words with no capital letter in it - UNLESS THIS POSTING NAMED IT, in which case it may stay, spelled as the posting spells it, because a phrase the employer wrote down is a keyword a scanner scores: "CI/CD", "APIs", "REST", "Large Language Models", "RAG" and whatever else this posting asked for - "Threat hunting", "Data Modeling", "Cloud infrastructure". The same shape you invented does not stay: "agent orchestration", "latency optimization", "fast iteration". Keep the named products the bulk of the block and let these ride in the slots left over, never more than a quarter; the application enforces that share and routes the rest to the prose. The concept itself goes in an experience bullet, spelled as the posting spells it - it is moved, not dropped, and the application checks that it arrived. No past-tense verb as a skill. One entry per real thing: where one entry's words are all inside another's, write the shorter. Count the skills before returning: AT LEAST 35 in total - thirty-five is a floor, and five groups need seven entries each, six need six, seven need five - never more than 45, and anything past 45 is deleted from the end of the longest group. Reach thirty-five by naming the stack one layer at a time rather than by writing one thing several ways: name the cloud PLATFORM - "AWS", "Azure", "GCP", whichever this posting names - and then its services, Lambda, S3, ECS, RDS, CloudWatch and IAM, because the platform's own name is what a scanner searches for and a block listing only services matches none of them. Infer what the described work could not have been done without, never a tool from an industry they have not worked in; a competitor beside the tool they used is allowed WHEN THIS POSTING NAMES IT, and left out when the posting is silent. If thirty-five would need a line nobody could be asked about, return what is true and stop short - fill up from the technologies this posting names and the ones the candidate's own roles imply, so the block answers the posting without reading as a copy of it. A tool is not gated by the profile; a DOMAIN is - nothing from an industry this candidate has not worked in. Beyond those removals it is printed as returned - nothing reorders it, renames a group or tops it up, and the only merge is that the two smallest headings are joined, both names kept, when you send more than seven groups - so no duplicates of one product, no concepts, no invented versions. Never invent a metric, an employer, a title or a date. Return "softSkills" as well: a flat array of 8 to 10 terms, at least 8, taken from the posting's own soft skills and spelled as it spells them, most relevant first - they print as a Soft Skills section under this block, and every one of them also goes into an experience bullet. Omit "skills", "hardSkills", "unconfirmedHardSkills" and "unconfirmedSoftSkills": those flat lists are derived from skillGroups.`;
+Return "skillGroups": an array of { "category": string, "skills": [{ "name": string, "kind": string }] }, 5-7 groups, 5-9 skills each and never fewer than five in a group, ordered as you want them read. EVERY ENTRY CARRIES ITS KIND: language, framework, library, tool, platform, database, protocol, methodology or technology belong in the block; practice, concept, soft, domain and category are taken out of it before printing, so write those into a bullet first and label them honestly rather than mislabelling them to keep them. An entry whose kind you cannot name is not a thing and does not go in. The FIRST group is "Languages & Frameworks" and it is required on every resume - the languages this candidate writes and the frameworks they build with - because it is the first thing a technical reader looks for. Concrete tools, languages, frameworks and platforms ONLY. NO soft skills anywhere in the block - not "Ownership", "Communication", "Collaboration", "Mentoring", "Accountability", "Troubleshooting", nor any other - and no category words such as "Cloud", "Infrastructure", "Platforms", "Systems", "Data", "Tools" or "Technologies": both leave the block when you label them honestly - kind soft, kind category - and both are PRINTED when you label one a tool, because the label is the only thing read. No entry of three or more words unless it is a proper name with its capitals, and no entry joining two things with "and". NO CONCEPTS OR PRACTICES - write the TOOL instead: Datadog not "Observability", Terraform not "Infrastructure as Code", pytest not "unit testing", MLflow not "Experiment Tracking", Kong or Redis not "rate limiting". An entry goes if its last word names an activity (engineering, optimization, automation, orchestration, monitoring, planning, tracking, modeling, validation, testing, design, deployment, integration, implementation, operations) or if it is two or more words with no capital letter in it - UNLESS THIS POSTING NAMED IT, in which case it may stay, spelled as the posting spells it, because a phrase the employer wrote down is a keyword a scanner scores: "CI/CD", "APIs", "REST", "Large Language Models", "RAG" and whatever else this posting asked for - "Threat hunting", "Data Modeling", "Cloud infrastructure". The same shape you invented does not stay: "agent orchestration", "latency optimization", "fast iteration". Keep the named products the bulk of the block and let these ride in the slots left over, never more than a quarter; the application enforces that share and routes the rest to the prose. The concept itself goes in an experience bullet, spelled as the posting spells it - it is moved, not dropped, and the application checks that it arrived. No past-tense verb as a skill. One entry per real thing: where one entry's words are all inside another's, write the shorter. Count the skills before returning: AT LEAST 35 in total - thirty-five is a floor, and five groups need seven entries each, six need six, seven need five - never more than 45, and anything past 45 is deleted from the end of the longest group. Reach thirty-five by naming the stack one layer at a time rather than by writing one thing several ways: name the cloud PLATFORM - "AWS", "Azure", "GCP", whichever this posting names - and then its services, Lambda, S3, ECS, RDS, CloudWatch and IAM, because the platform's own name is what a scanner searches for and a block listing only services matches none of them. Infer what the described work could not have been done without, never a tool from an industry they have not worked in; a competitor beside the tool they used is allowed WHEN THIS POSTING NAMES IT, and left out when the posting is silent. If thirty-five would need a line nobody could be asked about, return what is true and stop short - fill up from the technologies this posting names and the ones the candidate's own roles imply, so the block answers the posting without reading as a copy of it. A tool is not gated by the profile; a DOMAIN is - nothing from an industry this candidate has not worked in. Beyond those removals it is printed as returned - nothing reorders it, renames a group or tops it up, and the only merge is that the two smallest headings are joined, both names kept, when you send more than seven groups - so no duplicates of one product, no concepts, no invented versions. Never invent a metric, an employer, a title or a date. Do NOT return "softSkills" - the field has been removed. Soft skills go into the bullets where they are shown by the work, not listed as traits. Never bolt a soft skill onto the end of a finished sentence - no ", applying X", no ", demonstrating X", no ", with attention to detail". Omit "skills", "hardSkills", "unconfirmedHardSkills" and "unconfirmedSoftSkills": those flat lists are derived from skillGroups.`;
 
 function usesJobPriorityHardSkillOrdering(profile?: Profile): boolean {
   return getProfileHardSkillOrdering(profile) === 'job-priority';
@@ -1795,6 +1796,25 @@ function reportBulletShape(
   const noScope = recentRolesWithoutScope(roles);
   if (noScope.length > 0) {
     parts.push(`no ownership or mentoring bullet in ${noScope.slice(0, 2).join(', ')}`);
+  }
+
+  // Issue 2 — soft skill bolted onto a technical bullet.
+  const bolted = bulletsWithBoltedSoftSkills(roles);
+  if (bolted.length > 0) {
+    parts.push(
+      `${bolted.length} bullet(s) with a soft skill bolted on (`
+        + `${JSON.stringify(bolted[0].slice(0, 80))}…)`
+    );
+  }
+
+  // Issue 7 — bullets that stop at the activity and never say what changed.
+  const noOutcome = bulletsWithoutAnOutcome(roles);
+  if (noOutcome.length > 0) {
+    const total = roles.reduce((n, r) => n + (r.achievements ?? []).length, 0);
+    parts.push(
+      `${noOutcome.length}/${total} bullet(s) with no outcome clause (`
+        + `${JSON.stringify(noOutcome[0].slice(0, 80))}…)`
+    );
   }
 
   if (parts.length === 0) return;
@@ -4096,6 +4116,16 @@ function normalizeTailoredContent(
   // claims, which is a sharper test than a list of tools kept in code.
   reportBulletShape(profile?.name ?? 'resume', normalizedExperience, hardSkills);
 
+  // Issue 1 — phrases repeated three or more times on one resume.
+  const repeated = repeatedPhrases(normalizedExperience, finalSummary);
+  if (repeated.length > 0) {
+    console.warn(
+      `[Resume repetition] ${profile?.name ?? 'resume'}: `
+        + `${repeated.length} phrase(s) repeated 3+ times: `
+        + `${repeated.slice(0, 3).map((r) => `"${r.phrase}" ×${r.count}`).join(', ')}.`
+    );
+  }
+
   /*
    * What the swaps could not take out.
    *
@@ -4135,13 +4165,23 @@ function normalizeTailoredContent(
      *
      * What was right about removing it is kept: 44 of the library's entries are
      * the register the operator objected to - "Innovation", "Creative
-     * solutions", "Proactiveness", "Visionary Leadership" - and
-     * `validateSoftSkill` is what holds them out. And these terms still have to
-     * be written into the bullets as well: the section satisfies a scanner, a
-     * sentence is what makes a reader believe it, and SOFT SKILLS ARE PROSE in
-     * the prompt still asks for every one of them.
+     * solutions", "Proactiveness", "Visionary Leadership".
+     *
+     * THE SECTION IS OFF AGAIN, and this is the third position this field has
+     * held. It was removed once as "a row of unprovable adjectives", brought
+     * back when the operator asked for 8 to 10 of them, and is now off because
+     * a reviewer read the delivered batch: MEASURED across 60 resumes, every
+     * one carried the section and there were only TWELVE distinct lists among
+     * them - five resumes to a list, word for word, whatever the job. A
+     * recruiter seeing two of those sees a template.
+     *
+     * The list is still BUILT, because `softLimited` is what the Unconfirmed
+     * Skills panel reconciles against and what the coverage report counts. It
+     * is simply not printed. Soft skills reach the page the way the reviewer
+     * asked for - shown by the work a bullet describes - and the prompt's
+     * SOFT SKILLS section is what says how.
      */
-    softSkills: softLimited,
+    softSkills: [],
     strengths: normalizedStrengths,
     // Keep legacy field aligned with hard skills for older templates/components.
     skills: hardSkills,

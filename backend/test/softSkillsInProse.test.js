@@ -60,27 +60,19 @@ test('every soft skill the posting named reaches the prompt', () => {
   }
 });
 
-test('the prompt says where they go, now that there is no section for them', () => {
+test('the prompt says where they go and how they must not be placed', () => {
   const prompt = require('../static/prompts/tailor-resume.json').content;
-  assert.match(prompt, /SOFT SKILLS ARE PROSE, AND THEY ARE NOT OPTIONAL/);
+  assert.match(prompt, /SOFT SKILLS ARE SHOWN, NOT NAMED/);
   /*
-   * The rules that decide whether a scanner finds them at all. "At least two in
-   * the summary" became "three or four" when 15 scanned resumes came back with
-   * soft skills as the weak band in every one, then "at most one" when the
-   * summary was capped at 65 words, then "one or two" at 80, and now "one at
-   * most, usually none" at 50. The count has changed four times; the
-   * requirement that the prompt NAME where they go has not.
-   *
-   * AND THE BULLETS ARE NOW THE ONLY PLACE. The skills block used to end with a
-   * group of soft skills, which satisfied a scanner whatever the sentences did.
-   * The operator removed it - they are unprovable adjectives in a list - so a
-   * soft skill that is not written into a bullet is not on the resume at all.
+   * The section has been removed after a reviewer found only 12 distinct lists
+   * across 60 resumes. Soft skills now go into the bullets where they are SHOWN
+   * by the work, never listed as traits or bolted onto a finished sentence.
    */
-  assert.match(prompt, /WRITE THE TERM ITSELF/);
-  assert.match(prompt, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);
-  assert.match(prompt, /SPREAD THEM\. The summary is 50 words and holds ONE at most/);
-  assert.match(prompt, /the rest go through the bullets/);
-  assert.match(prompt, /there is no\s+soft-skill group in the skills block/);
+  assert.match(prompt, /THERE IS NO SOFT SKILLS SECTION/);
+  assert.match(prompt, /THE BANNED SHAPES/);
+  assert.match(prompt, /applying X/);
+  assert.match(prompt, /demonstrating X/);
+  assert.match(prompt, /Practiced X when/);
 });
 
 test('a soft skill that is also a banned word survives when the posting asked for it', () => {
@@ -181,63 +173,29 @@ const SECTION_SOFT = ['Communication', 'Collaboration', 'Ownership', 'Mentoring'
 const readTemplate = (file) =>
   JSON.parse(fsNode.readFileSync(pathNode.join(TEMPLATE_DIR, file), 'utf8'));
 
-test('every installed template prints a Soft Skills section', async () => {
+test('no template prints soft skills content when the data is empty', async () => {
   /*
-   * ASKED FOR: "Make soft skill section under skill section." Of the ten
-   * templates profiles are actually rendered with, EIGHT had no soft-skills
-   * markup of any kind, so the section is built at render time from the
-   * template's own skills section - its wrapper, its heading element, its
-   * classes - rather than edited into each file one at a time.
+   * The section has been removed: parseTailoredResumeContent returns
+   * softSkills: [], and the prompt no longer asks for the field. Pass the same
+   * empty array the code sends and confirm no template renders content.
    */
   const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
   const tailored = {
     title: 'Engineer', summary: 's', experience: [], strengths: [], skills: [],
-    hardSkills: [], softSkills: SECTION_SOFT,
+    hardSkills: [], softSkills: [],
     skillGroups: [{ category: 'Languages', skills: ['Python', 'Go'] }],
     coverLetter: 'x',
   };
 
-  const missing = [];
+  const printed = [];
   for (const file of fsNode.readdirSync(TEMPLATE_DIR).filter((f) => f.endsWith('.json'))) {
     const html = await generatePreviewHTML(probeProfile(), readTemplate(file), tailored);
-    // The heading AND a term under it: a heading with nothing beneath it is
-    // the failure the guard exists for.
-    if (!/Soft Skills/i.test(html) || !html.includes('Stakeholder Management')) {
-      missing.push(file);
+    // With softSkills: [], no content should appear even if the markup is there.
+    if (html.includes('Stakeholder Management') || html.includes('Communication')) {
+      printed.push(file);
     }
   }
-  assert.deepEqual(missing, [], `no Soft Skills section in: ${missing.join(', ')}`);
-});
-
-test('the injected section disappears when there are no soft skills', async () => {
-  // An empty heading over nothing is worse than no section, so the injected
-  // markup carries its own guard.
-  const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
-  const html = await generatePreviewHTML(probeProfile(), readTemplate('one-column-banded-serif.json'), {
-    title: 'Engineer', summary: 's', experience: [], strengths: [], skills: [],
-    hardSkills: [], softSkills: [],
-    skillGroups: [{ category: 'Languages', skills: ['Python'] }], coverLetter: 'x',
-  });
-
-  assert.equal(/Soft Skills/i.test(html), false, 'an empty section should not print');
-  assert.equal(html.includes('{{'), false, 'and no Handlebars left behind');
-});
-
-test('a template that already prints soft skills is not given a second section', async () => {
-  const { generatePreviewHTML } = require('../dist/generators/pdfGenerator');
-  const template = readTemplate('template_Tommy_Margolis_fixed.json');
-  assert.ok(/section-soft-skills/.test(template.htmlContent), 'this template has its own');
-
-  const html = await generatePreviewHTML(probeProfile(), template, {
-    title: 'Engineer', summary: 's', experience: [], strengths: [], skills: [],
-    hardSkills: [], softSkills: ['Communication', 'Ownership'],
-    skillGroups: [{ category: 'Languages', skills: ['Python'] }], coverLetter: 'x',
-  });
-
-  assert.equal(
-    (html.match(/Soft Skills/gi) || []).length, 1,
-    'the template own section must not be doubled'
-  );
+  assert.deepEqual(printed, [], `Soft skills content printed in: ${printed.join(', ')}`);
 });
 
 const parseWith = (analysis, softFromModel) => {
@@ -261,191 +219,27 @@ const analysisWithSoft = (soft, modelSoft) => ({
   keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
 });
 
-test('one soft skill under two spellings is one entry', () => {
-  /*
-   * MEASURED on the first run with the section back: a ten-term list held
-   * "Collaboration" beside "Collaboration skills", and "Problem Solving"
-   * beside "Strong problem-solving skills" - two of ten slots saying one thing
-   * twice, in a section only eight to ten long. The three sources feeding it
-   * spell terms differently, and `condenseSoftSkill` rewrites only the entries
-   * too LONG to print, which these are not.
-   */
+test('softSkills is empty regardless of what the posting names', () => {
+  // These tests used to pin dedup and slogan filtering for the section. Since
+  // the section is removed (softSkills: []), both are moot for the output.
   const out = parseWith(
     analysisWithSoft(
-      [...SECTION_SOFT, 'Collaboration skills', 'Strong problem-solving skills', 'Excellent communication'],
+      [...SECTION_SOFT, 'Collaboration skills', 'accuracy obsession'],
       SECTION_SOFT
     ),
     SECTION_SOFT
   );
-
-  const key = (s) => s.toLowerCase().replace(/[-_/]+/g, ' ')
-    .replace(/^(?:strong|excellent)\s+/, '').replace(/\s+skills?$/, '');
-  const keys = out.softSkills.map(key);
-  assert.equal(new Set(keys).size, keys.length, `two spellings of one skill: ${out.softSkills.join(', ')}`);
-  // The plainest spelling is the one kept.
-  assert.ok(out.softSkills.includes('Collaboration'), out.softSkills.join(', '));
-  assert.equal(out.softSkills.includes('Collaboration skills'), false);
+  assert.deepEqual(out.softSkills, []);
 });
 
-test('the posting culture language never reaches the section', () => {
+test('softSkills is always empty now that the section is removed', () => {
   /*
-   * `validateSoftSkill` passes "accuracy obsession" and "valued all voices" -
-   * they are soft-skill shaped, and the analyser files them under skills.soft.
-   * The first run with the section back printed all three. A row of slogans is
-   * what the operator objected to when the old group was removed, and bringing
-   * the section back is not a reason to bring them with it.
+   * The section has been through three positions: removed, restored at operator
+   * request for 8-10, and removed a third time after a reviewer found only 12
+   * distinct lists across 60 resumes. The fill logic (softLimited) still runs
+   * for the Unconfirmed Skills panel and coverage reports, but parseTailoredResumeContent
+   * returns softSkills: [].
    */
-  const out = parseWith(
-    analysisWithSoft(
-      ['Ownership', 'Collaboration', 'valued all voices', 'accuracy obsession',
-        'relentless bias toward action'],
-      ['Ownership', 'Collaboration', 'accuracy obsession']
-    ),
-    ['Ownership', 'accuracy obsession']
-  );
-
-  /*
-   * THE SLOGAN, not the word inside it. "Accuracy" on its own is an ordinary
-   * soft skill and the library carries a row for it, so it may well appear -
-   * what may not is the posting's phrase, which is what reads as recruiting
-   * copy pasted into somebody's history.
-   */
-  for (const slogan of ['accuracy obsession', 'valued all voices', 'relentless bias toward action']) {
-    assert.equal(
-      out.softSkills.some((s) => s.toLowerCase() === slogan),
-      false,
-      `"${slogan}" reached the section: ${out.softSkills.join(', ')}`
-    );
-  }
-  // Nothing multi-word that reads as a slogan rather than a skill.
-  for (const term of out.softSkills) {
-    assert.ok(
-      term.split(/\s+/).length <= 3,
-      `"${term}" is a phrase, not a soft skill: ${out.softSkills.join(', ')}`
-    );
-  }
-  assert.ok(out.softSkills.includes('Ownership'));
-});
-
-test('the section is never padded to reach the floor', () => {
-  // Under the floor is a warning, not a fabrication: the terms come from the
-  // posting and the library, and inventing two more to reach eight would put
-  // words on the page that nothing asked for.
   const out = parseWith(analysisWithSoft(['Ownership', 'Communication'], ['Ownership']), ['Ownership']);
-  assert.ok(out.softSkills.length <= 10);
-  for (const term of out.softSkills) {
-    assert.ok(typeof term === 'string' && term.trim().length > 0);
-  }
-});
-
-/* ────────────────────────────────────────────────────────────────────────────
- * The section is built from the posting, not from a list kept in code
- * ──────────────────────────────────────────────────────────────────────────── */
-
-const POSTING = ['Curiosity', 'Written communication', 'Customer empathy', 'Pragmatism',
-  'Technical mentorship', 'Async communication', 'Stakeholder management', 'Onboarding'];
-
-const postingAnalysis = (soft) => ({
-  jobMeta: { title: 'Applied AI Engineer', seniority: 'Senior', industry: 'SaaS', department: 'Eng' },
-  skills: { technical: ['Python'], required: [], preferred: [], tools: [], technologies: [], soft },
-  technologies: [], protocols: [], methodologies: [], architecturePatterns: [],
-  responsibilities: ['collaboration across teams', 'reliable delivery'],
-  domainKnowledge: [], softSkills: soft,
-  keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
-});
-
-const runWith = (soft, modelSoft) => {
-  const { parseTailoredResumeContent } = require('../dist/services/resumeService');
-  return parseTailoredResumeContent(JSON.stringify({
-    title: 'E', summary: 's',
-    experience: [{
-      title: 'Engineer', company: 'Acme', startDate: '01/2019', endDate: 'Present',
-      location: 'R', description: '', achievements: ['Built things with Python.'],
-    }],
-    skillGroups: [{ category: 'Languages', skills: [{ name: 'Python', kind: 'language' }] }],
-    softSkills: modelSoft, coverLetter: 'x',
-  }), probeProfile(), postingAnalysis(soft));
-};
-
-test('the posting own soft skills outrank the canned ones', () => {
-  /*
-   * MEASURED across a delivered batch of five: a Data Developer role, an AI
-   * Lead role and an Applied AI role all came back with near-identical
-   * sections - "Supportive, Leadership, Reliability, Communication,
-   * Collaboration skills, Cross-functional team" - because nine canned
-   * canonicals were merged FIRST and the list is capped at ten.
-   *
-   * A scanner matches strings: "Cross-functional team" against a posting that
-   * said "stakeholder management" scores nothing, and reads as a page nobody
-   * wrote for this job.
-   */
-  const out = runWith(POSTING, POSTING);
-  const carried = POSTING.filter((t) => out.softSkills.some((s) => s.toLowerCase() === t.toLowerCase()));
-
-  assert.ok(
-    carried.length >= 6,
-    `only ${carried.length} of the posting's ${POSTING.length} terms printed: ${out.softSkills.join(', ')}`
-  );
-  // The canned canonicals are filler, so they may appear - but not instead of
-  // the posting, and never as the majority of the section.
-  const canned = out.softSkills.filter((s) => /^(Reliability|Supportive|Resilient|Cross-functional team|Eager to learn)$/i.test(s));
-  assert.ok(
-    canned.length < out.softSkills.length / 2,
-    `the section is mostly canned vocabulary: ${out.softSkills.join(', ')}`
-  );
-});
-
-test('a posting term is never rewritten into a different string', () => {
-  /*
-   * "Technical mentorship" used to come back as "Mentorship". The prompt
-   * spends two sections insisting the posting's spelling is a quotation, and a
-   * scanner looking for the posting's phrase does not find the shorter one.
-   */
-  const out = runWith(POSTING, POSTING);
-  assert.ok(
-    out.softSkills.includes('Technical mentorship'),
-    `the posting's own spelling was not kept: ${out.softSkills.join(', ')}`
-  );
-  assert.equal(
-    out.softSkills.includes('Mentorship'), false,
-    `the rewritten form printed too: ${out.softSkills.join(', ')}`
-  );
-});
-
-test('the generic inside the specific is not printed beside it', () => {
-  // "Empathy" beside "Customer empathy", "Communication" beside "Written
-  // communication": in a section eight to ten long that is a slot spent on a
-  // weaker version of the line above.
-  const out = runWith(POSTING, POSTING);
-
-  assert.ok(out.softSkills.includes('Customer empathy'), out.softSkills.join(', '));
-  assert.equal(out.softSkills.includes('Empathy'), false, out.softSkills.join(', '));
-  assert.ok(out.softSkills.includes('Written communication'), out.softSkills.join(', '));
-  assert.equal(out.softSkills.includes('Communication'), false, out.softSkills.join(', '));
-});
-
-test('the posting relevance order survives to the page', () => {
-  /*
-   * The prompt asks the model for its soft skills "most relevant first", and
-   * a sort by signal-word count used to throw that away one step before the
-   * ten-entry cap - so the terms that fell out were whichever the sort ranked
-   * last, not whichever mattered least.
-   */
-  const ordered = ['Stakeholder management', 'Curiosity', 'Pragmatism', 'Async communication',
-    'Technical mentorship', 'Customer empathy', 'Written communication', 'Onboarding'];
-  const out = runWith(ordered, ordered);
-
-  const printedOrder = ordered.filter((t) => out.softSkills.includes(t));
-  const indexes = printedOrder.map((t) => out.softSkills.indexOf(t));
-  const sorted = [...indexes].sort((a, b) => a - b);
-  assert.deepEqual(indexes, sorted, `the posting's order was reshuffled: ${out.softSkills.join(', ')}`);
-  assert.equal(out.softSkills[0], 'Stakeholder management', out.softSkills.join(', '));
-});
-
-test('a posting that names almost nothing still fills out from the fallbacks', () => {
-  // The canonicals and the library are what a thin posting has left, so they
-  // are kept as filler - demoted, not deleted.
-  const out = runWith(['Communication'], ['Communication']);
-  assert.ok(out.softSkills.length >= 1, 'something should print');
-  assert.ok(out.softSkills.some((s) => /communication/i.test(s)), out.softSkills.join(', '));
+  assert.deepEqual(out.softSkills, []);
 });

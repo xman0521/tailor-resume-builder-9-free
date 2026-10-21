@@ -373,14 +373,11 @@ test('a soft keyword from the posting is not bolted onto the summary', () => {
 
   /*
    * The job asks in prose for someone adaptable, and the library reads that.
-   * It reaches the Soft Skills SECTION, which is where a term like this now
-   * lives - and it does NOT reach the summary, which is the thing this test is
-   * about. The section is a list; the summary is the candidate's own paragraph.
+   * With the Soft Skills section removed, soft skills go into the bullets where
+   * they are shown by the work. The summary must not be touched to inject one.
    */
-  assert.ok(
-    parsed.softSkills.some((s) => /adapt/i.test(s)),
-    `the posting asks for an adaptable engineer: ${parsed.softSkills.join(', ')}`
-  );
+  // softSkills is always empty now that the section is removed.
+  assert.deepEqual(parsed.softSkills, []);
 
   // And the summary is the model's, untouched. Appending "Strengths include
   // ..." to catch the keyword is what made every summary end the same way.

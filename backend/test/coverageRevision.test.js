@@ -330,9 +330,9 @@ test('the revision prompt exists, resolves and renders', async () => {
   // list: with no group in the skills block, a bullet is the only place they
   // can appear, and the instruction most likely to be obeyed is the one that
   // says which words and which sentences.
-  assert.match(rendered, /THE SOFT SKILLS ARE THE WEAKEST BAND ON THIS RESUME/);
+  assert.match(rendered, /SOFT SKILLS STILL MISSING/);
   assert.match(rendered, /Mentoring, Ownership/);
-  assert.match(rendered, /a bullet is the only place a scanner can find them/);
+  assert.match(rendered, /NEVER append one after a clause/);
 
   // And it is the SMALL prompt: re-sending the tailoring rules is what made the
   // second call cost as much as the first.
@@ -387,12 +387,12 @@ test('a draft missing only its soft skills is sent back', async () => {
   // And the call is TOLD about them, by name and by destination. Pooling them
   // into the term list was what the draft already had and did not act on.
   const note = calls[1].promptValues.softSkillsNote;
-  assert.match(note, /THE SOFT SKILLS ARE THE WEAKEST BAND/);
+  assert.match(note, /SOFT SKILLS STILL MISSING/);
   assert.match(note, /Communication skills/);
   assert.match(note, /Ownership/);
-  assert.match(note, /a bullet is the only place a scanner can find them/);
-  // Not by asserting them: a term with nothing to attach to is left out.
-  assert.match(note, /leave it out rather than asserting it/);
+  assert.match(note, /NEVER append one after a clause/);
+  // Not by bolting them on: a term with nothing to attach to naturally is left out.
+  assert.match(note, /leave it out rather than bolting/);
 });
 
 test('one missing soft skill is not worth a call', async () => {

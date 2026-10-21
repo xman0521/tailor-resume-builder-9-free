@@ -699,10 +699,11 @@ test('the prompt carries the rules for the faults no code can repair', () => {
     assert.ok(content.includes(phrase), `${phrase} is not named as a phrase to drop`);
   }
   assert.match(content, /A VALUES PHRASE IS NOT A SOFT SKILL/);
-  assert.match(content, /never appended after the\nresult/);
-  // ...and the soft-skill rule that manufactured them points at it, because that
-  // rule asks for EVERY soft skill in KEYWORDS and is read first.
-  const softAt = content.indexOf('SOFT SKILLS ARE PROSE, AND THEY ARE NOT OPTIONAL');
+  // The soft-skill rule now bans the bolted shapes explicitly.
+  assert.match(content, /SOFT SKILLS ARE SHOWN, NOT NAMED/);
+  assert.match(content, /THE BANNED SHAPES/);
+  assert.match(content, /applying X/);
+  const softAt = content.indexOf('SOFT SKILLS ARE SHOWN, NOT NAMED');
   const pointerAt = content.indexOf('A VALUES PHRASE IS NOT A SOFT SKILL');
   assert.ok(softAt > 0 && pointerAt > softAt, 'the pointer belongs inside the rule it corrects');
 
@@ -721,12 +722,10 @@ test('the prompt carries the rules for the faults no code can repair', () => {
   // 5. Garbled metrics - and the example that taught the model the broken form
   // is gone, which is the part a rule alone would not have fixed.
   assert.match(content, /A BEFORE-AND-AFTER CARRIES ITS UNIT TWICE/);
-  assert.ok(content.includes('from 40 minutes to 6 minutes'));
-  assert.equal(
-    /from 40 minutes to 6\b(?! minutes)/.test(content),
-    false,
-    'the prompt still shows a before-and-after with the unit on one end'
-  );
+  assert.match(content, /from X minutes to Y minutes/);
+  // The examples no longer carry specific numbers that get copied into resumes.
+  assert.doesNotMatch(content, /from 40 minutes to 6 minutes/,
+    'the old example figure should be de-templated');
   /*
    * AND THE EXAMPLE IS MARKED AS AN EXAMPLE, which is the half a corrected
    * illustration would not have fixed. Measured over 99 delivered resumes: "40
@@ -913,7 +912,7 @@ test('the tailor prompt describes the application that now exists', () => {
   assert.doesNotMatch(content, /fill it with the soft skills this posting named/);
   assert.match(content, /Nor do category words/, 'Cloud and Infrastructure go too');
   // The prose rule is untouched, and is now the ONLY place a soft skill lands.
-  assert.match(content, /SOFT SKILLS ARE PROSE rule above still/);
+  assert.match(content, /SOFT SKILLS ARE SHOWN rule above still/);
 
   // Descriptions, with the rule stated exactly as the code applies it.
   assert.match(content, /A DESCRIPTION WHERE A NAME BELONGS/);
@@ -1069,36 +1068,33 @@ test('the soft skills go in their own section AND in the bullets, and the prompt
    * group had been what a scanner scored, so the bullets had to take it on.
    *
    * Then: "Make soft skill section under skill section. I need around 8 to 10
-   * soft skills." The section is back - but as its own section under the
-   * technical block, not as a group inside it, and NOT instead of the bullets.
-   * A list satisfies a scanner; a sentence is what a reader believes. The
-   * prompt has to ask for both or the second decision quietly undoes the first.
+   * soft skills." The section was restored, then removed a third time after a
+   * reviewer found that only 12 distinct lists existed across 60 resumes — the
+   * section was not earning its space. Soft skills are now shown by the work in
+   * the bullets, not listed as traits.
    */
   const content = promptBody();
-  assert.match(content, /THERE IS A SOFT SKILLS SECTION/);
-  assert.match(content, /8 to 10 terms, at least 8/);
-  assert.match(content, /THE SECTION IS NOT A SUBSTITUTE FOR THE BULLETS/);
-  assert.match(content, /place EVERY one of them in a bullet as well/);
-  assert.match(content, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);
-  // The TECHNICAL block still refuses them, so the two sections do not blur.
+  assert.match(content, /THERE IS NO SOFT SKILLS SECTION/);
+  assert.match(content, /Do not return "softSkills"/);
+  assert.match(content, /SOFT SKILLS ARE SHOWN, NOT NAMED/);
+  assert.match(content, /THE BANNED SHAPES/);
+  // The TECHNICAL block still refuses them.
   assert.match(content, /NO SOFT SKILLS IN THIS BLOCK/);
-  assert.match(content, /They have a section of\s+their own now/);
-  // And the schema asks for the field, or none of the above can arrive.
-  assert.match(content, /"softSkills": string\[\]/);
+  // The schema no longer asks for softSkills.
+  assert.doesNotMatch(content, /"softSkills": string\[\]/);
 });
 
-test('the appended override asks for the soft skills the prompt describes', () => {
-  // The override is read LAST, so a disagreement here wins. It used to say
-  // "Omit softSkills: there is no soft-skills section".
+test('the appended override says not to return softSkills', () => {
+  // The override is read LAST, so a disagreement here wins. It now says
+  // "Do NOT return softSkills" — the section has been removed.
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'services', 'resumeService.ts'), 'utf8'
   );
   const override = /const finalSkillOverride = \(\) => `([\s\S]*?)`;/.exec(source)[1];
 
-  assert.match(override, /Return "softSkills" as well/);
-  assert.match(override, /8 to 10 terms, at least 8/);
-  assert.equal(override.includes('there is no soft-skills section'), false);
-  assert.equal(/Omit "skills", "hardSkills", "softSkills"/.test(override), false);
+  assert.match(override, /Do NOT return "softSkills"/);
+  assert.match(override, /Never bolt a soft skill onto the end/);
+  assert.equal(override.includes('8 to 10 terms'), false, 'old section instruction removed');
 });
 
 /* ─── Concepts: out of the block, into the bullets ────────────────────────── */
@@ -1143,28 +1139,20 @@ test('the bullet floor is a floor, and the page has room for it', () => {
   assert.equal(typeof countFigures, 'function');
 });
 
-test('soft skills may sit in consecutive bullets', () => {
+test('soft skills are shown by the work, not bolted on', () => {
   /*
-   * THE CEILING BOUND BEFORE THE WRITING DID. "At most one per bullet, and
-   * never two bullets running" caps a twelve-bullet resume at six soft skills,
-   * and the postings ask for six to twelve - so the resume was full before the
-   * model had placed what it was asked for. Measured: 6.8 placed against a
-   * capacity of 6.
-   *
-   * What is still banned is two in one sentence, and a bullet written in order
-   * to hold one - those are what make a page read as stuffed, and neither is
-   * about adjacency.
+   * The old rule about consecutive bullets is gone along with the section.
+   * What replaced it: banned shapes that prevent the model from appending a
+   * keyword after a finished clause.
    */
   const content = promptBody();
-  assert.match(content, /CONSECUTIVE BULLETS MAY\s+EACH CARRY ONE/);
-  assert.match(content, /What is still\s+banned is two in one sentence/);
-
-  // The soft-skill rule only. The posting's five leading skills keep their own
-  // spread rule, which is about visible keyword stuffing rather than capacity.
-  const softAt = content.indexOf('SPREAD THEM.');
-  const fiveAt = content.indexOf('EACH OF THE FIVE APPEARS IN THE EXPERIENCE BULLETS');
-  assert.ok(fiveAt > 0 && fiveAt < softAt, 'the five-skill rule comes first and is untouched');
-  assert.match(content.slice(fiveAt, softAt), /never two bullets running/);
+  assert.match(content, /THE BANNED SHAPES/);
+  assert.match(content, /applying X/);
+  assert.match(content, /demonstrating X/);
+  assert.match(content, /Practiced X when/);
+  // The posting's five leading skills keep their own spread rule.
+  assert.match(content, /EACH OF THE FIVE APPEARS IN THE EXPERIENCE BULLETS/);
+  assert.match(content, /never two bullets running/);
 });
 
 test('the abbreviation rule no longer uses the one term the block must keep', () => {

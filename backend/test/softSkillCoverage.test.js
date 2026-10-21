@@ -108,13 +108,11 @@ test('both prompts ask for the work, in the copies that actually run', () => {
   assert.match(analyser, /A SLOGAN IS STILL NOT A SKILL/);
 
   const tailor = running('tailor-resume');
-  assert.match(tailor, /EVERY ONE OF THEM, AND COUNT THEM BEFORE YOU RETURN/);
-  // The count has moved twice - three or four, then at most one when the
-  // summary was capped at 65 words, then one or two when that cap went to 80
-  // because the shorter paragraph cost ATS points. What is actually being
-  // pinned is that the rule still NAMES a destination for the rest.
-  assert.match(tailor, /SPREAD THEM\. The summary is 50 words and holds ONE at most/);
-  assert.match(tailor, /the rest go through the bullets/);
+  // Soft skills are now shown by the work, not listed as traits. The prompt
+  // bans the bolted shapes explicitly.
+  assert.match(tailor, /SOFT SKILLS ARE SHOWN, NOT NAMED/);
+  assert.match(tailor, /THE BANNED SHAPES/);
+  assert.match(tailor, /THERE IS NO SOFT SKILLS SECTION/);
   // The summary names the role in the model's own words, and the headline is
   // built by the application - the candidate's own title plus the kind of role -
   // so the model is told to write its identity and add no discipline itself.
