@@ -26,6 +26,7 @@ import {
   getResolvedBrowser,
   guardTemporaryProfileCleanup,
 } from './config/browser';
+import { syncBuiltInPrompts } from './services/promptService';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -194,6 +195,9 @@ function listServerUrls(): string[] {
 // Open the database eagerly so schema problems - and the provider migration -
 // surface at startup rather than on the first request.
 getDb();
+
+// Update DB prompt records whose static file has changed since they were saved.
+void syncBuiltInPrompts();
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`Database: ${getDatabasePath()}`);

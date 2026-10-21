@@ -443,6 +443,49 @@ function normalizeFeatureKey(value: unknown): PromptFeatureKey | undefined {
   return isPromptFeatureKey(value) ? value : undefined;
 }
 
+/**
+ * Syncs built-in prompt files to the DB on startup. A DB record that was saved
+ * from a previous version of the static file is updated to match the current
+ * shipped content. Only built-in prompts are touched — user-created custom
+ * prompts are never overwritten.
+ */
+export async function syncBuiltInPrompts(): Promise<void> {
+  const dir = getStaticPromptsDir();
+  let files: string[];
+  try {
+    files = (await fs.readdir(dir)).filter((f) => f.endsWith('.json'));
+  } catch {
+    return;
+  }
+
+  for (const file of files) {
+    const id = file.replace(/\.json$/, '');
+    const stored = getStoredPrompt(id);
+    if (!stored || !stored.isBuiltIn) continue;
+
+    try {
+      const raw = await fs.readFile(path.join(dir, file), 'utf-8');
+      const parsed = JSON.parse(raw) as { content?: string };
+      const staticContent = normalizePromptContent(
+        typeof parsed.content === 'string' ? parsed.content : '',
+      );
+      if (!staticContent) continue;
+
+      const dbContent = normalizePromptContent(stored.content);
+      if (staticContent !== dbContent) {
+        saveStoredPrompt({
+          ...stored,
+          content: staticContent,
+          updatedAt: new Date().toISOString(),
+        });
+        console.log(`[prompts] Synced "${id}" — DB record updated from static file.`);
+      }
+    } catch {
+      // File unreadable or unparseable — skip, the existing DB record stands.
+    }
+  }
+}
+
 export function extractPromptVariables(content: string): string[] {
   const seen = new Set<string>();
   const found: string[] = [];
