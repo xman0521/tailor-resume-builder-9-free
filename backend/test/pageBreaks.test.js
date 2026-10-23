@@ -53,7 +53,6 @@ const tailored = {
   summary: profile.summary,
   experience,
   strengths: [], softSkills: [], skills: [], hardSkills: [],
-  unconfirmedHardSkills: [], unconfirmedSoftSkills: [],
   skillGroups: [
     { category: 'Languages', skills: ['TypeScript', 'SQL'] },
     { category: 'Backend & APIs', skills: ['Node.js', 'REST APIs'] },

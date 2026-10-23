@@ -27,7 +27,6 @@ const SETTINGS_ITEMS = [
   { href: '/admin/google-sheets', label: 'Google Sheets' },
   { href: '/admin/prompts', label: 'Prompts' },
   { href: '/admin/models', label: 'Models' },
-  { href: '/admin/skills', label: 'Skill Library' },
 ];
 
 function isActivePath(pathname: string, href: string): boolean {

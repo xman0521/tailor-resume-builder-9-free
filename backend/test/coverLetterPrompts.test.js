@@ -88,5 +88,5 @@ test('the fallback asks only for inputs it is actually given', () => {
 
 test('neither prompt invents facts', () => {
   assert.match(FALLBACK, /Never invent an achievement, employer or metric/);
-  assert.match(TAILORED, /Never invent a company, title, date, location or metric/);
+  assert.match(TAILORED, /Never invent a company, title, date, location or project/);
 });

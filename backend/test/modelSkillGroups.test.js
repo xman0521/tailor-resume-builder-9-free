@@ -157,9 +157,9 @@ test('the same string is not printed twice, nor the same string plus filler', ()
    * the same string twice, and one name under two spellings.
    */
   assert.deepEqual(padded.skillGroups, [
-    { category: 'Delivery', skills: ['CI/CD', 'CI/CD tools', 'Spring', 'Spring Framework'] },
-    { category: 'Data', skills: ['Data pipelines', 'Data pipeline operations', 'Performance'] },
-    { category: 'Monitoring', skills: ['Performance tuning', 'Datadog'] },
+    { category: 'Delivery', skills: ['CI/CD', 'CI/CD Tools', 'Spring', 'Spring Framework'] },
+    { category: 'Data', skills: ['Data Pipelines', 'Data Pipeline Operations', 'Performance'] },
+    { category: 'Monitoring', skills: ['Performance Tuning', 'Datadog'] },
   ]);
 
 
@@ -392,8 +392,10 @@ test('labelled entries survive the service path, not just the router', () => {
     analysis()
   );
 
+  // The soft skill prints in its own group, last, and stays out of hardSkills.
   assert.deepEqual(out.skillGroups, [
     { category: 'Languages & Frameworks', skills: ['Python', 'React', 'PostgreSQL', 'MCP', 'LLMs'] },
+    { category: 'Soft Skills', skills: ['Ownership'] },
   ]);
   assert.deepEqual(out.hardSkills, ['Python', 'React', 'PostgreSQL', 'MCP', 'LLMs']);
   // Nothing stringified: the names are the model's own, not "[object Object]".

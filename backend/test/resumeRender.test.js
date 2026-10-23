@@ -78,8 +78,6 @@ test('prepareResumeRenderData carries soft skills through to the render', () => 
     skills: ['TypeScript'],
     hardSkills: ['TypeScript'],
     softSkills: ['Communication'],
-    unconfirmedSoftSkills: [],
-    unconfirmedHardSkills: [],
     strengths: [],
   };
 
@@ -133,21 +131,21 @@ test('prepareResumeRenderData carries soft skills through to the render', () => 
   assert.deepEqual(otherRenderData.softSkills, ['Communication']);
 });
 
-test('prepareResumeRenderData enforces prompt-compliant skill category counts', () => {
+test('with no grouping from the model, the skills print as given', () => {
+  /*
+   * This used to file each skill under a heading looked up in the built-in
+   * skills library, pad every heading to five from the same library and drop
+   * whatever the library did not carry. The library is gone: what the resume
+   * carries is printed, in its order, nothing added and nothing guessed.
+   */
+  const skills = ['TypeScript', 'React', 'AWS', 'PostgreSQL', 'Git', 'AWS Textract'];
   const renderData = prepareResumeRenderData(
     {
       id: 'profile-4',
-      // Categories are opt-in now; this test is about the categorized layout,
-      // so it asks for it rather than relying on the app default.
       profileSettings: { technicalSkillsLayout: 'categorized' },
       name: 'Jane Doe',
       title: 'Software Engineer',
-      contact: {
-        phone: '555-555-5555',
-        email: 'jane@example.com',
-        linkedin: 'linkedin.com/in/jane-doe',
-        location: 'San Francisco, CA',
-      },
+      contact: { phone: '555-555-5555', email: 'jane@example.com', linkedin: '', location: 'San Francisco, CA' },
       summary: 'Summary',
       experience: [],
       strengths: [],
@@ -160,243 +158,15 @@ test('prepareResumeRenderData enforces prompt-compliant skill category counts', 
       title: 'Software Engineer',
       summary: 'Summary',
       experience: [],
-      skills: ['TypeScript', 'React', 'AWS', 'PostgreSQL', 'Git', 'CI/CD'],
-      hardSkills: ['TypeScript', 'React', 'AWS', 'PostgreSQL', 'Git', 'CI/CD'],
+      skills,
+      hardSkills: skills,
       softSkills: [],
-      unconfirmedSoftSkills: [],
-      unconfirmedHardSkills: [],
       strengths: [],
     }
   );
 
-  const groups = Object.fromEntries(
-    renderData.skillCategories.map((group) => [group.category, group.skills])
-  );
-
-  assert.deepEqual(Object.keys(groups), [
-    'Languages',
-    'Frameworks and Libraries',
-    'Cloud and Infrastructure',
-    'Databases and Storage',
-    'Version Control & Collaboration',
-  ]);
-  assert.equal(groups.Languages.length, 3);
-  assert.equal(groups['Frameworks and Libraries'].length, 5);
-  assert.equal(groups['Cloud and Infrastructure'].length, 5);
-  assert.equal(groups['Databases and Storage'].length, 5);
-  assert.equal(groups['Version Control & Collaboration'].length, 5);
-  assert.ok(groups.Languages.includes('TypeScript'));
-  assert.ok(groups.Languages.includes('Python'));
-  assert.ok(groups.Languages.includes('Java'));
-  assert.equal(groups.Languages.some((skill) => ['Bash', 'C#', 'HTML', 'CSS'].includes(skill)), false);
-  assert.ok(groups['Frameworks and Libraries'].includes('React'));
-  assert.ok(groups['Cloud and Infrastructure'].includes('AWS'));
-  assert.ok(groups['Databases and Storage'].includes('PostgreSQL'));
-  assert.ok(groups['Version Control & Collaboration'].includes('Git'));
+  assert.deepEqual(renderData.skillCategories, [{ category: '', skills }]);
 });
-
-test('prepareResumeRenderData rejects non-library hard skill strings', () => {
-  const renderData = prepareResumeRenderData(
-    {
-      id: 'profile-non-library',
-      // Categories are opt-in now; this test is about the categorized layout,
-      // so it asks for it rather than relying on the app default.
-      profileSettings: { technicalSkillsLayout: 'categorized' },
-      name: 'Jane Doe',
-      title: 'Software Engineer',
-      contact: {
-        phone: '555-555-5555',
-        email: 'jane@example.com',
-        linkedin: 'linkedin.com/in/jane-doe',
-        location: 'San Francisco, CA',
-      },
-      summary: 'Summary',
-      experience: [],
-      strengths: [],
-      skills: ['AI coding tools', 'Accuracy', 'SaaS', 'Code Review'],
-      education: [],
-      createdAt: '',
-      updatedAt: '',
-    },
-    {
-      title: 'Software Engineer',
-      summary: 'Summary',
-      experience: [],
-      skills: [
-        'Bash',
-        'C#',
-        'C++',
-        'JavaScript',
-        'TypeScript',
-        'Next.js',
-        'React',
-        'AI coding tools',
-        'AI coding workflows',
-        'AI-assisted code review tools',
-        'access-control workflow development',
-        'End-to-End Testing',
-        'Integration Testing',
-        'Regression Testing',
-        'Testing',
-        'Unit Testing',
-      ],
-      hardSkills: [
-        'Bash',
-        'C#',
-        'C++',
-        'JavaScript',
-        'TypeScript',
-        'Next.js',
-        'React',
-        'AI coding tools',
-        'AI coding workflows',
-        'AI-assisted code review tools',
-        'access-control workflow development',
-        'End-to-End Testing',
-        'Integration Testing',
-        'Regression Testing',
-        'Testing',
-        'Unit Testing',
-      ],
-      softSkills: [],
-      unconfirmedSoftSkills: [],
-      unconfirmedHardSkills: [],
-      strengths: [],
-    }
-  );
-
-  const groups = renderData.skillCategories;
-  const flattened = groups.flatMap((group) => group.skills.map((skill) => skill.toLowerCase()));
-
-  assert.equal(groups.length >= 5, true);
-  assert.equal(
-    groups.every((group) =>
-      group.category === 'Languages'
-        ? group.skills.length >= 3 && group.skills.length <= 5
-        : group.skills.length >= 5 && group.skills.length <= 10
-    ),
-    true
-  );
-  for (const rejectedSkill of [
-    'ai coding tools',
-    'ai coding workflows',
-    'ai-assisted code review tools',
-    'access-control workflow development',
-    'accuracy',
-    'saas',
-    'code review',
-  ]) {
-    assert.equal(flattened.includes(rejectedSkill), false);
-  }
-});
-
-test('prepareResumeRenderData applies strict skill category rules', () => {
-  const renderData = prepareResumeRenderData(
-    {
-      id: 'profile-2',
-      // Categories are opt-in now; this test is about the categorized layout,
-      // so it asks for it rather than relying on the app default.
-      profileSettings: { technicalSkillsLayout: 'categorized' },
-      name: 'Alex Rivera',
-      title: 'Senior Software Engineer',
-      contact: {
-        phone: '555-555-5555',
-        email: 'alex@example.com',
-        linkedin: 'linkedin.com/in/alex-rivera',
-        location: 'Kirkland, WA',
-      },
-      summary: 'Summary',
-      experience: [],
-      strengths: [],
-      skills: [],
-      education: [],
-      createdAt: '',
-      updatedAt: '',
-    },
-    {
-      title: 'Senior Software Engineer',
-      summary: 'Summary',
-      experience: [],
-      skills: ['Go', 'Python'],
-      hardSkills: ['Go', 'Python'],
-      softSkills: [],
-      unconfirmedSoftSkills: [],
-      unconfirmedHardSkills: [],
-      strengths: [],
-    }
-  );
-
-  const groups = Object.fromEntries(
-    renderData.skillCategories.map((group) => [group.category, group.skills])
-  );
-
-  assert.deepEqual(Object.keys(groups), [
-    'Languages',
-    'Frameworks and Libraries',
-    'Software Architecture & Design',
-    'Security',
-    'Cloud and Infrastructure',
-  ]);
-  assert.equal(groups.Languages.length >= 3 && groups.Languages.length <= 5, true);
-  for (const [category, skills] of Object.entries(groups)) {
-    if (category === 'Languages') continue;
-    assert.ok(skills.length >= 5);
-    assert.ok(skills.length <= 10);
-  }
-  assert.deepEqual(new Set(groups.Languages), new Set(['Go', 'Python', 'Java']));
-  assert.ok(groups['Frameworks and Libraries'].includes('Gin'));
-  assert.ok(groups['Frameworks and Libraries'].includes('Echo'));
-  assert.ok(groups['Frameworks and Libraries'].includes('Django'));
-  assert.ok(groups['Frameworks and Libraries'].includes('FastAPI'));
-});
-
-test('prepareResumeRenderData caps language skills at the prompt maximum', () => {
-  const renderData = prepareResumeRenderData(
-    {
-      id: 'profile-2',
-      // Categories are opt-in now; this test is about the categorized layout,
-      // so it asks for it rather than relying on the app default.
-      profileSettings: { technicalSkillsLayout: 'categorized' },
-      name: 'Alex Rivera',
-      title: 'Senior Software Engineer',
-      contact: {
-        phone: '555-555-5555',
-        email: 'alex@example.com',
-        linkedin: 'linkedin.com/in/alex-rivera',
-        location: 'Kirkland, WA',
-      },
-      summary: 'Summary',
-      experience: [],
-      strengths: [],
-      skills: [],
-      education: [],
-      createdAt: '',
-      updatedAt: '',
-    },
-    {
-      title: 'Senior Software Engineer',
-      summary: 'Summary',
-      experience: [],
-      skills: ['Go', 'Python', 'JavaScript', 'PHP', 'Java', 'TypeScript'],
-      hardSkills: ['Go', 'Python', 'JavaScript', 'PHP', 'Java', 'TypeScript'],
-      softSkills: [],
-      unconfirmedSoftSkills: [],
-      unconfirmedHardSkills: [],
-      strengths: [],
-    }
-  );
-
-  const languages = renderData.skillCategories.find((group) => group.category === 'Languages').skills;
-  assert.equal(languages.length, 5);
-  assert.deepEqual(new Set(languages), new Set(['Go', 'Python', 'JavaScript', 'PHP', 'Java']));
-});
-
-// -- Template preview == printed page ---------------------------------------- //
-// The preview exists to show what the PDF will look like, and it only does that
-// if it renders the same document at the same width. It used to do neither: the
-// template document was nested inside a second wrapper document, and laid out at
-// whatever width the iframe happened to be. Column counts, line wraps and page
-// breaks all move with width, so the two were only loosely related.
 
 test('the fallback page geometry is A4 with the margins page.pdf is called with', () => {
   assert.equal(RESUME_PAGE_GEOMETRY.format, 'A4');

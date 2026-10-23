@@ -6,7 +6,6 @@ const {
   parseTailoredResumeContent,
   buildTailorResumePromptValues,
 } = require('../dist/services/resumeService');
-const { isConceptSkill } = require('../dist/services/utils/hardSkillSelection');
 
 /**
  * The keywords a scanner looks for and the resume has to carry.
@@ -74,18 +73,17 @@ test('the two prose checklists do not ask for the same term twice', () => {
   assert.deepEqual(overlap, [], `asked for twice: ${overlap.join(', ')}`);
 });
 
-test('a concept the skill library has never heard of is still named to the prompt', () => {
-  // It used to be built from library matches, so a concept outside the library
-  // was dropped from the skills block for being a concept AND never named to
-  // the prompt for not being in the library. It landed nowhere.
+test('the concept list is the analysis fields that hold ideas, decided by no word list', () => {
+  // skills.technical and architecturePatterns are defined to the analyser as
+  // abilities and patterns, so every entry of both is a concept - and nothing
+  // else is, least of all a tool the posting named.
   const values = buildTailorResumePromptValues(profile(), analysisWith());
-  const concepts = JSON.parse(values.conceptKeywordsJson);
-  assert.ok(
-    concepts.some((c) => /full-stack engineering/i.test(c)),
-    `expected an uncatalogued concept to be listed: ${concepts.join(', ')}`
-  );
-  for (const concept of concepts) {
-    assert.ok(isConceptSkill(concept), `"${concept}" is in CONCEPT_KEYWORDS but is not a concept`);
+  const concepts = JSON.parse(values.conceptKeywordsJson).map((c) => c.toLowerCase());
+  for (const term of [...ABILITIES, 'microservices']) {
+    assert.ok(concepts.includes(term.toLowerCase()), `"${term}" is missing from CONCEPT_KEYWORDS`);
+  }
+  for (const tool of ['Docker', 'Python', 'PostgreSQL', 'REST']) {
+    assert.ok(!concepts.includes(tool.toLowerCase()), `"${tool}" is a named tool, not a concept`);
   }
 });
 
@@ -106,7 +104,6 @@ test('none of them reaches the Technical Skills block', () => {
       `"${ability}" reached the skills block`
     );
   }
-  assert.ok(out.hardSkills.every((s) => !isConceptSkill(s)), 'no concept may be listed as a skill');
 });
 
 test('the analyser folding technical into required does not re-admit them', () => {
@@ -184,15 +181,10 @@ test('every hard skill the job named reaches the prompt, from every field', () =
   }
 });
 
-test('REST is a protocol, not an idea', () => {
-  // It sits in the analyser's `protocols` field beside gRPC and GraphQL, both of
-  // which were listable. Calling one of the three a concept meant a posting
-  // asking for REST by name got the other two and not it.
-  assert.ok(!isConceptSkill('REST'), 'REST must be listable');
-  assert.ok(!isConceptSkill('gRPC'));
-  assert.ok(!isConceptSkill('GraphQL'));
-  // The vague forms stay concepts - "API" alone names nothing a reader screens for.
-  assert.ok(isConceptSkill('API'));
-  assert.ok(isConceptSkill('APIs'));
-  assert.ok(isConceptSkill('RESTful services'));
+test('REST is a protocol the posting named, so it is sent as a tool', () => {
+  // It sits in the analyser's `protocols` field beside gRPC and GraphQL. A
+  // posting asking for REST by name has to get it on the block's input list.
+  const values = buildTailorResumePromptValues(profile(), analysisWith());
+  assert.ok(JSON.parse(values.skillsJSON).includes('REST'), 'REST must reach the tool list');
+  assert.ok(!JSON.parse(values.conceptKeywordsJson).includes('REST'), 'REST is not a concept');
 });

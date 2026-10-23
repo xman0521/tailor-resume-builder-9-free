@@ -55,8 +55,6 @@ type FailedBuild = {
   job?: BuildableJob;
 };
 
-type UnconfirmedSkill = { original: string; value: string };
-
 type MultiplePreview = {
   profileId: string;
   profileName: string;
@@ -114,8 +112,6 @@ export default function Home() {
   const [tailoredContent, setTailoredContent] = useState<TailoredContent | null>(null);
   const [tailoredContentDraft, setTailoredContentDraft] = useState('');
   const [tailoredContentError, setTailoredContentError] = useState('');
-  const [unconfirmedHardSkills, setUnconfirmedHardSkills] = useState<UnconfirmedSkill[]>([]);
-  const [unconfirmedSoftSkills, setUnconfirmedSoftSkills] = useState<UnconfirmedSkill[]>([]);
   const [multiplePreviews, setMultiplePreviews] = useState<MultiplePreview[]>([]);
   const [multiplePreviewTailored, setMultiplePreviewTailored] = useState(false);
   const [multiplePreviewIndex, setMultiplePreviewIndex] = useState(0);
@@ -265,8 +261,6 @@ export default function Home() {
     resetTailoredEditor();
     setJobAnalysis(null);
     setSuccessMessage('');
-    setUnconfirmedHardSkills([]);
-    setUnconfirmedSoftSkills([]);
     setMultiplePreviews([]);
     setMultiplePreviewTailored(false);
     setMultiplePreviewIndex(0);
@@ -361,9 +355,6 @@ export default function Home() {
     }
   };
 
-  const toUnconfirmedItems = (skills?: string[]) =>
-    (skills ?? []).map((skill) => ({ original: skill, value: skill }));
-
   const getDefaultGenerationOptions = () => ({
     format: (modelSettings.defaultResumeDocxEnabled ? 'both' : 'pdf') as 'both' | 'pdf',
     includeCoverLetterDocx: modelSettings.defaultCoverLetterDocxEnabled,
@@ -411,26 +402,6 @@ export default function Home() {
     return selectedProfiles;
   };
 
-  const aggregateUnconfirmedFromPreviews = (previews: MultiplePreview[]) => {
-    const hardMap = new Map<string, string>();
-    const softMap = new Map<string, string>();
-    for (const preview of previews) {
-      const content = preview.tailoredContent;
-      for (const skill of content?.unconfirmedHardSkills ?? []) {
-        const key = skill.trim().toLowerCase();
-        if (key && !hardMap.has(key)) hardMap.set(key, skill.trim());
-      }
-      for (const skill of content?.unconfirmedSoftSkills ?? []) {
-        const key = skill.trim().toLowerCase();
-        if (key && !softMap.has(key)) softMap.set(key, skill.trim());
-      }
-    }
-    return {
-      hard: toUnconfirmedItems(Array.from(hardMap.values())),
-      soft: toUnconfirmedItems(Array.from(softMap.values())),
-    };
-  };
-
   const clearGenerationProgress = () => {
     setGenerationProgress(null);
   };
@@ -466,28 +437,6 @@ export default function Home() {
     });
   };
 
-  const collectUnconfirmedFromGenerateResult = (
-    targetHard: Map<string, string>,
-    targetSoft: Map<string, string>,
-    result: {
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
-    }
-  ) => {
-    for (const skill of result.unconfirmedHardSkills ?? []) {
-      const key = skill.trim().toLowerCase();
-      if (key && !targetHard.has(key)) {
-        targetHard.set(key, skill.trim());
-      }
-    }
-    for (const skill of result.unconfirmedSoftSkills ?? []) {
-      const key = skill.trim().toLowerCase();
-      if (key && !targetSoft.has(key)) {
-        targetSoft.set(key, skill.trim());
-      }
-    }
-  };
-
   const getSelectedProfilesForManualBuilder = (): Profile[] => {
     if (multipleTarget === 'all') {
       return profiles;
@@ -520,8 +469,6 @@ export default function Home() {
     tailoredContentByProfileId?: Map<string, TailoredContent | undefined>;
   }) => {
     const failures: GenerationFailure[] = [];
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
     const total = targetProfiles.length;
     let completed = 0;
 
@@ -532,7 +479,7 @@ export default function Home() {
       updateGenerationProgress(total, completed, 'Building resumes', profile.name, targetCompanyName);
 
       try {
-        const result = await resumeApi.generate({
+        await resumeApi.generate({
           ...aiRequestOverrides,
           profileId: profile.id,
           templateId: profile.preferredTemplate || 'default',
@@ -543,7 +490,6 @@ export default function Home() {
           role: resolvedRole,
           ...getDefaultGenerationOptions(),
         });
-        collectUnconfirmedFromGenerateResult(unconfirmedHardMap, unconfirmedSoftMap, result);
       } catch (err) {
         failures.push({
           profileId: profile.id,
@@ -562,8 +508,6 @@ export default function Home() {
       failed: failures.length,
       failures,
       failedCompanies: failures.length > 0 ? [targetCompanyName] : [],
-      unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
-      unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
     };
   };
 
@@ -747,8 +691,6 @@ export default function Home() {
           }))
         );
 
-        setUnconfirmedHardSkills(toUnconfirmedItems(result.unconfirmedHardSkills ?? []));
-        setUnconfirmedSoftSkills(toUnconfirmedItems(result.unconfirmedSoftSkills ?? []));
         // The server has already written the report and closed the browsers by
         // the time this arrives; the banner below is the countdown and the way
         // back out of it.
@@ -862,8 +804,6 @@ export default function Home() {
           setTailoredContent(preview.tailoredContent);
           setTailoredContentDraft(JSON.stringify(preview.tailoredContent, null, 2));
           setTailoredContentError('');
-          setUnconfirmedHardSkills(toUnconfirmedItems(preview.tailoredContent.unconfirmedHardSkills));
-          setUnconfirmedSoftSkills(toUnconfirmedItems(preview.tailoredContent.unconfirmedSoftSkills));
         }
         setSuccessMessage('Preview generated. Review, edit manually if needed, then click Generate Resume to finalize.');
         return;
@@ -896,9 +836,6 @@ export default function Home() {
         setMultiplePreviews(previewsWithDrafts);
         setMultiplePreviewTailored(res.tailored);
         setMultiplePreviewIndex(0);
-        const aggregated = aggregateUnconfirmedFromPreviews(previewsWithDrafts);
-        setUnconfirmedHardSkills(aggregated.hard);
-        setUnconfirmedSoftSkills(aggregated.soft);
         setSuccessMessage(`Preview generated for ${res.previews.length} profile(s). Review, then click Generate All to finalize.`);
         return;
       }
@@ -909,7 +846,7 @@ export default function Home() {
         const templateId = profile?.preferredTemplate || 'default';
         updateGenerationProgress(1, 0, 'Building resume', profile?.name, companyName.trim());
         setGenerationStep(`Generating 1/1: ${profile?.name ?? 'Selected profile'} x ${companyName.trim()}`);
-        const result = await resumeApi.generate({
+        await resumeApi.generate({
           ...aiRequestOverrides,
           profileId: selectedProfileId!,
           templateId,
@@ -922,8 +859,6 @@ export default function Home() {
         updateGenerationProgress(1, 1, 'Building resume', profile?.name, companyName.trim());
         setSuccessMessage('Resume generated successfully.');
         setIsSinglePreviewOpen(false);
-        setUnconfirmedHardSkills(toUnconfirmedItems(result.unconfirmedHardSkills));
-        setUnconfirmedSoftSkills(toUnconfirmedItems(result.unconfirmedSoftSkills));
       } else {
         const targetProfiles = getSelectedProfilesForManualBuilder();
         const res = await generateSequentialResumes({
@@ -943,8 +878,6 @@ export default function Home() {
             `Skipped ${res.failed} build(s). Failed companies: ${formatCompanySummary(res.failedCompanies) || companyName.trim()}. ${res.failures.slice(0, 3).map((failure) => `${failure.profileName}: ${failure.error}`).join(' | ')}${res.failures.length > 3 ? ' | ...' : ''}`
           );
         }
-        setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
-        setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate resume');
@@ -969,278 +902,6 @@ export default function Home() {
       setTailoredContentError('');
     } catch {
       setTailoredContentError('Invalid JSON. Fix errors before generating.');
-    }
-  };
-
-  const handleUnconfirmedSkillEdit = (
-    type: 'hard' | 'soft',
-    original: string,
-    value: string
-  ) => {
-    const update = (items: UnconfirmedSkill[]) =>
-      items.map((item) => (item.original === original ? { ...item, value } : item));
-    if (type === 'hard') {
-      setUnconfirmedHardSkills(update);
-    } else {
-      setUnconfirmedSoftSkills(update);
-    }
-  };
-
-  const handleRemoveUnconfirmedSkill = (type: 'hard' | 'soft', skill: UnconfirmedSkill) => {
-    const remove = (items: UnconfirmedSkill[]) =>
-      items.filter((item) => item.original !== skill.original);
-    if (type === 'hard') {
-      setUnconfirmedHardSkills(remove);
-    } else {
-      setUnconfirmedSoftSkills(remove);
-    }
-
-    if (tailoredContent) {
-      const normalizedOriginal = skill.original.trim().toLowerCase();
-      const nextTailored: TailoredContent = {
-        ...tailoredContent,
-        unconfirmedHardSkills:
-          type === 'hard'
-            ? (tailoredContent.unconfirmedHardSkills ?? []).filter(
-                (item) => item.trim().toLowerCase() !== normalizedOriginal
-              )
-            : tailoredContent.unconfirmedHardSkills,
-        unconfirmedSoftSkills:
-          type === 'soft'
-            ? (tailoredContent.unconfirmedSoftSkills ?? []).filter(
-                (item) => item.trim().toLowerCase() !== normalizedOriginal
-              )
-            : tailoredContent.unconfirmedSoftSkills,
-      };
-      setTailoredContent(nextTailored);
-      const currentDraft = tailoredContentDraft.trim();
-      if (currentDraft && currentDraft === JSON.stringify(tailoredContent, null, 2)) {
-        setTailoredContentDraft(JSON.stringify(nextTailored, null, 2));
-      }
-    } else if (multiplePreviews.length > 0) {
-      const normalizedOriginal = skill.original.trim().toLowerCase();
-      const nextPreviews = multiplePreviews.map((item) => {
-        if (!item.tailoredContent) return item;
-        const nextTailored: TailoredContent = {
-          ...item.tailoredContent,
-          unconfirmedHardSkills:
-            type === 'hard'
-              ? (item.tailoredContent.unconfirmedHardSkills ?? []).filter(
-                  (value) => value.trim().toLowerCase() !== normalizedOriginal
-                )
-              : item.tailoredContent.unconfirmedHardSkills,
-          unconfirmedSoftSkills:
-            type === 'soft'
-              ? (item.tailoredContent.unconfirmedSoftSkills ?? []).filter(
-                  (value) => value.trim().toLowerCase() !== normalizedOriginal
-                )
-              : item.tailoredContent.unconfirmedSoftSkills,
-        };
-        return {
-          ...item,
-          tailoredContent: nextTailored,
-          draft: JSON.stringify(nextTailored, null, 2),
-        };
-      });
-      setMultiplePreviews(nextPreviews);
-      const aggregated = aggregateUnconfirmedFromPreviews(nextPreviews);
-      setUnconfirmedHardSkills(aggregated.hard);
-      setUnconfirmedSoftSkills(aggregated.soft);
-    }
-  };
-
-  const handleConfirmSkill = async (type: 'hard' | 'soft', skill: UnconfirmedSkill) => {
-    const cleaned = skill.value.trim();
-    if (!cleaned) {
-      setError('Skill cannot be empty');
-      return;
-    }
-
-    try {
-      setIsGenerating(true);
-      setError('');
-      await resumeApi.confirmSkill({ type, skill: cleaned });
-
-      const remove = (items: UnconfirmedSkill[]) =>
-        items.filter((item) => item.original !== skill.original);
-
-      if (type === 'hard') {
-        setUnconfirmedHardSkills(remove);
-      } else {
-        setUnconfirmedSoftSkills(remove);
-      }
-
-      if (tailoredContent) {
-        const normalizedOriginal = skill.original.trim().toLowerCase();
-        const currentHard = tailoredContent.hardSkills ?? [];
-        const currentSoft = tailoredContent.softSkills ?? [];
-        const nextHard =
-          type === 'hard'
-            ? Array.from(
-                new Set([
-                  ...currentHard,
-                  cleaned,
-                ].map((item) => item.trim()).filter(Boolean))
-              )
-            : currentHard;
-        const nextSoft =
-          type === 'soft'
-            ? Array.from(
-                new Set([
-                  ...currentSoft,
-                  cleaned,
-                ].map((item) => item.trim()).filter(Boolean))
-              )
-            : currentSoft;
-
-        const nextTailored: TailoredContent = {
-          ...tailoredContent,
-          hardSkills: nextHard,
-          softSkills: nextSoft,
-          unconfirmedHardSkills:
-            type === 'hard'
-              ? (tailoredContent.unconfirmedHardSkills ?? []).filter(
-                  (item) => item.trim().toLowerCase() !== normalizedOriginal
-                )
-              : tailoredContent.unconfirmedHardSkills,
-          unconfirmedSoftSkills:
-            type === 'soft'
-              ? (tailoredContent.unconfirmedSoftSkills ?? []).filter(
-                  (item) => item.trim().toLowerCase() !== normalizedOriginal
-                )
-              : tailoredContent.unconfirmedSoftSkills,
-        };
-        setTailoredContent(nextTailored);
-        const currentDraft = tailoredContentDraft.trim();
-        if (currentDraft && currentDraft === JSON.stringify(tailoredContent, null, 2)) {
-          setTailoredContentDraft(JSON.stringify(nextTailored, null, 2));
-        }
-        if (selectedProfileId) {
-          const profile = profiles.find((p) => p.id === selectedProfileId);
-          const templateId = profile?.preferredTemplate || 'default';
-          const refreshed = await resumeApi.preview({
-            ...aiRequestOverrides,
-            profileId: selectedProfileId!,
-            templateId,
-            jobDescription,
-            role,
-            jobAnalysis: jobAnalysis || undefined,
-            tailoredContent: nextTailored,
-          });
-          setPreviewHtml(refreshed.html);
-          setPreviewTailored(refreshed.tailored);
-          setIsSinglePreviewOpen(true);
-        }
-      }
-
-      if (!tailoredContent && multiplePreviews.length > 0) {
-        const normalizedOriginal = skill.original.trim().toLowerCase();
-        const updatedProfiles: Array<{ profileId: string; nextTailored: TailoredContent }> = [];
-        let nextPreviews = multiplePreviews.map((item) => {
-          if (!item.tailoredContent) return item;
-          const unconfirmedHard = item.tailoredContent.unconfirmedHardSkills ?? [];
-          const unconfirmedSoft = item.tailoredContent.unconfirmedSoftSkills ?? [];
-          const hasMatch =
-            (type === 'hard' && unconfirmedHard.some((value) => value.trim().toLowerCase() === normalizedOriginal)) ||
-            (type === 'soft' && unconfirmedSoft.some((value) => value.trim().toLowerCase() === normalizedOriginal));
-          if (!hasMatch) return item;
-
-          const currentHard = item.tailoredContent.hardSkills ?? [];
-          const currentSoft = item.tailoredContent.softSkills ?? [];
-          const nextHard =
-            type === 'hard'
-              ? Array.from(
-                  new Set(
-                    [...currentHard, cleaned].map((value) => value.trim()).filter(Boolean)
-                  )
-                )
-              : currentHard;
-          const nextSoft =
-            type === 'soft'
-              ? Array.from(
-                  new Set(
-                    [...currentSoft, cleaned].map((value) => value.trim()).filter(Boolean)
-                  )
-                )
-              : currentSoft;
-
-          const nextTailored: TailoredContent = {
-            ...item.tailoredContent,
-            hardSkills: nextHard,
-            softSkills: nextSoft,
-            unconfirmedHardSkills:
-              type === 'hard'
-                ? unconfirmedHard.filter(
-                    (value) => value.trim().toLowerCase() !== normalizedOriginal
-                  )
-                : unconfirmedHard,
-            unconfirmedSoftSkills:
-              type === 'soft'
-                ? unconfirmedSoft.filter(
-                    (value) => value.trim().toLowerCase() !== normalizedOriginal
-                  )
-                : unconfirmedSoft,
-          };
-
-          updatedProfiles.push({ profileId: item.profileId, nextTailored });
-
-          return {
-            ...item,
-            tailoredContent: nextTailored,
-            draft: JSON.stringify(nextTailored, null, 2),
-            error: item.error,
-          };
-        });
-
-        if (updatedProfiles.length > 0) {
-          const refreshedList = await Promise.all(
-            updatedProfiles.map(async ({ profileId, nextTailored }) => {
-              const profile = profiles.find((p) => p.id === profileId);
-              const templateId = profile?.preferredTemplate || 'default';
-              const refreshed = await resumeApi.preview({
-                ...aiRequestOverrides,
-                profileId,
-                templateId,
-                jobDescription,
-                role,
-                jobAnalysis: jobAnalysis || undefined,
-                tailoredContent: nextTailored,
-              });
-              return {
-                profileId,
-                html: refreshed.html,
-                tailored: refreshed.tailored,
-                tailoredContent: refreshed.tailoredContent ?? nextTailored,
-              };
-            })
-          );
-          if (refreshedList.some((item) => item.tailored)) {
-            setMultiplePreviewTailored(true);
-          }
-          const refreshedMap = new Map(refreshedList.map((item) => [item.profileId, item]));
-          nextPreviews = nextPreviews.map((item) => {
-            const refreshed = refreshedMap.get(item.profileId);
-            if (!refreshed) return item;
-            return {
-              ...item,
-              html: refreshed.html,
-              tailoredContent: refreshed.tailoredContent,
-              draft: JSON.stringify(refreshed.tailoredContent, null, 2),
-            };
-          });
-        }
-
-        setMultiplePreviews(nextPreviews);
-        const aggregated = aggregateUnconfirmedFromPreviews(nextPreviews);
-        setUnconfirmedHardSkills(aggregated.hard);
-        setUnconfirmedSoftSkills(aggregated.soft);
-      }
-      setSuccessMessage(`Added "${cleaned}" to ${type === 'hard' ? 'tech' : 'soft'} skills.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to confirm skill');
-    } finally {
-      setIsGenerating(false);
-      setGenerationStep('');
     }
   };
 
@@ -1278,8 +939,6 @@ export default function Home() {
       setPreviewHtml(preview.html);
       setPreviewTailored(preview.tailored);
       setIsSinglePreviewOpen(true);
-      setUnconfirmedHardSkills(toUnconfirmedItems(preview.tailoredContent?.unconfirmedHardSkills));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(preview.tailoredContent?.unconfirmedSoftSkills));
       setSuccessMessage('Preview updated.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update preview');
@@ -1312,7 +971,7 @@ export default function Home() {
       const templateId = profile?.preferredTemplate || 'default';
       updateGenerationProgress(1, 0, 'Building resume', profile?.name, companyName.trim());
       setGenerationStep(`Generating 1/1: ${profile?.name ?? 'Selected profile'} x ${companyName.trim()}`);
-      const result = await resumeApi.generate({
+      await resumeApi.generate({
         ...aiRequestOverrides,
         profileId: selectedProfileId!,
         templateId,
@@ -1326,8 +985,6 @@ export default function Home() {
       updateGenerationProgress(1, 1, 'Building resume', profile?.name, companyName.trim());
       setSuccessMessage('Resume generated successfully.');
       setIsSinglePreviewOpen(false);
-      setUnconfirmedHardSkills(toUnconfirmedItems(result.unconfirmedHardSkills));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(result.unconfirmedSoftSkills));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate resume');
     } finally {
@@ -1403,9 +1060,6 @@ export default function Home() {
         };
       });
       setMultiplePreviews(nextPreviews);
-      const aggregated = aggregateUnconfirmedFromPreviews(nextPreviews);
-      setUnconfirmedHardSkills(aggregated.hard);
-      setUnconfirmedSoftSkills(aggregated.soft);
       setSuccessMessage(`Preview updated for ${preview.profileName}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update preview');
@@ -1479,9 +1133,6 @@ export default function Home() {
           updateGenerationProgress(total, completed, 'Building resumes', profile.name, companyName.trim());
         }
         setSuccessMessage(`Generated ${profilesToGenerate.length} resume(s) successfully.`);
-        const aggregated = aggregateUnconfirmedFromPreviews(multiplePreviews);
-        setUnconfirmedHardSkills(aggregated.hard);
-        setUnconfirmedSoftSkills(aggregated.soft);
         setMultiplePreviews([]);
         setMultiplePreviewIndex(0);
         setMultiplePreviewTailored(false);
@@ -1506,8 +1157,6 @@ export default function Home() {
           `Skipped ${res.failed} build(s). Failed companies: ${formatCompanySummary(res.failedCompanies) || companyName.trim()}. ${res.failures.slice(0, 3).map((failure) => `${failure.profileName}: ${failure.error}`).join(' | ')}${res.failures.length > 3 ? ' | ...' : ''}`
         );
       }
-      setUnconfirmedHardSkills(toUnconfirmedItems(res.unconfirmedHardSkills));
-      setUnconfirmedSoftSkills(toUnconfirmedItems(res.unconfirmedSoftSkills));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate resume');
     } finally {
@@ -1518,87 +1167,6 @@ export default function Home() {
   };
 
   const activeMultiplePreview = multiplePreviews[multiplePreviewIndex];
-
-  const unconfirmedPanel = (
-    <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-4">
-      <div className="text-sm font-medium text-gray-700">Unregistered Skills</div>
-      {unconfirmedHardSkills.length === 0 && unconfirmedSoftSkills.length === 0 && (
-        <div className="text-xs text-gray-500">No unregistered skills found.</div>
-      )}
-      {unconfirmedHardSkills.length > 0 && (
-        <div className="space-y-3">
-          <div className="text-xs font-semibold text-gray-600">Tech Skills</div>
-          <div className="grid grid-cols-2 gap-2">
-            {unconfirmedHardSkills.map((skill) => (
-              <div key={`uh-${skill.original}`} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={skill.value}
-                  onChange={(e) =>
-                    handleUnconfirmedSkillEdit('hard', skill.original, e.target.value)
-                  }
-                  disabled={isGenerating}
-                  className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => handleConfirmSkill('hard', skill)}
-                  disabled={isGenerating}
-                  className="px-2 py-1 text-xs bg-gray-800 text-white rounded-md hover:bg-gray-900 disabled:bg-gray-400"
-                >
-                  Add
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveUnconfirmedSkill('hard', skill)}
-                  disabled={isGenerating}
-                  className="px-2 py-1 text-xs border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 disabled:text-gray-400"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      {unconfirmedSoftSkills.length > 0 && (
-        <div className="space-y-3">
-          <div className="text-xs font-semibold text-gray-600">Soft Skills</div>
-          <div className="grid grid-cols-2 gap-2">
-            {unconfirmedSoftSkills.map((skill) => (
-              <div key={`us-${skill.original}`} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={skill.value}
-                  onChange={(e) =>
-                    handleUnconfirmedSkillEdit('soft', skill.original, e.target.value)
-                  }
-                  disabled={isGenerating}
-                  className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => handleConfirmSkill('soft', skill)}
-                  disabled={isGenerating}
-                  className="px-2 py-1 text-xs bg-gray-800 text-white rounded-md hover:bg-gray-900 disabled:bg-gray-400"
-                >
-                  Add
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveUnconfirmedSkill('soft', skill)}
-                  disabled={isGenerating}
-                  className="px-2 py-1 text-xs border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 disabled:text-gray-400"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
 
   if (isLoadingData) {
     return (
@@ -2166,10 +1734,6 @@ export default function Home() {
           </div>
         ))}
 
-        {builderMode === 'manual' && generateMode === 'multiple' && autoGenerate && unconfirmedPanel && (
-          <div className="mt-6">{unconfirmedPanel}</div>
-        )}
-
         {builderMode === 'manual' && generateMode === 'multiple' && !autoGenerate && multiplePreviews.length > 0 && activeMultiplePreview && (
           <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm">
             <div className="absolute inset-4 bg-white rounded-xl shadow-2xl flex flex-col">
@@ -2237,8 +1801,6 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="h-full overflow-y-auto border-l p-6 space-y-6">
-                  {unconfirmedPanel}
-
                   <div className="bg-gray-50 rounded-lg border border-gray-200 p-4">
                     <div className="text-sm font-medium text-gray-700 mb-2">Manual Edits (JSON)</div>
                     <textarea
@@ -2282,7 +1844,6 @@ export default function Home() {
             generationStep={generationStep}
             sidebar={
               <>
-                {unconfirmedPanel}
                 <div className="bg-gray-50 rounded-lg border border-gray-200 p-4">
                   <div className="text-sm font-medium text-gray-700 mb-2">Manual Edits (JSON)</div>
                   <textarea

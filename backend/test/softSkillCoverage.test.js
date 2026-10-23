@@ -97,22 +97,21 @@ test('both prompts ask for the work, in the copies that actually run', () => {
   assert.match(analyser, /behavioural requirements this posting makes/, 'the analyser still asks for soft skills');
   assert.match(analyser, /Target: 6-12 entries/);
   /*
-   * THE LIST IS NOW A PREFERENCE, NOT A GATE. Keeping it as the only permitted
-   * vocabulary made every posting's soft skills come from the same forty-two
-   * words, and two scans reported three and four missing. What stopped the
-   * recruiting copy getting through was never the list itself - it is the
-   * slogan rule, which is still here and no longer depends on it.
+   * NO HOUSE LIST. The forty-two-word vocabulary made every posting's soft
+   * skills come from the same words, and the operator asked for no fixed lists.
+   * What keeps recruiting copy out is the slogan rule, which is the analyser's
+   * alone now that no code filter backs it up.
    */
-  assert.match(analyser, /NAME THEM FROM THE LIST BELOW WHERE THE LIST HAS THE WORD/);
-  assert.match(analyser, /WHERE IT DOES NOT, USE THE POSTING'S OWN WORD/);
-  assert.match(analyser, /A SLOGAN IS STILL NOT A SKILL/);
+  assert.doesNotMatch(analyser, /THE LIST:/);
+  assert.match(analyser, /NAME EACH IN THE POSTING'S OWN WORD/);
+  assert.match(analyser, /A SLOGAN IS NOT A SKILL/);
 
   const tailor = running('tailor-resume');
-  // Soft skills are now shown by the work, not listed as traits. The prompt
-  // bans the bolted shapes explicitly.
+  // Soft skills are named once, in the last group of the skills block, and
+  // shown by the work in the bullets; the prompt bans the bolted shapes.
   assert.match(tailor, /SOFT SKILLS ARE SHOWN, NOT NAMED/);
   assert.match(tailor, /THE BANNED SHAPES/);
-  assert.match(tailor, /THERE IS NO SOFT SKILLS SECTION/);
+  assert.match(tailor, /SOFT SKILLS ARE ONE GROUP, THE LAST ONE IN THE SKILLS BLOCK/);
   // The summary names the role in the model's own words, and the headline is
   // built by the application - the candidate's own title plus the kind of role -
   // so the model is told to write its identity and add no discipline itself.

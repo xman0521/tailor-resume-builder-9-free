@@ -5,6 +5,7 @@ export type PromptFeatureKey =
   | 'analyze-job-description'
   | 'tailor-resume'
   | 'revise-resume-coverage'
+  | 'check-skills'
   | 'generate-cover-letter'
   | 'extract-template-from-pdf'
   | 'extract-profile-from-resume'

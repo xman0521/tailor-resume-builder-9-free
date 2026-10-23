@@ -140,8 +140,6 @@ export interface TailoredContent {
   skills: string[];
   hardSkills: string[];
   softSkills: string[];
-  unconfirmedSoftSkills: string[];
-  unconfirmedHardSkills: string[];
   // Optional fields from job analysis merged into tailored content
   requiredSkills?: string[];
   preferredSkills?: string[];

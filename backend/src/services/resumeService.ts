@@ -10,21 +10,11 @@ import {
   writeAnalysisCache,
 } from './ai/analysisCache';
 import { resolvePromptByExactId } from './promptService';
-import {
-  HARD_SKILL_CATEGORIES,
-  HardSkillCategory as LibraryHardSkillCategory,
-  readHardSkillPriorityMap,
-  readHardSkillRecords,
-  readSkills,
-} from '../database/skillsDatabase';
-import { moveCaseInsensitiveMatches, uniqueCaseInsensitive } from '../utils/array';
+import { uniqueCaseInsensitive } from '../utils/array';
 import { extractJSON } from '../utils/json';
-import { removeDuplicateSubstrings, ensureMinTechSkills } from './utils/resumeBuilder';
 import { collectJobKeywords, findUncoveredKeywords } from './utils/keywordCoverage';
-import { conceptToolOptions } from './utils/hardSkillSelection';
 import { normalizeDashes } from './utils/dashes';
 import { headlineWithTargetRole, shortRoleTitle } from './utils/roleTitle';
-import { bannedTermsIn, plainLanguage } from './utils/plainLanguage';
 import {
   containsTerm,
   measurePlacement,
@@ -37,37 +27,20 @@ import {
   MAX_SKILL_BLOCK_SIZE,
   MAX_SKILL_GROUPS,
   bulletsNamingATool,
-  findAnachronisms,
   findBrokenBullets,
   findGarbledMetrics,
-  recentRolesWithoutScope,
-  rolesWithoutScale,
   tidySkillGroups,
-  withoutValuesPhrases,
-  bulletsWithBoltedSoftSkills,
-  bulletsWithoutAnOutcome,
   repeatedPhrases,
+  isSoftSkillsGroup,
+  namesWithInnerCapitals,
+  parseSkillEntry,
+  belongsInBlock,
+  SOFT_SKILLS_GROUP,
 } from './utils/resumeQuality';
-import {
-  partitionSkills,
-  validateHardSkill,
-  validateSoftSkill,
-  REJECTION_DETAIL,
-  type SkillVerdict,
-} from './utils/skillValidation';
-import {
-  extractConceptKeywords,
-  isConceptSkill,
-  isRedundantWithLibraryTerm,
-  looksLikeUnlistedHardSkill,
-  selectHardSkills,
-} from './utils/hardSkillSelection';
-import { supplimentSoftSkills } from './utils/config';
 import {
   DEFAULT_ANALYZE_JOB_PROMPT_ID,
   DEFAULT_COVER_LETTER_PROMPT_ID,
   DEFAULT_RESUME_PROMPT_ID,
-  getProfileHardSkillOrdering,
 } from './profileService';
 
 /**
@@ -80,68 +53,11 @@ import {
  * index.ts.
  */
 
-const technicalSkills = readSkills('hard');
-const softSkills = readSkills('soft');
-let hardSkillPriorityMap = readHardSkillPriorityMap();
-let hardSkillRecords = readHardSkillRecords();
 const resumeBuildTiming = new WeakMap<JobAnalysis, { firstCallEndedAt: bigint }>();
 
 function formatDuration(start: bigint, end: bigint): string {
   return `${(Number(end - start) / 1_000_000_000).toFixed(2)}s`;
 }
-
-export function refreshSkillCaches(): void {
-  const nextTech = readSkills('hard');
-  const nextSoft = readSkills('soft');
-  const nextHardSkillPriorityMap = readHardSkillPriorityMap();
-  const nextHardSkillRecords = readHardSkillRecords();
-
-  technicalSkills.length = 0;
-  technicalSkills.push(...nextTech);
-
-  softSkills.length = 0;
-  softSkills.push(...nextSoft);
-
-  hardSkillPriorityMap = nextHardSkillPriorityMap;
-  hardSkillRecords = nextHardSkillRecords;
-}
-
-// Lazy initialization to ensure env vars are loaded first
-
-function extractTechSkills(text: string): string[] {
-  return technicalSkills.filter((item: string) => {
-    const escaped = item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-    const regex =
-      item === "Go"
-        ? new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`) // case-sensitive
-        : new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, "i"); // case-insensitive
-
-    return regex.test(text);
-  });
-}
-
-function extractSoftSkills(text: string): string[] {
-  return softSkills.filter((item: string) => {
-    const escaped = item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, "i");
-    return regex.test(text);
-  });
-}
-
-type SkillReconciliationOptions = {
-  extractedSkills: string[];
-  modelSkills: string[];
-  referenceSkills: string[];
-  supplementSkills: string[];
-  minimumCount: number;
-  finalizeSkills?: (skills: string[]) => string[];
-};
-
-type SkillReconciliationResult = {
-  confirmedSkills: string[];
-  unconfirmedSkills: string[];
-};
 
 function getTailoringSourceText(jobAnalysis?: JobAnalysis): string {
   const directSource = jobAnalysis?.sourceJobDescription?.trim();
@@ -168,52 +84,6 @@ function getTailoringSourceText(jobAnalysis?: JobAnalysis): string {
     .join('\n');
 }
 
-function reconcileSkillBuckets({
-  extractedSkills,
-  modelSkills,
-  referenceSkills,
-  supplementSkills,
-  minimumCount,
-  finalizeSkills,
-}: SkillReconciliationOptions): SkillReconciliationResult {
-  const confirmedSkills = [...extractedSkills];
-  const unconfirmedSkills = [...modelSkills];
-
-  moveCaseInsensitiveMatches(referenceSkills, unconfirmedSkills, confirmedSkills);
-
-  const uniqueConfirmedSkills = uniqueCaseInsensitive(ensureMinTechSkills(
-    removeDuplicateSubstrings(uniqueCaseInsensitive(confirmedSkills)),
-    supplementSkills,
-    minimumCount
-  ));
-
-  let finalized = finalizeSkills ? finalizeSkills(uniqueConfirmedSkills) : uniqueConfirmedSkills;
-
-  /**
-   * The fill above counts RAW names, and `finalizeSkills` then condenses and
-   * deduplicates them - so a job that asked four different ways for the same
-   * trait ("excellent communication skills", "communication and collaboration",
-   * "communicate clearly with stakeholders") could be filled to the minimum and
-   * then collapse back under it, leaving a section with two entries in it.
-   *
-   * Topping up against the finished list instead closes that: a supplement is
-   * kept only if it survives finalization as a NEW entry, so one that condenses
-   * onto something already there is skipped rather than silently lost.
-   */
-  if (finalizeSkills && finalized.length < minimumCount) {
-    for (const candidate of supplementSkills) {
-      if (finalized.length >= minimumCount) break;
-      const next = finalizeSkills([...finalized, candidate]);
-      if (next.length > finalized.length) finalized = next;
-    }
-  }
-
-  return {
-    confirmedSkills: finalized,
-    unconfirmedSkills: uniqueCaseInsensitive(unconfirmedSkills),
-  };
-}
-
 function capitalizeFirstCharacter(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return trimmed;
@@ -221,411 +91,6 @@ function capitalizeFirstCharacter(value: string): string {
 }
 
 const MAX_ROLE_BRIEF_LENGTH = 900;
-const MIN_EXPERIENCE_SKILLS = 10;
-const MAX_SOFT_SKILLS = 10;
-
-/**
- * And the floor, which is the half that was missing.
- *
- * ASKED FOR: "I need around 8 to 10 soft skills in soft skill section, at least
- * 8." The ceiling has been 10 throughout; nothing ever said how few was too
- * few, and for several rounds the answer was none at all - the list was built,
- * validated, capped, and then thrown away one line later.
- *
- * Reported rather than padded. The entries come from the posting and the
- * library, and inventing two more to reach eight would put words on the page
- * that nothing asked for.
- */
-const MIN_SOFT_SKILLS = 8;
-const SOFT_SKILL_SIGNALS = [
-  'accountability',
-  'communication',
-  'collaboration',
-  'mindset',
-  'mentality',
-  'ownership',
-  'reliability',
-  'resilient',
-  'supportive',
-  'eager to learn',
-  'adaptability',
-  'autonomy',
-  'independent',
-  'self-directed',
-  'adapt',
-  'ambiguity',
-  'passion',
-  'attention to detail',
-  'team player',
-  'cross-functional',
-  'stakeholder',
-  'leadership',
-  'problem-solving',
-  'product-minded',
-  'driving clarity',
-  'transparency',
-];
-const ATS_SOFT_SKILL_RULES: Array<{ canonical: string; patterns: string[] }> = [
-  { canonical: 'Reliability', patterns: ['reliability', 'reliable'] },
-  { canonical: 'Resilient', patterns: ['resilient', 'resilience'] },
-  { canonical: 'Supportive', patterns: ['supportive', 'support'] },
-  { canonical: 'Communication', patterns: ['communication', 'communicate'] },
-  { canonical: 'Collaboration skills', patterns: ['collaboration', 'collaborative'] },
-  { canonical: 'Cross-functional team', patterns: ['cross-functional', 'cross functional'] },
-  { canonical: 'Strong problem-solving skills', patterns: ['problem-solving', 'problem solving'] },
-  { canonical: 'Eager to learn', patterns: ['eager to learn', 'lifelong learning'] },
-  { canonical: 'Accountability', patterns: ['accountability', 'accountable'] },
-];
-type HardSkillCategory =
-  | 'backend'
-  | 'frontend'
-  | 'databases'
-  | 'cloud-devops'
-  | 'testing-automation'
-  | 'ai-ml'
-  | 'tools-methodologies'
-  | 'other';
-type HardSkillDefinition = {
-  display: string;
-  category: HardSkillCategory;
-  aliases: string[];
-  priority: number;
-};
-
-type HardSkillSeed = {
-  display: string;
-  aliases?: string[];
-};
-
-const HARD_SKILL_CATEGORY_SEEDS: Array<{
-  category: Exclude<HardSkillCategory, 'other'>;
-  skills: HardSkillSeed[];
-}> = [
-  {
-    category: 'backend',
-    skills: [
-      { display: 'Python', aliases: ['python'] },
-      { display: 'FastAPI', aliases: ['fastapi', 'fast api'] },
-      { display: 'Django', aliases: ['django'] },
-      { display: 'Django REST Framework', aliases: ['django rest framework', 'drf'] },
-      { display: 'Flask', aliases: ['flask'] },
-      { display: 'Pydantic', aliases: ['pydantic'] },
-      { display: 'Node.js', aliases: ['node.js', 'nodejs', 'node'] },
-      { display: 'Express.js', aliases: ['express.js', 'expressjs', 'express'] },
-      { display: 'NestJS', aliases: ['nestjs', 'nest.js', 'nest'] },
-      { display: 'Fastify', aliases: ['fastify'] },
-      { display: 'Koa', aliases: ['koa'] },
-      { display: 'Ruby on Rails', aliases: ['ruby on rails', 'rails'] },
-      { display: 'Go', aliases: ['go', 'golang'] },
-      { display: 'Gin', aliases: ['gin'] },
-      { display: 'Echo', aliases: ['echo'] },
-      { display: 'Java', aliases: ['java'] },
-      { display: 'Spring Boot', aliases: ['spring boot', 'springboot'] },
-      { display: 'Spring Framework', aliases: ['spring framework', 'spring'] },
-      { display: 'C#', aliases: ['c#'] },
-      { display: '.NET Core', aliases: ['.net core', 'dotnet core'] },
-      { display: 'PHP', aliases: ['php'] },
-      { display: 'Laravel', aliases: ['laravel'] },
-      { display: 'Symfony', aliases: ['symfony'] },
-      { display: 'Microservices Architecture', aliases: ['microservices architecture', 'microservices', 'microservice architecture'] },
-      { display: 'Event-Driven Architecture', aliases: ['event-driven architecture', 'event driven architecture'] },
-      { display: 'Domain-Driven Design (DDD)', aliases: ['domain-driven design', 'domain driven design', 'ddd'] },
-      { display: 'gRPC', aliases: ['grpc'] },
-      { display: 'WebSockets', aliases: ['websockets', 'websocket'] },
-      { display: 'Server-Sent Events', aliases: ['server-sent events', 'server sent events', 'sse'] },
-      { display: 'Celery', aliases: ['celery'] },
-      { display: 'RabbitMQ', aliases: ['rabbitmq'] },
-      { display: 'Apache Kafka', aliases: ['apache kafka', 'kafka'] },
-      { display: 'RESTful APIs', aliases: ['restful apis', 'restful api', 'rest apis', 'rest api'] },
-      { display: 'GraphQL', aliases: ['graphql'] },
-      { display: 'Asynchronous Processing', aliases: ['asynchronous processing', 'async processing'] },
-      { display: 'API Gateway Design', aliases: ['api gateway design', 'api gateway'] },
-      { display: 'Serverless Functions', aliases: ['serverless functions', 'serverless function'] },
-      { display: 'Background Jobs', aliases: ['background jobs', 'background job'] },
-      { display: 'Message Queues', aliases: ['message queues', 'message queue'] },
-    ],
-  },
-  {
-    category: 'frontend',
-    skills: [
-      { display: 'React.js', aliases: ['react.js', 'reactjs', 'react'] },
-      { display: 'React Hooks', aliases: ['react hooks', 'react hook'] },
-      { display: 'Angular', aliases: ['angular'] },
-      { display: 'Vue.js', aliases: ['vue.js', 'vuejs', 'vue'] },
-      { display: 'Next.js', aliases: ['next.js', 'nextjs', 'next'] },
-      { display: 'Nuxt.js', aliases: ['nuxt.js', 'nuxtjs', 'nuxt'] },
-      { display: 'TypeScript', aliases: ['typescript', 'ts'] },
-      { display: 'JavaScript', aliases: ['javascript', 'js', 'javascript (es6+)', 'es6+'] },
-      { display: 'Redux', aliases: ['redux'] },
-      { display: 'Redux Toolkit', aliases: ['redux toolkit'] },
-      { display: 'Zustand', aliases: ['zustand'] },
-      { display: 'MobX', aliases: ['mobx'] },
-      { display: 'RxJS', aliases: ['rxjs'] },
-      { display: 'HTML5', aliases: ['html5', 'html'] },
-      { display: 'CSS3', aliases: ['css3', 'css'] },
-      { display: 'SCSS', aliases: ['scss'] },
-      { display: 'SASS', aliases: ['sass'] },
-      { display: 'TailwindCSS', aliases: ['tailwindcss', 'tailwind css', 'tailwind'] },
-      { display: 'Bootstrap', aliases: ['bootstrap'] },
-      { display: 'Material UI (MUI)', aliases: ['material ui', 'material-ui', 'mui'] },
-      { display: 'Ant Design', aliases: ['ant design', 'antd'] },
-      { display: 'Chakra UI', aliases: ['chakra ui', 'chakra-ui'] },
-      { display: 'Styled Components', aliases: ['styled components', 'styled-components'] },
-      { display: 'Emotion', aliases: ['emotion'] },
-      { display: 'Chart.js', aliases: ['chart.js', 'chartjs'] },
-      { display: 'D3.js', aliases: ['d3.js', 'd3js', 'd3'] },
-      { display: 'Three.js', aliases: ['three.js', 'threejs'] },
-      { display: 'Responsive Design', aliases: ['responsive design'] },
-      { display: 'Mobile-First Design', aliases: ['mobile-first design', 'mobile first design'] },
-      { display: 'Progressive Web Apps (PWA)', aliases: ['progressive web apps', 'progressive web app', 'pwa'] },
-      { display: 'Webpack', aliases: ['webpack'] },
-      { display: 'Vite', aliases: ['vite'] },
-      { display: 'Rollup', aliases: ['rollup'] },
-      { display: 'Babel', aliases: ['babel'] },
-      { display: 'ESLint', aliases: ['eslint', 'es lint'] },
-      { display: 'Prettier', aliases: ['prettier'] },
-    ],
-  },
-  {
-    category: 'databases',
-    skills: [
-      { display: 'PostgreSQL', aliases: ['postgresql', 'postgres', 'psql'] },
-      { display: 'MySQL', aliases: ['mysql'] },
-      { display: 'SQL Server', aliases: ['sql server', 'mssql'] },
-      { display: 'Oracle Database', aliases: ['oracle database', 'oracle'] },
-      { display: 'MongoDB', aliases: ['mongodb', 'mongo'] },
-      { display: 'DynamoDB', aliases: ['dynamodb'] },
-      { display: 'Cassandra', aliases: ['cassandra'] },
-      { display: 'CouchDB', aliases: ['couchdb'] },
-      { display: 'Redis', aliases: ['redis'] },
-      { display: 'Memcached', aliases: ['memcached'] },
-      { display: 'Firebase Firestore', aliases: ['firebase firestore', 'firestore'] },
-      { display: 'Elasticsearch', aliases: ['elasticsearch', 'elastic search'] },
-      { display: 'Apache Solr', aliases: ['apache solr', 'solr'] },
-      { display: 'InfluxDB', aliases: ['influxdb'] },
-      { display: 'TimescaleDB', aliases: ['timescaledb'] },
-      { display: 'Neo4j', aliases: ['neo4j'] },
-      { display: 'ETL Pipelines', aliases: ['etl pipelines', 'etl pipeline', 'etl'] },
-      { display: 'Data Warehousing', aliases: ['data warehousing', 'data warehouse'] },
-      { display: 'Data Lakes', aliases: ['data lakes', 'data lake'] },
-      { display: 'SQLAlchemy', aliases: ['sqlalchemy'] },
-      { display: 'Prisma', aliases: ['prisma'] },
-      { display: 'TypeORM', aliases: ['typeorm'] },
-      { display: 'Sequelize', aliases: ['sequelize'] },
-      { display: 'Mongoose', aliases: ['mongoose'] },
-      { display: 'ActiveRecord', aliases: ['activerecord', 'active record'] },
-      { display: 'Query Optimization', aliases: ['query optimization', 'query optimisation'] },
-      { display: 'Database Indexing', aliases: ['database indexing', 'indexing'] },
-      { display: 'Sharding', aliases: ['sharding'] },
-      { display: 'Replication', aliases: ['replication'] },
-      { display: 'Data Modeling', aliases: ['data modeling', 'data modelling'] },
-      { display: 'Data Caching', aliases: ['data caching'] },
-      { display: 'Database Migration', aliases: ['database migration', 'database migrations'] },
-      { display: 'ACID Transactions', aliases: ['acid transactions', 'acid transaction', 'acid'] },
-    ],
-  },
-  {
-    category: 'cloud-devops',
-    skills: [
-      { display: 'AWS', aliases: ['aws', 'amazon web services'] },
-      { display: 'AWS Lambda', aliases: ['aws lambda', 'lambda'] },
-      { display: 'Amazon EKS', aliases: ['amazon eks', 'eks'] },
-      { display: 'Amazon ECS', aliases: ['amazon ecs', 'ecs'] },
-      { display: 'AWS Fargate', aliases: ['aws fargate', 'fargate'] },
-      { display: 'Amazon EC2', aliases: ['amazon ec2', 'ec2'] },
-      { display: 'Amazon S3', aliases: ['amazon s3', 's3'] },
-      { display: 'Amazon CloudFront', aliases: ['amazon cloudfront', 'cloudfront'] },
-      { display: 'Amazon RDS', aliases: ['amazon rds', 'rds'] },
-      { display: 'Amazon API Gateway', aliases: ['amazon api gateway', 'api gateway'] },
-      { display: 'CloudWatch', aliases: ['cloudwatch'] },
-      { display: 'SageMaker', aliases: ['sagemaker'] },
-      { display: 'Step Functions', aliases: ['step functions', 'aws step functions'] },
-      { display: 'SNS', aliases: ['sns', 'amazon sns'] },
-      { display: 'SQS', aliases: ['sqs', 'amazon sqs'] },
-      { display: 'IAM', aliases: ['iam', 'aws iam'] },
-      { display: 'VPC', aliases: ['vpc', 'amazon vpc'] },
-      { display: 'Route 53', aliases: ['route 53', 'route53'] },
-      { display: 'Google Cloud Platform (GCP)', aliases: ['google cloud platform', 'gcp', 'google cloud'] },
-      { display: 'Microsoft Azure', aliases: ['microsoft azure', 'azure'] },
-      { display: 'Docker', aliases: ['docker'] },
-      { display: 'Docker Compose', aliases: ['docker compose'] },
-      { display: 'Kubernetes', aliases: ['kubernetes', 'k8s', 'kube'] },
-      { display: 'Helm', aliases: ['helm'] },
-      { display: 'OpenShift', aliases: ['openshift'] },
-      { display: 'Terraform', aliases: ['terraform'] },
-      { display: 'CloudFormation', aliases: ['cloudformation', 'aws cloudformation'] },
-      { display: 'Ansible', aliases: ['ansible'] },
-      { display: 'Puppet', aliases: ['puppet'] },
-      { display: 'Chef', aliases: ['chef'] },
-      { display: 'GitHub Actions', aliases: ['github actions'] },
-      { display: 'Jenkins', aliases: ['jenkins'] },
-      { display: 'GitLab CI/CD', aliases: ['gitlab ci/cd', 'gitlab ci'] },
-      { display: 'CircleCI', aliases: ['circleci', 'circle ci'] },
-      { display: 'Travis CI', aliases: ['travis ci'] },
-      { display: 'ArgoCD', aliases: ['argocd', 'argo cd'] },
-      { display: 'Flux', aliases: ['flux'] },
-      { display: 'CI/CD Pipelines', aliases: ['ci/cd pipelines', 'ci/cd pipeline', 'cicd pipelines'] },
-      { display: 'Infrastructure as Code (IaC)', aliases: ['infrastructure as code', 'iac'] },
-      { display: 'Grafana', aliases: ['grafana'] },
-      { display: 'Prometheus', aliases: ['prometheus'] },
-      { display: 'Datadog', aliases: ['datadog'] },
-      { display: 'New Relic', aliases: ['new relic'] },
-      { display: 'ELK Stack', aliases: ['elk stack', 'elk'] },
-      { display: 'Istio', aliases: ['istio'] },
-      { display: 'Linkerd', aliases: ['linkerd'] },
-      { display: 'Load Balancing', aliases: ['load balancing', 'load balancer'] },
-      { display: 'Auto Scaling', aliases: ['auto scaling', 'auto-scaling'] },
-    ],
-  },
-  {
-    category: 'testing-automation',
-    skills: [
-      { display: 'PyTest', aliases: ['pytest', 'py test'] },
-      { display: 'Jest', aliases: ['jest'] },
-      { display: 'JUnit', aliases: ['junit'] },
-      { display: 'TestNG', aliases: ['testng'] },
-      { display: 'Mocha', aliases: ['mocha'] },
-      { display: 'Chai', aliases: ['chai'] },
-      { display: 'Jasmine', aliases: ['jasmine'] },
-      { display: 'Cypress', aliases: ['cypress'] },
-      { display: 'Playwright', aliases: ['playwright'] },
-      { display: 'Selenium', aliases: ['selenium'] },
-      { display: 'Puppeteer', aliases: ['puppeteer'] },
-      { display: 'WebDriverIO', aliases: ['webdriverio', 'webdriver io'] },
-      { display: 'Postman', aliases: ['postman'] },
-      { display: 'Insomnia', aliases: ['insomnia'] },
-      { display: 'REST Assured', aliases: ['rest assured'] },
-      { display: 'Locust', aliases: ['locust'] },
-      { display: 'k6', aliases: ['k6'] },
-      { display: 'JMeter', aliases: ['jmeter'] },
-      { display: 'Artillery', aliases: ['artillery'] },
-      { display: 'Unit Testing', aliases: ['unit testing'] },
-      { display: 'Integration Testing', aliases: ['integration testing'] },
-      { display: 'End-to-End Testing (E2E)', aliases: ['end-to-end testing', 'end to end testing', 'e2e'] },
-      { display: 'API Testing', aliases: ['api testing'] },
-      { display: 'Test-Driven Development (TDD)', aliases: ['test-driven development', 'test driven development', 'tdd'] },
-      { display: 'Behavior-Driven Development (BDD)', aliases: ['behavior-driven development', 'behaviour-driven development', 'bdd'] },
-      { display: 'Performance Testing', aliases: ['performance testing'] },
-      { display: 'Security Testing', aliases: ['security testing'] },
-      { display: 'Penetration Testing', aliases: ['penetration testing', 'pen testing', 'pentesting'] },
-      { display: 'Code Coverage', aliases: ['code coverage'] },
-      { display: 'SonarQube', aliases: ['sonarqube', 'sonar qube'] },
-      { display: 'Quality Assurance', aliases: ['quality assurance', 'qa'] },
-      { display: 'Test Automation Frameworks', aliases: ['test automation frameworks', 'test automation framework'] },
-    ],
-  },
-  {
-    category: 'ai-ml',
-    skills: [
-      { display: 'OpenAI GPT APIs', aliases: ['openai gpt apis', 'openai api', 'gpt api', 'gpt apis'] },
-      { display: 'ChatGPT', aliases: ['chatgpt'] },
-      { display: 'Claude API', aliases: ['claude api', 'anthropic api'] },
-      { display: 'LangChain', aliases: ['langchain'] },
-      { display: 'LlamaIndex', aliases: ['llamaindex', 'llama index'] },
-      { display: 'Hugging Face Transformers', aliases: ['hugging face transformers', 'transformers', 'huggingface transformers'] },
-      { display: 'TensorFlow', aliases: ['tensorflow', 'tensor flow'] },
-      { display: 'PyTorch', aliases: ['pytorch', 'py torch'] },
-      { display: 'Keras', aliases: ['keras'] },
-      { display: 'Scikit-learn', aliases: ['scikit-learn', 'sklearn'] },
-      { display: 'XGBoost', aliases: ['xgboost'] },
-      { display: 'LightGBM', aliases: ['lightgbm'] },
-      { display: 'SpaCy', aliases: ['spacy'] },
-      { display: 'NLTK', aliases: ['nltk'] },
-      { display: 'Pandas', aliases: ['pandas'] },
-      { display: 'NumPy', aliases: ['numpy'] },
-      { display: 'Matplotlib', aliases: ['matplotlib'] },
-      { display: 'Seaborn', aliases: ['seaborn'] },
-      { display: 'Jupyter Notebooks', aliases: ['jupyter notebooks', 'jupyter notebook', 'jupyter'] },
-      { display: 'FastAPI AI Agents', aliases: ['fastapi ai agents', 'fastapi ai agent'] },
-      { display: 'Prompt Engineering', aliases: ['prompt engineering'] },
-      { display: 'Model Fine-tuning', aliases: ['model fine-tuning', 'model fine tuning', 'fine-tuning', 'fine tuning'] },
-      { display: 'RAG (Retrieval-Augmented Generation)', aliases: ['rag', 'retrieval-augmented generation', 'retrieval augmented generation'] },
-      { display: 'Pinecone', aliases: ['pinecone'] },
-      { display: 'Chroma', aliases: ['chroma'] },
-      { display: 'Weaviate', aliases: ['weaviate'] },
-      { display: 'MLOps', aliases: ['mlops'] },
-      { display: 'Model Deployment', aliases: ['model deployment'] },
-      { display: 'Computer Vision', aliases: ['computer vision'] },
-      { display: 'Natural Language Processing (NLP)', aliases: ['natural language processing', 'nlp'] },
-      { display: 'Deep Learning', aliases: ['deep learning'] },
-      { display: 'Machine Learning', aliases: ['machine learning', 'ml'] },
-    ],
-  },
-  {
-    category: 'tools-methodologies',
-    skills: [
-      { display: 'Git', aliases: ['git'] },
-      { display: 'GitHub', aliases: ['github'] },
-      { display: 'GitLab', aliases: ['gitlab'] },
-      { display: 'Bitbucket', aliases: ['bitbucket'] },
-      { display: 'Jira', aliases: ['jira'] },
-      { display: 'Asana', aliases: ['asana'] },
-      { display: 'Trello', aliases: ['trello'] },
-      { display: 'Linear', aliases: ['linear'] },
-      { display: 'Monday.com', aliases: ['monday.com', 'monday'] },
-      { display: 'Confluence', aliases: ['confluence'] },
-      { display: 'Notion', aliases: ['notion'] },
-      { display: 'Swagger/OpenAPI', aliases: ['swagger/openapi', 'swagger', 'openapi'] },
-      { display: 'Figma', aliases: ['figma'] },
-      { display: 'Sketch', aliases: ['sketch'] },
-      { display: 'Adobe XD', aliases: ['adobe xd', 'xd'] },
-      { display: 'VSCode', aliases: ['vscode', 'vs code'] },
-      { display: 'PyCharm', aliases: ['pycharm'] },
-      { display: 'IntelliJ IDEA', aliases: ['intellij idea', 'intellij'] },
-      { display: 'WebStorm', aliases: ['webstorm'] },
-      { display: 'Sublime Text', aliases: ['sublime text', 'sublime'] },
-      { display: 'Vim', aliases: ['vim'] },
-      { display: 'Agile', aliases: ['agile'] },
-      { display: 'Scrum', aliases: ['scrum'] },
-      { display: 'Kanban', aliases: ['kanban'] },
-      { display: 'DevOps', aliases: ['devops'] },
-      { display: 'Microservices', aliases: ['microservices'] },
-      { display: 'Clean Architecture', aliases: ['clean architecture'] },
-      { display: 'SOLID Principles', aliases: ['solid principles', 'solid'] },
-      { display: 'Design Patterns', aliases: ['design patterns', 'design pattern'] },
-      { display: 'Code Review', aliases: ['code review', 'code reviews'] },
-      { display: 'Pair Programming', aliases: ['pair programming'] },
-      { display: 'npm', aliases: ['npm'] },
-      { display: 'yarn', aliases: ['yarn'] },
-      { display: 'pip', aliases: ['pip'] },
-      { display: 'poetry', aliases: ['poetry'] },
-      { display: 'Maven', aliases: ['maven'] },
-      { display: 'Gradle', aliases: ['gradle'] },
-    ],
-  },
-];
-
-const HARD_SKILL_DEFINITIONS: HardSkillDefinition[] = HARD_SKILL_CATEGORY_SEEDS.flatMap(
-  ({ category, skills }) =>
-    skills.map((skill, index) => ({
-      display: skill.display,
-      category,
-      aliases: uniqueCaseInsensitive([skill.display, ...(skill.aliases ?? [])]).map(normalizeHardSkillAlias),
-      priority: index,
-    }))
-);
-
-const HARD_SKILL_ALIAS_MAP = new Map<string, { display: string; category: HardSkillCategory; priority: number }>();
-for (const definition of HARD_SKILL_DEFINITIONS) {
-  for (const alias of definition.aliases) {
-    HARD_SKILL_ALIAS_MAP.set(alias, {
-      display: definition.display,
-      category: definition.category,
-      priority: definition.priority,
-    });
-  }
-}
-
-const HARD_SKILL_CATEGORY_WEIGHT: Record<HardSkillCategory, number> = {
-  backend: 0,
-  frontend: 1,
-  databases: 2,
-  'cloud-devops': 3,
-  'testing-automation': 4,
-  'ai-ml': 5,
-  'tools-methodologies': 6,
-  other: 7,
-};
 /**
  * Appended to the tailor-resume turn.
  *
@@ -683,6 +148,8 @@ type CoverageGap = {
    */
   inBlockOnly: string[];
   figures: number;
+  /** Sentences in the summary as it will print. */
+  summarySentences: number;
   short: boolean;
   reason: string;
 };
@@ -718,12 +185,14 @@ const SOFT_SKILL_MISSING_FLOOR = 2;
 
 function measureCoverageGap(
   content: TailoredContent,
-  jobAnalysis?: JobAnalysis
+  jobAnalysis?: JobAnalysis,
+  movedConcepts: string[] = []
 ): CoverageGap {
   const prose = renderedProse(content);
   const wanted = normalizeSkillsList([
     ...getProseChecklist(jobAnalysis),
     ...getSoftSkills(jobAnalysis),
+    ...movedConcepts,
   ]);
 
   /*
@@ -755,7 +224,7 @@ function measureCoverageGap(
     (term) => !containsTerm(prose, term) && containsTerm(block, term)
   );
   // Bullets only, matching the floor's own wording: "five measurable results in
-  // bullet points". The summary is 50 words and contributes at most one.
+  // bullet points". The summary contributes at most one.
   const figures = countFigures({ experience: content.experience });
 
   /*
@@ -771,14 +240,17 @@ function measureCoverageGap(
 
   // The soft skills among them, counted apart: with no group in the skills
   // block, a bullet is the only place they can appear.
-  const softWanted = new Set(
-    withoutValuesPhrases(normalizeSkillsList(getSoftSkills(jobAnalysis))).terms.map((term) => term.toLowerCase())
-  );
+  const softWanted = new Set(getSoftSkills(jobAnalysis).map((term) => term.toLowerCase()));
   const missingSoft = missingTerms.filter((term) => softWanted.has(term.toLowerCase()));
+  const moved = new Set(movedConcepts.map((term) => term.toLowerCase()));
+  const missingMoved = missingTerms.filter((term) => moved.has(term.toLowerCase()));
 
   const reasons: string[] = [];
   if (missingImportant.length > 0) {
     reasons.push(`${missingImportant.length} of the posting's leading terms missing`);
+  }
+  if (missingMoved.length > 0) {
+    reasons.push(`${missingMoved.length} concept(s) taken out of the skills block and on no line of the page`);
   }
   if (missingSoft.length >= SOFT_SKILL_MISSING_FLOOR) {
     reasons.push(`${missingSoft.length} soft skill(s) missing, which now appear nowhere else`);
@@ -789,6 +261,9 @@ function measureCoverageGap(
   if (figures < FIGURE_FLOOR) {
     reasons.push(`${figures} figure(s) against a floor of ${FIGURE_FLOOR}`);
   }
+  // Counted, not a reason for a call by itself: a revision made for another
+  // reason is told to fix a one-sentence summary while it is there.
+  const summaryCount = summarySentences(content.summary ?? '').length;
 
   return {
     missingTerms,
@@ -796,6 +271,7 @@ function measureCoverageGap(
     missingSoft,
     inBlockOnly,
     figures,
+    summarySentences: summaryCount,
     short: reasons.length > 0,
     reason: reasons.join(', '),
   };
@@ -867,11 +343,18 @@ function revisionPromptValues(content: TailoredContent, gap: CoverageGap): Recor
       + `it on - a sentence whose last words are a keyword tells a reader exactly how the page was made.`
     : 'The draft carries the soft skills this posting asked for. Do not add more.';
 
+  const summaryNote = gap.summarySentences > 0 && gap.summarySentences < MIN_SUMMARY_SENTENCES
+    ? `THE SUMMARY IS ONE SENTENCE, and it must be two or three. Return "summary" rewritten as `
+      + `two or three short, plain sentences: split it where it changes subject, keep the candidate's `
+      + `years and every term it already carries, and add no new claim.`
+    : `The summary is two or three sentences. If you rewrite it, it stays two or three - never one.`;
+
   return {
     draftJson: promptJson(draft),
     missingTermsJson: promptJson(gap.missingTerms),
     figuresNote,
     softSkillsNote,
+    summaryNote,
   };
 }
 
@@ -959,16 +442,274 @@ function coverageRevisionFailureIsFatal(env: NodeJS.ProcessEnv = process.env): b
  * `locked` and `binaryMissing` still say "do not try again", and a timeout
  * still says "do".
  */
-function asRevisionFailure(error: unknown): unknown {
+function asRevisionFailure(error: unknown, stage = 'coverage revision'): unknown {
   if (!isAIProviderError(error)) return error;
   return new AIProviderError({
     provider: error.provider,
     kind: error.kind,
-    detail: `coverage revision: ${error.detail ?? error.message}`,
+    detail: `${stage}: ${error.detail ?? error.message}`,
     adminAction: error.adminAction,
     retryAfterSeconds: error.retryAfterSeconds,
     cause: error,
   });
+}
+
+/** The skills check: turns concepts in the block into tools, before the coverage check. */
+const SKILL_CHECK_PROMPT_ID = 'check-skills';
+/** An answer with fewer tools than this is treated as broken, and the draft's block stands. */
+const MIN_CHECKED_SKILLS = 10;
+
+function skillCheckEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !env.RESUME_SKILL_CHECK_OFF;
+}
+
+type SkillGroupNames = Array<{ category: string; skills: string[] }>;
+
+function skillCheckPromptValues(
+  technical: SkillGroupNames,
+  draft: Record<string, unknown>,
+  jobAnalysis: JobAnalysis
+): Record<string, string> {
+  const roles = (Array.isArray(draft.experience) ? draft.experience : []).map((role) => {
+    const r = (role ?? {}) as Record<string, unknown>;
+    return {
+      title: r.title ?? '',
+      company: r.company ?? '',
+      startDate: r.startDate ?? '',
+      endDate: r.endDate ?? '',
+      achievements: Array.isArray(r.achievements) ? r.achievements : [],
+    };
+  });
+  return {
+    skillGroupsJson: promptJson(technical),
+    rolesJson: promptJson(roles),
+    postingToolsJson: promptJson(getJobNamedHardSkills(jobAnalysis)),
+  };
+}
+
+/** Exported for the test that checks how an answer is applied to the block. */
+export function applySkillCheckForTests(
+  technical: SkillGroupNames,
+  answer: unknown,
+  postingTools: string[]
+): { groups: SkillGroupNames; concepts: string[]; keepCase: string[] } | null {
+  return applySkillCheck(technical, answer, postingTools);
+}
+
+/** Exported for the test that renders the prompt with the values the run uses. */
+export function buildSkillCheckPromptValuesForTests(
+  technical: SkillGroupNames,
+  draft: Record<string, unknown>,
+  jobAnalysis: JobAnalysis
+): Record<string, string> {
+  return skillCheckPromptValues(technical, draft, jobAnalysis);
+}
+
+/**
+ * Applies the check's answer to the block: each concept is replaced in place by
+ * its tools, tools are renamed or removed as asked, and additions join the
+ * heading they name. A name the posting gives is never removed, renamed to
+ * another name, or treated as a concept.
+ * Returns null when the answer is unusable, so the draft's block stands.
+ */
+function applySkillCheck(
+  technical: SkillGroupNames,
+  answer: unknown,
+  postingTools: string[]
+): { groups: SkillGroupNames; concepts: string[]; keepCase: string[] } | null {
+  if (!answer || typeof answer !== 'object') return null;
+  const record = answer as { concepts?: unknown; rename?: unknown; remove?: unknown; additions?: unknown };
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+  const text = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+  const key = (value: string) => value.trim().toLowerCase();
+
+  const posting = new Set(postingTools.map(key));
+  const conceptRows = new Map<string, { tools: string[]; bullet: boolean }>();
+  for (const row of list(record.concepts)) {
+    const r = (row ?? {}) as { entry?: unknown; tools?: unknown; bullet?: unknown };
+    const entry = text(r.entry);
+    if (!entry || posting.has(key(entry))) continue;
+    conceptRows.set(key(entry), { tools: list(r.tools).map(text).filter(Boolean), bullet: r.bullet !== false });
+  }
+  // The posting's own names are never removed, and renamed only to fix their
+  // capitals: the posting's spelling is the one a scanner looks for.
+  const renames = new Map<string, string>();
+  for (const row of list(record.rename)) {
+    const r = (row ?? {}) as { entry?: unknown; name?: unknown };
+    const entry = text(r.entry);
+    const name = text(r.name);
+    if (!entry || !name) continue;
+    if (posting.has(key(entry)) && key(name) !== key(entry)) continue;
+    renames.set(key(entry), name);
+  }
+  const removals = new Set(
+    list(record.remove).map(text).filter(Boolean).map(key).filter((entry) => !posting.has(entry))
+  );
+  // Names whose official form starts in lower case, in the model's spelling.
+  const lowercase = new Map(
+    list((record as { lowercase?: unknown }).lowercase).map(text).filter(Boolean).map((name) => [key(name), name] as const)
+  );
+
+  const concepts: string[] = [];
+  const groups = technical.map((group) => {
+    const skills: string[] = [];
+    for (const entry of group.skills) {
+      const concept = conceptRows.get(key(entry));
+      if (concept) {
+        skills.push(...concept.tools);
+        if (concept.bullet) concepts.push(entry);
+      } else if (!removals.has(key(entry))) {
+        skills.push(renames.get(key(entry)) ?? entry);
+      }
+    }
+    return { category: group.category, skills };
+  });
+
+  for (const row of list(record.additions)) {
+    const r = (row ?? {}) as { name?: unknown; group?: unknown };
+    const name = text(r.name);
+    const category = text(r.group);
+    if (!name || !category || isSoftSkillsGroup(category)) continue;
+    const target = groups.find((group) => key(group.category) === key(category));
+    if (target) target.skills.push(name);
+    else groups.push({ category, skills: [name] });
+  }
+
+  const kept = groups
+    .map((group) => ({
+      category: group.category,
+      skills: normalizeSkillsList(group.skills.map((name) => lowercase.get(key(name)) ?? name)),
+    }))
+    .filter((group) => group.skills.length > 0);
+  const total = kept.reduce((n, group) => n + group.skills.length, 0);
+  if (total < MIN_CHECKED_SKILLS) return null;
+  const keepCase = kept.flatMap((group) => group.skills).filter((name) => lowercase.has(key(name)));
+  return { groups: kept, concepts, keepCase };
+}
+
+/**
+ * Has the model check the draft's technical skills block: every entry that is
+ * not a real tool is replaced by the tools that work is done with, and handed
+ * back as a concept for the bullets. The Soft Skills group is not sent and is
+ * kept as written. Returns the draft text with the checked block in it.
+ */
+async function checkSkillBlock(
+  draftText: string,
+  profile: Profile,
+  jobAnalysis: JobAnalysis,
+  choice: AiChoice,
+  signal?: AbortSignal
+): Promise<{ text: string; concepts: string[] }> {
+  const unchanged = { text: draftText, concepts: [] as string[] };
+  if (!skillCheckEnabled()) return unchanged;
+
+  let draft: Record<string, unknown>;
+  try {
+    draft = JSON.parse(extractJSON(draftText));
+  } catch {
+    return unchanged;
+  }
+
+  /*
+   * THE WRITING CALL'S LABELS SURVIVE THE CHECK. An entry it labelled practice,
+   * concept, domain or category is held back and put back afterwards, so the
+   * tidy-up still takes it out of the block by that label - the check used to
+   * be sent everything and hand every survivor back as a "tool", which is how
+   * "General Ledger" and "Month-End Close" reached a printed block. An entry the
+   * check keeps keeps the kind it arrived with.
+   */
+  const soft: unknown[] = [];
+  const technical: SkillGroupNames = [];
+  const heldBack: Array<{ category: string; skills: unknown[] }> = [];
+  const kindOf = new Map<string, string>();
+  for (const group of Array.isArray(draft.skillGroups) ? draft.skillGroups : []) {
+    const g = (group ?? {}) as { category?: unknown; skills?: unknown };
+    const category = String(g.category ?? '').trim();
+    const entries = Array.isArray(g.skills) ? g.skills : [];
+    if (isSoftSkillsGroup(category)) {
+      soft.push(...entries);
+      continue;
+    }
+    const names: string[] = [];
+    const held: unknown[] = [];
+    for (const raw of entries) {
+      const entry = parseSkillEntry(raw);
+      if (!entry) continue;
+      if (entry.kind === 'soft') soft.push(raw);
+      else if (!belongsInBlock(entry)) held.push(raw);
+      else {
+        names.push(entry.name);
+        kindOf.set(entry.name.toLowerCase(), entry.kind);
+      }
+    }
+    if (category && names.length > 0) technical.push({ category, skills: names });
+    if (category && held.length > 0) heldBack.push({ category, skills: held });
+  }
+  if (technical.length === 0) return unchanged;
+
+  const startedAt = process.hrtime.bigint();
+  const postingTools = getJobNamedHardSkills(jobAnalysis);
+  try {
+    const answer = await createPromptCompletion({
+      promptId: SKILL_CHECK_PROMPT_ID,
+      callSite: SKILL_CHECK_PROMPT_ID,
+      promptValues: skillCheckPromptValues(technical, draft, jobAnalysis),
+      fallbackProvider: choice.provider,
+      fallbackModelName: choice.modelName,
+      effort: choice.effort,
+      thinking: choice.thinking,
+      route: choice.route,
+      maxTokens: 2500,
+      temperature: 0.2,
+      responseFormat: 'json',
+      useExactPromptId: true,
+      signal,
+    });
+    const checked = applySkillCheck(technical, JSON.parse(extractJSON(answer)), postingTools);
+    if (!checked) {
+      console.warn(`[Resume skills check] ${profile.name}: the answer held too few tools to use. Keeping the draft's block.`);
+      return unchanged;
+    }
+
+    const before = technical.reduce((n, group) => n + group.skills.length, 0);
+    const after = checked.groups.reduce((n, group) => n + group.skills.length, 0);
+    console.log(
+      `[Resume skills check] ${profile.name}: ${before} entries checked in `
+        + `${formatDuration(startedAt, process.hrtime.bigint())}, ${after} tools kept or added; `
+        + `${checked.concepts.length} concept(s) moved to the prose`
+        + `${checked.concepts.length > 0 ? ` - ${checked.concepts.slice(0, 6).join(', ')}${checked.concepts.length > 6 ? ', ...' : ''}` : ''}.`
+    );
+
+    const technicalGroups: Array<{ category: string; skills: unknown[] }> = checked.groups.map((group) => ({
+      category: group.category,
+      skills: group.skills.map((name) => ({
+        name,
+        kind: kindOf.get(name.toLowerCase()) ?? 'tool',
+        ...(checked.keepCase.includes(name) ? { keepCase: true } : {}),
+      })),
+    }));
+    for (const held of heldBack) {
+      const home = technicalGroups.find((group) => group.category.toLowerCase() === held.category.toLowerCase());
+      if (home) home.skills.push(...held.skills);
+      else technicalGroups.push(held);
+    }
+    const skillGroups = [
+      ...technicalGroups,
+      ...(soft.length > 0 ? [{ category: SOFT_SKILLS_GROUP, skills: soft }] : []),
+    ];
+    return { text: JSON.stringify({ ...draft, skillGroups }), concepts: checked.concepts };
+  } catch (error) {
+    const said = error instanceof Error ? error.message : String(error);
+    if (coverageRevisionFailureIsFatal()) {
+      console.warn(
+        `[Resume skills check] ${profile.name}: the call failed (${said}). Failing the build so it is retried. `
+          + `Set RESUME_REVISION_SOFT_FAIL to keep the draft's block instead.`
+      );
+      throw asRevisionFailure(error, 'skills check');
+    }
+    console.warn(`[Resume skills check] ${profile.name}: the call failed (${said}). Keeping the draft's block.`);
+    return unchanged;
+  }
 }
 
 /**
@@ -985,11 +726,7 @@ function asRevisionFailure(error: unknown): unknown {
  * It no longer takes a heading, because there is no soft-skill group to head.
  */
 const finalSkillOverride = () => `FINAL SKILL OVERRIDE:
-Return "skillGroups": an array of { "category": string, "skills": [{ "name": string, "kind": string }] }, 5-7 groups, 5-9 skills each and never fewer than five in a group, ordered as you want them read. EVERY ENTRY CARRIES ITS KIND: language, framework, library, tool, platform, database, protocol, methodology or technology belong in the block; practice, concept, soft, domain and category are taken out of it before printing, so write those into a bullet first and label them honestly rather than mislabelling them to keep them. An entry whose kind you cannot name is not a thing and does not go in. The FIRST group is "Languages & Frameworks" and it is required on every resume - the languages this candidate writes and the frameworks they build with - because it is the first thing a technical reader looks for. Concrete tools, languages, frameworks and platforms ONLY. NO soft skills anywhere in the block - not "Ownership", "Communication", "Collaboration", "Mentoring", "Accountability", "Troubleshooting", nor any other - and no category words such as "Cloud", "Infrastructure", "Platforms", "Systems", "Data", "Tools" or "Technologies": both leave the block when you label them honestly - kind soft, kind category - and both are PRINTED when you label one a tool, because the label is the only thing read. No entry of three or more words unless it is a proper name with its capitals, and no entry joining two things with "and". NO CONCEPTS OR PRACTICES - write the TOOL instead: Datadog not "Observability", Terraform not "Infrastructure as Code", pytest not "unit testing", MLflow not "Experiment Tracking", Kong or Redis not "rate limiting". An entry goes if its last word names an activity (engineering, optimization, automation, orchestration, monitoring, planning, tracking, modeling, validation, testing, design, deployment, integration, implementation, operations) or if it is two or more words with no capital letter in it - UNLESS THIS POSTING NAMED IT, in which case it may stay, spelled as the posting spells it, because a phrase the employer wrote down is a keyword a scanner scores: "CI/CD", "APIs", "REST", "Large Language Models", "RAG" and whatever else this posting asked for - "Threat hunting", "Data Modeling", "Cloud infrastructure". The same shape you invented does not stay: "agent orchestration", "latency optimization", "fast iteration". Keep the named products the bulk of the block and let these ride in the slots left over, never more than a quarter; the application enforces that share and routes the rest to the prose. The concept itself goes in an experience bullet, spelled as the posting spells it - it is moved, not dropped, and the application checks that it arrived. No past-tense verb as a skill. One entry per real thing: where one entry's words are all inside another's, write the shorter. Count the skills before returning: AT LEAST 35 in total - thirty-five is a floor, and five groups need seven entries each, six need six, seven need five - never more than 45, and anything past 45 is deleted from the end of the longest group. Reach thirty-five by naming the stack one layer at a time rather than by writing one thing several ways: name the cloud PLATFORM - "AWS", "Azure", "GCP", whichever this posting names - and then its services, Lambda, S3, ECS, RDS, CloudWatch and IAM, because the platform's own name is what a scanner searches for and a block listing only services matches none of them. Infer what the described work could not have been done without, never a tool from an industry they have not worked in; a competitor beside the tool they used is allowed WHEN THIS POSTING NAMES IT, and left out when the posting is silent. If thirty-five would need a line nobody could be asked about, return what is true and stop short - fill up from the technologies this posting names and the ones the candidate's own roles imply, so the block answers the posting without reading as a copy of it. A tool is not gated by the profile; a DOMAIN is - nothing from an industry this candidate has not worked in. Beyond those removals it is printed as returned - nothing reorders it, renames a group or tops it up, and the only merge is that the two smallest headings are joined, both names kept, when you send more than seven groups - so no duplicates of one product, no concepts, no invented versions. Never invent a metric, an employer, a title or a date. Do NOT return "softSkills" - the field has been removed. Soft skills go into the bullets where they are shown by the work, not listed as traits. Never bolt a soft skill onto the end of a finished sentence - no ", applying X", no ", demonstrating X", no ", with attention to detail". Omit "skills", "hardSkills", "unconfirmedHardSkills" and "unconfirmedSoftSkills": those flat lists are derived from skillGroups.`;
-
-function usesJobPriorityHardSkillOrdering(profile?: Profile): boolean {
-  return getProfileHardSkillOrdering(profile) === 'job-priority';
-}
+Return "skillGroups": an array of { "category": string, "skills": [{ "name": string, "kind": string }] }, 5-7 groups, 5-9 skills each and never fewer than five in a group, ordered as you want them read, and then ONE MORE GROUP, last, headed exactly "Soft Skills". EVERY ENTRY CARRIES ITS KIND: language, framework, library, tool, platform, database, protocol, methodology or technology belong in the technical groups; practice, concept, domain and category are taken out of the block before printing, whoever wrote them, so write those into a bullet first and label them honestly rather than mislabelling them to keep them; soft goes in the Soft Skills group. An entry whose kind you cannot name is not a thing and does not go in. The FIRST group is "Languages & Frameworks" and it is required on every resume - the languages this candidate writes and the frameworks they build with - because it is the first thing a technical reader looks for. REAL TOOLS ONLY in the technical groups: concrete tools, languages, frameworks, platforms and named technologies. NO soft skills in the technical groups - not "Ownership", "Communication", "Collaboration", "Mentoring", nor any other; they go in the Soft Skills group - and no category words such as "Cloud", "Infrastructure", "Platforms", "Systems", "Data", "Tools" or "Technologies": a category word leaves the block when you label it honestly, kind category, and is PRINTED when you label it a tool, because the label is the only thing read. No entry of three or more words unless it is a proper name with its capitals, and no entry joining two things with "and". NO CONCEPTS OR PRACTICES - write the TOOL the work was done with instead: the monitoring tool the candidate used, not "Observability". An entry goes if its last word names an activity (engineering, optimization, automation, orchestration, monitoring, planning, tracking, modeling, validation, testing, design, deployment, integration, implementation, operations) or if it is two or more words with no capital letter in it, WHOEVER WROTE IT: a phrase the posting wrote goes in an experience bullet, spelled as the posting spells it - it is moved, not dropped, and the application checks that it arrived. A named technology stays when it is labelled technology, in ONE form: "CI/CD", "APIs", "REST", "LLMs", "RAG". No past-tense verb as a skill. One entry per real thing: where one entry's words are all inside another's, write the shorter, and never stack near-synonyms - "Snowflake", "Snowflake Cortex" and "Snowflake Cortex AI" is one family written three ways, so keep one, or two where they are genuinely distinct tools. An abbreviation and its expansion are one thing, never two entries: "RAG" or "Retrieval-Augmented Generation", "LLMs" or "Large Language Models" - keep the form the posting leads with and write the other in a bullet; the application deletes the second one it finds. Count the skills before returning: AT LEAST 35 in total - thirty-five is a floor, and five groups need seven entries each, six need six, seven need five - never more than 45, and anything past 45 is deleted from the end of the longest group. The Soft Skills group is not counted in any of that. Reach thirty-five with real tools only, by naming the stack one layer at a time - never by writing one thing several ways, adding a phrase, or copying a tool from an example in the prompt: name the cloud PLATFORM this posting names and then the services the candidate's work used, because the platform's own name is what a scanner searches for and a block listing only services matches none of them. Never create a group the candidate's real tools cannot fill, and never fill a group with entries that belong under another heading. Infer what the described work could not have been done without, never a tool from an industry they have not worked in; a competitor beside the tool they used is allowed WHEN THIS POSTING NAMES IT, and left out when the posting is silent. If thirty-five would need a line nobody could be asked about, return what is true and stop short - fill up from the technologies this posting names and the ones the candidate's own roles imply, so the block answers the posting without reading as a copy of it. A tool is not gated by the profile; a DOMAIN is - nothing from an industry this candidate has not worked in. Beyond those removals it is printed as returned - nothing reorders it, renames a group or tops it up, and the only merge is that the two smallest headings are joined, both names kept, when you send more than seven groups - so no duplicates of one product, no concepts, no invented versions. Never invent an employer, a title or a date. THE SOFT SKILLS GROUP holds 5-8 soft skills THIS posting asks for that the candidate's work shows, each labelled kind soft and written as a plain skill name in title case ("Stakeholder Management", "Mentoring") - chosen for this posting, never a slogan or culture phrase, never a technology. Do NOT return "softSkills" as a separate field. Never bolt a soft skill onto the end of a finished sentence - no ", applying X", no ", demonstrating X", no ", with attention to detail". Category labels must be plain and conventional - "Languages & Frameworks", "Cloud & Infrastructure", "Data & Storage", "CI/CD & Automation", "Testing", "Monitoring", "Databases", "ML & AI" - never marketing copy like "Research to Production", "Delivery Quality", "State, Behavior & Reliability", "Intelligence Layer". Every entry must belong under its heading: "RAG", "Vector Search" and "Semantic Search" under "Testing" is a failed check - move each entry to the group it belongs in, or rename the heading to describe what is honestly inside it. CAPITALISE every word of every skill entry - "Vector Databases", "Spring Boot" - and keep the maker's casing inside a word: PyTorch, not "Pytorch". The one exception is a name its makers write in lower case - "dbt", "pytest", "iOS", "eBPF" - which is written exactly that way. Judge by the product's name, not the package you import: numpy, scipy, networkx and openapi are import names, and the products are NumPy, SciPy, NetworkX and OpenAPI. A bullet naming the same tool writes it the same way. If a keyword is not a named tool or technology, do NOT force it into the skills block - place it in an experience bullet instead: "pull-request review automation", "staged rollout management", "drift monitoring", "evaluation methods", "audit evidence", "human review" are process descriptions, not skills. Do not restate the group heading as an entry: "CI/CD" in the "CI/CD & Automation" group is the heading repeated; write the TOOLS instead. Omit "skills" and "hardSkills": those flat lists are derived from skillGroups.`;
 
 function normalizeSkillsList(skills: string[] | undefined): string[] {
   if (!Array.isArray(skills)) return [];
@@ -1112,12 +849,10 @@ function normalizeJobAnalysisResponse(
     ...toStringList(parsed.skills?.preferred),
   ]);
   const tools = normalizeSkillsList(toStringList(parsed.skills?.tools));
-  const soft = prioritizeSoftSkills(
-    normalizeSkillsList([
-      ...toStringList(parsed.skills?.soft),
-      ...toStringList(parsed.softSkills),
-    ])
-  );
+  const soft = normalizeSkillsList([
+    ...toStringList(parsed.skills?.soft),
+    ...toStringList(parsed.softSkills),
+  ]);
   const technologies = normalizeSafeKeywordList([
     ...toStringList(parsed.technologies),
     ...toStringList(parsed.skills?.technologies),
@@ -1272,78 +1007,6 @@ function getKeywordChecklist(jobAnalysis?: JobAnalysis): string[] {
 }
 
 /**
- * Technical terms the job or the profile named that the library does not carry.
- *
- * Read from the ANALYSIS's own technical fields rather than mined out of the
- * raw posting: the analysis pass has already decided which phrases in the text
- * are technologies, and re-deciding that here without a vocabulary is the part
- * that cannot be done well. `keywords` and `industryTerms` are deliberately not
- * read - those are prose keywords, and they belong in the prose.
- *
- * On the profile side only skills the candidate LISTED are taken. Their role
- * descriptions are prose, and prose needs a vocabulary to read; an explicit
- * claim does not.
- */
-function keepUnlistedHardSkills(stated: string[]): string[] {
-  const known = new Set(technicalSkills.map((skill) => normalizeHardSkillAlias(skill)));
-
-  return normalizeSkillsList(stated).filter((skill) => {
-    const key = normalizeHardSkillAlias(skill);
-    if (!key || known.has(key)) return false;
-    if (JOB_TITLE_EXCLUSIONS.has(key)) return false;
-    if (SOFT_SKILL_SIGNALS.some((signal) => key.includes(signal))) return false;
-    if (!looksLikeUnlistedHardSkill(skill)) return false;
-    // "SQL query writing" is SQL with work described around it, and SQL is
-    // already listed. Applied here as well as in the selection so that what is
-    // offered to the skill library matches what reached the resume.
-    return !isRedundantWithLibraryTerm(skill, known);
-  });
-}
-
-/**
- * Only the analysis fields that are supposed to hold NAMED technologies.
- *
- * The analyser's own prompt draws the line and this follows it. `skills.tools`
- * is "named software, services, platforms, CLIs", `technologies` is "languages,
- * frameworks, libraries, infrastructure ecosystems", `protocols` is "REST,
- * GraphQL, gRPC, OAuth 2.0". Those are things with names.
- *
- * `skills.technical` is defined in that same prompt as "technical abilities NOT
- * tied to a specific named tool" - its own examples are "system design",
- * "capacity planning", "code review" - and `architecturePatterns` is "high-level
- * structural and system design patterns". Reading either for a skills BLOCK was
- * the mistake: it asked two fields of ideas for a list of tools. While the
- * library was the only way in this did not show, because the library filtered
- * them out; once unlisted terms were allowed through, "SQL query writing" and
- * "AI coding tool usage" went straight onto the resume.
- *
- * `skills.required` is not read either, and avoiding `getRequiredSkills` was not
- * enough to avoid it. The side door is one level deeper than the getter: the
- * analysis NORMALIZER folds `skills.technical` into `skills.required` as it is
- * parsed, so by the time anything reads the stored field the two are the same
- * list. Reading it raw re-admitted every ability - "Network operations",
- * "Clinical care", "Develop Software" went into the skills block through
- * exactly that route. `required` carries nothing `technical` does not, so
- * there is nothing lost by leaving it out.
- */
-/**
- * The hard skills the JOB ITSELF named, taken from the analyser's own fields.
- *
- * The skills block was built by matching the library against the posting's raw
- * text, and that quietly threw the extraction away. `getTailoringSourceText`
- * returns the raw description whenever there is one, so the analyser's
- * `technologies`, `tools` and `protocols` - the fields whose whole job is to
- * name the technologies - were never read for the block at all. A term the
- * analyser extracted but that the posting spells differently, or lists in a
- * table the text extraction flattened, was simply lost: Pulumi went missing
- * from a posting that named it, because it was not in the raw text AND, being a
- * library term, the unlisted path refused it too. It fell through both.
- *
- * These are returned whether or not the library carries them. The library's job
- * here is spelling and grouping; deciding WHICH skills the job asked for is the
- * analyser's, and it has already done it.
- */
-/**
  * The five skills this posting is actually about.
  *
  * WHY FIVE, AND WHY THESE. A posting names thirty things and means five of
@@ -1371,87 +1034,43 @@ export function focusSkills(jobAnalysis?: JobAnalysis, limit = 5): string[] {
     // A technology, not an ability: the named list is the technologies this
     // posting spelled out, and a required entry counts when it is one of them.
     if (!named.has(skill.toLowerCase())) continue;
-    if (isConceptSkill(skill)) continue;
     chosen.push(skill);
     if (chosen.length === limit) break;
   }
   return chosen;
 }
 
+/**
+ * The technologies the JOB ITSELF named: the analyser's tools, technologies,
+ * protocols and methodologies, the four fields its prompt defines as named
+ * things ("MLOps", "Scrum" and "CI/CD" are methodologies there, and a practice
+ * with no name goes in skills.technical). Nothing is matched against a list
+ * here - deciding which words in a posting are names is the analyser's job.
+ */
 function getJobNamedHardSkills(jobAnalysis?: JobAnalysis): string[] {
   return normalizeSkillsList([
     ...getSkillTools(jobAnalysis),
     ...getTechnologies(jobAnalysis),
     ...getProtocols(jobAnalysis),
-  ]).filter((skill) => {
-    const key = normalizeHardSkillAlias(skill);
-    if (!key || JOB_TITLE_EXCLUSIONS.has(key)) return false;
-    if (SOFT_SKILL_SIGNALS.some((signal) => key.includes(signal))) return false;
-    return true;
-  });
-}
-
-function getUnlistedJobSkills(jobAnalysis?: JobAnalysis): string[] {
-  return keepUnlistedHardSkills([
-    ...getPreferredSkills(jobAnalysis),
-    ...getSkillTools(jobAnalysis),
-    ...getTechnologies(jobAnalysis),
-    ...getProtocols(jobAnalysis),
-  ]);
-}
-
-function getUnlistedProfileSkills(profile?: Profile): string[] {
-  return keepUnlistedHardSkills([
-    ...(profile?.skills ?? []),
-    ...(profile?.experience ?? []).flatMap((role) => role.skills ?? []),
+    ...getMethodologies(jobAnalysis),
   ]);
 }
 
 /**
- * The job's concept terms, wherever the analyser filed them.
+ * The job's concept terms: the analysis fields that hold ideas by definition.
  *
- * Everything is passed through `isConceptSkill`, which is what guarantees the
- * caller's rule: a term listed here is by definition one the Technical Skills
- * block refuses, so naming it to the prompt cannot put it in that block. Terms
- * from these fields that are NOT concepts - "Network operations", "Clinical
- * care" - fall through to the ordinary keyword checklist, which is also prose.
- *
- * The tool-shaped fields are read too, not just the three that hold ideas by
- * definition. The analyser files a posting's "experience with CRM platforms" or
- * "familiarity with SIEM platforms" under `tools`, because that is the sentence
- * it came from - and those phrases are slots, not products. Now that the skills
- * block refuses them, they have to be named here or they reach the resume
- * nowhere at all, and an ATS scoring the posting's own words would miss them.
+ * `skills.technical` is "technical abilities NOT tied to a specific named
+ * tool" and `architecturePatterns` is "high-level structural and system design
+ * patterns" - both are ideas, so both are prose targets, never block entries.
+ * Anything the posting also named as a tool is left out, so a term is asked for
+ * once. Decided by the analyser's own fields, not by a list of words in code.
  */
-function getConceptKeywords(jobAnalysis?: JobAnalysis, librarySkills: string[] = []): string[] {
-  return extractConceptKeywords(
-    normalizeSkillsList([
-      ...librarySkills,
-      ...getTechnicalSkills(jobAnalysis),
-      ...getMethodologies(jobAnalysis),
-      ...getArchitecturePatterns(jobAnalysis),
-      ...getPreferredSkills(jobAnalysis),
-      ...getSkillTools(jobAnalysis),
-      ...getTechnologies(jobAnalysis),
-      ...getProtocols(jobAnalysis),
-      /*
-       * AND THE FIELD THE ANALYSER PUTS CONCEPTS IN, which this read for a
-       * long time and did not.
-       *
-       * `domainKnowledge` is defined to the analyser as "business and technical
-       * concepts the candidate understands deeply", 10-20 entries - so it is
-       * where "Data Modeling", "Cloud infrastructure", "Threat hunting" and
-       * "Business Systems" land. Leaving it out meant those never reached
-       * `conceptKeywordsJson`, the one list the prompt says something specific
-       * about, and arrived instead among two dozen undifferentiated keywords.
-       *
-       * MEASURED on two scans: eleven of fourteen reported misses were phrases
-       * of exactly this shape, every one named by the posting and none of them
-       * anywhere on the page.
-       */
-      ...getDomainKnowledge(jobAnalysis),
-    ])
-  );
+function getConceptKeywords(jobAnalysis?: JobAnalysis): string[] {
+  const named = new Set(getJobNamedHardSkills(jobAnalysis).map((term) => term.toLowerCase()));
+  return normalizeSkillsList([
+    ...getTechnicalSkills(jobAnalysis),
+    ...getArchitecturePatterns(jobAnalysis),
+  ]).filter((term) => !named.has(term.toLowerCase()));
 }
 
 /**
@@ -1464,60 +1083,44 @@ function getConceptKeywords(jobAnalysis?: JobAnalysis, librarySkills: string[] =
  */
 /** At most this many bullets under one role, whatever the model returns. */
 /**
- * The longest a summary may be.
- *
- * WHY A CEILING AT ALL. The prompt asked for 80-120 words and got paragraphs
- * that filled a third of the first page before a reader reached a single thing
- * the candidate had done.
- *
- * WHY 80 AND NOT 65. The first version of this capped at 65, and measured over
- * 60 delivered resumes per run the result was a median of 52 words - the model
- * retreated from a ceiling it was only ever told not to exceed, and not one
- * summary in the sample was trimmed by this function. The share of the resume's
- * own skills terms that also appeared in the summary fell from 16% to 4%, and
- * the ATS scores fell about ten points with it. The prompt now asks for 65-80
- * and names a floor; this is the ceiling that floor sits under.
+ * ASKED FOR: "2-3 sentences in the summary section, at least 2", and no word
+ * limit. The 50-word cap is gone: it was what cut two-sentence summaries down
+ * to one, by dropping whole sentences from the end to get under it.
  */
-const MAX_SUMMARY_WORDS = 50;
-
-/** The cap, which an operator can move without editing the source. */
-function summaryWordCap(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = Number.parseInt(env.RESUME_MAX_SUMMARY_WORDS || '', 10);
-  if (!Number.isFinite(raw) || raw < 1) return MAX_SUMMARY_WORDS;
-  return raw;
-}
-
-const wordsIn = (value: string): number => value.trim().split(/\s+/).filter(Boolean).length;
+export const MIN_SUMMARY_SENTENCES = 2;
+export const MAX_SUMMARY_SENTENCES = 3;
 
 /**
- * Trims a long summary to the cap by dropping WHOLE SENTENCES from the end.
+ * The summary's sentences, with their punctuation.
  *
- * Never mid-sentence. A paragraph cut at the 65th word ends in the middle of a
- * clause, which reads worse than a paragraph that is a few words long and is
- * the first thing anybody sees on the page. A single sentence that already
- * exceeds the cap is therefore kept as it is and reported instead - there is no
- * cut that improves it, and silently halving it would be the renderer rewriting
- * the candidate's prose.
+ * A boundary is a stop, then a space, then a capital or a digit, so "Node.js",
+ * "9.5 years" and "ASP.NET" are not sentence ends. The old splitter treated a
+ * stop inside a word as a failed match and silently skipped the text before it.
  */
-export function capSummaryWords(
-  summary: string,
-  cap: number = summaryWordCap()
-): { summary: string; dropped: number; words: number } {
-  const trimmed = summary.trim();
-  const words = wordsIn(trimmed);
-  if (!trimmed || words <= cap) return { summary: trimmed, dropped: 0, words };
+export function summarySentences(summary: string): string[] {
+  const trimmed = String(summary ?? '').trim();
+  if (!trimmed) return [];
+  return trimmed
+    .split(/(?<=[.!?])\s+(?=["'(\u201c]?[A-Z0-9])/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
 
-  // Kept WITH their punctuation, so the rebuilt paragraph still ends in a stop.
-  const sentences = trimmed.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) ?? [trimmed];
-  const kept: string[] = [];
-  for (const sentence of sentences) {
-    const candidate = [...kept, sentence].join('').trim();
-    if (kept.length > 0 && wordsIn(candidate) > cap) break;
-    kept.push(sentence);
+/**
+ * Holds a summary to three sentences by dropping whole sentences after the third.
+ *
+ * Never mid-sentence: a paragraph cut mid-clause is the first thing anybody
+ * sees on the page. A one-sentence summary is left as it is and reported -
+ * making two sentences of one is the prompt's job, not this file's.
+ */
+export function capSummarySentences(summary: string): { summary: string; dropped: number; sentences: number } {
+  const trimmed = String(summary ?? '').trim();
+  const sentences = summarySentences(trimmed);
+  if (sentences.length <= MAX_SUMMARY_SENTENCES) {
+    return { summary: trimmed, dropped: 0, sentences: sentences.length };
   }
-
-  const result = kept.join('').trim() || trimmed;
-  return { summary: result, dropped: sentences.length - kept.length, words: wordsIn(result) };
+  const kept = sentences.slice(0, MAX_SUMMARY_SENTENCES);
+  return { summary: kept.join(' '), dropped: sentences.length - kept.length, sentences: kept.length };
 }
 
 const MAX_BULLETS_PER_ROLE = 8;
@@ -1586,16 +1189,7 @@ function chooseBullets(bullets: string[], cap: number, jobAnalysis?: JobAnalysis
 
 function getProseChecklist(jobAnalysis?: JobAnalysis): string[] {
   if (!jobAnalysis) return [];
-  const promptSkills = buildLibraryAugmentedPromptLists(jobAnalysis).promptSkills;
-  const concepts = getConceptKeywords(jobAnalysis, promptSkills);
-  const conceptSet = new Set(concepts.map((term) => term.toLowerCase()));
-  const keywords = buildLibraryAugmentedPromptLists(jobAnalysis).keywords
-    .filter((term) => !conceptSet.has(term.toLowerCase()));
-  // Without the posting's culture language, for the reason given where the
-  // prompt's own lists are built: a measurement that counts a term the prompt
-  // forbids reads as a shortfall, and a shortfall buys a revision that puts the
-  // phrase back. The two have to agree about what belongs on the page.
-  return withoutValuesPhrases(normalizeSkillsList([...keywords, ...concepts])).terms;
+  return normalizeSkillsList([...getKeywordChecklist(jobAnalysis), ...getConceptKeywords(jobAnalysis)]);
 }
 
 /**
@@ -1676,36 +1270,6 @@ function reportBulletVoice(
 }
 
 /**
- * Claims that do not fit inside the years of the role they sit in.
- *
- * REPORTED BY THE OPERATOR: LLM-as-a-judge, RAG, prompt injection testing and
- * agent orchestration written into 2017-2019 roles. Every role is tailored
- * towards the same posting, so a posting that leans on AI pushes AI language
- * into the oldest role on the page - and that is the one fault on the list that
- * ends an interview rather than costing a point.
- *
- * Reported, not repaired: fixing it means describing the old work in the
- * vocabulary of its own era, which only the model can do. The prompt now asks
- * for exactly that, under fault 2, and this says whether it listened.
- */
-function reportAnachronisms(
-  profileName: string,
-  content: { experience?: Array<{ company?: string; endDate?: string; achievements?: string[] }> }
-): void {
-  const found = findAnachronisms(content.experience ?? []);
-  if (found.length === 0) return;
-
-  const shown = found
-    .slice(0, 5)
-    .map((hit) => `"${hit.term}" in ${hit.company} (ended ${hit.endedIn}, term is ${hit.from} on)`)
-    .join('; ');
-  console.warn(
-    `[Resume dates] ${profileName}: ${found.length} claim(s) newer than the role they sit in - `
-      + `${shown}${found.length > 5 ? ', ...' : ''}.`
-  );
-}
-
-/**
  * Figures whose two ends do not describe one measurement.
  *
  * REPORTED BY THE OPERATOR as garbled metrics: "reduced deploy time by about 40
@@ -1746,11 +1310,11 @@ const TOOL_SHARE_FLOOR = 2 / 3;
 const BULLET_FLOOR = 14;
 
 /**
- * The three faults left on the operator's list, counted rather than repaired.
+ * Faults on the operator's list, counted rather than repaired.
  *
- * Broken or leftover text, bullets with no named tool and no figure of scale,
- * and roles that never widen into owning or mentoring anything. Each one needs
- * the sentence rewritten, so each is a rule in the prompt - and a writing rule
+ * Too few bullets, broken or leftover text, and bullets naming none of the
+ * tools this resume claims. Each one needs the sentence rewritten, so each is a
+ * rule in the prompt - and a writing rule
  * nobody counts is a writing rule that quietly stops holding, which is why
  * `echoingBullets` is counted beside its own ban.
  *
@@ -1772,7 +1336,7 @@ function reportBulletShape(
     );
   }
 
-  const broken = findBrokenBullets(roles);
+  const broken = findBrokenBullets(roles, vocabulary);
   if (broken.length > 0) {
     parts.push(
       `${broken.length} bullet(s) that are not one finished sentence (`
@@ -1785,35 +1349,6 @@ function reportBulletShape(
     parts.push(
       `only ${tools.named}/${tools.bullets} bullets name a technology this resume claims `
         + `(${Math.round(tools.share * 100)}%, floor ${Math.round(TOOL_SHARE_FLOOR * 100)}%)`
-    );
-  }
-
-  const noScale = rolesWithoutScale(roles);
-  if (noScale.length > 0) {
-    parts.push(`${noScale.length} role(s) with no figure of scale: ${noScale.slice(0, 3).join(', ')}`);
-  }
-
-  const noScope = recentRolesWithoutScope(roles);
-  if (noScope.length > 0) {
-    parts.push(`no ownership or mentoring bullet in ${noScope.slice(0, 2).join(', ')}`);
-  }
-
-  // Issue 2 — soft skill bolted onto a technical bullet.
-  const bolted = bulletsWithBoltedSoftSkills(roles);
-  if (bolted.length > 0) {
-    parts.push(
-      `${bolted.length} bullet(s) with a soft skill bolted on (`
-        + `${JSON.stringify(bolted[0].slice(0, 80))}…)`
-    );
-  }
-
-  // Issue 7 — bullets that stop at the activity and never say what changed.
-  const noOutcome = bulletsWithoutAnOutcome(roles);
-  if (noOutcome.length > 0) {
-    const total = roles.reduce((n, r) => n + (r.achievements ?? []).length, 0);
-    parts.push(
-      `${noOutcome.length}/${total} bullet(s) with no outcome clause (`
-        + `${JSON.stringify(noOutcome[0].slice(0, 80))}…)`
     );
   }
 
@@ -1864,6 +1399,9 @@ const FOCUS_SKILL_FLOOR = 2;
 /** Figures on the page, which is what a measurable-results check counts. */
 const FIGURE_FLOOR = 5;
 
+/** Bullets that may carry a number or a before-and-after; the prompt rations them. */
+const FIGURE_BULLET_CEILING = 7;
+
 /**
  * The two floors the operator set by number, counted where they are read.
  *
@@ -1896,12 +1434,20 @@ function reportFocusAndFigures(
    * COUNTED IN THE BULLETS ONLY, on the operator's instruction: "at least 5
    * measurable results in bullet points". It used to count the summary too,
    * which inflated the number by one on most resumes and by more on the long
-   * summaries - and at 50 words the summary now has room for a single figure,
+   * summaries - and the summary has room for a single figure at most,
    * so a floor that counted it would be a floor of four.
    */
   const figures = countFigures({ experience: content.experience });
-  if (figures >= FIGURE_FLOOR) {
-    console.log(`[Resume metrics] ${profileName}: ${figures} measurable result(s) in the bullets.`);
+  const withFigures = (content.experience ?? [])
+    .flatMap((role) => role.achievements ?? [])
+    .filter((bullet) => countFigures({ experience: [{ achievements: [bullet] }] }) > 0).length;
+  if (withFigures > FIGURE_BULLET_CEILING) {
+    console.warn(
+      `[Resume metrics] ${profileName}: ${withFigures} bullets carry a number, over the ceiling of `
+        + `${FIGURE_BULLET_CEILING}.`
+    );
+  } else if (figures >= FIGURE_FLOOR) {
+    console.log(`[Resume metrics] ${profileName}: ${figures} measurable result(s) in ${withFigures} bullet(s).`);
   } else {
     console.warn(
       `[Resume metrics] ${profileName}: only ${figures} measurable result(s) in the bullets, `
@@ -1927,7 +1473,6 @@ function reportPlacement(
 ): PlacementReport | null {
   reportFocusAndFigures(profileName, content, jobAnalysis);
   reportBulletVoice(profileName, content);
-  reportAnachronisms(profileName, content);
   reportGarbledMetrics(profileName, content);
   const checklist = getProseChecklist(jobAnalysis);
   if (checklist.length === 0) return null;
@@ -1970,10 +1515,7 @@ function reportPlacement(
     else console.log(conceptLine);
   }
 
-  const softWanted = withoutValuesPhrases(normalizeSkillsList([
-    ...getSoftSkills(jobAnalysis),
-    ...getMatchedLibrarySoftSkills(jobAnalysis),
-  ])).terms;
+  const softWanted = getSoftSkills(jobAnalysis);
   if (softWanted.length > 0) {
     const prose = renderedProse(content);
     const softPlaced = softWanted.filter((term) => containsTerm(prose, term));
@@ -2005,991 +1547,6 @@ function reportPlacement(
       `${report.missing.slice(0, 12).join(', ')}${report.missing.length > 12 ? `, +${report.missing.length - 12} more` : ''}`
   );
   return report;
-}
-
-function getHardSkillChecklist(jobAnalysis?: JobAnalysis): string[] {
-  return normalizeSkillsList([
-    ...getTechnicalSkills(jobAnalysis),
-    ...getRequiredSkills(jobAnalysis),
-    ...getPreferredSkills(jobAnalysis),
-    ...getSkillTools(jobAnalysis),
-    ...getTechnologies(jobAnalysis),
-    ...getProtocols(jobAnalysis),
-    ...getMethodologies(jobAnalysis),
-    ...getArchitecturePatterns(jobAnalysis),
-    ...getKeywordChecklist(jobAnalysis),
-    ...getIndustryTerms(jobAnalysis),
-  ]);
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function containsLibraryTerm(text: string, term: string): boolean {
-  const normalizedTerm = term.trim().replace(/\s+/g, ' ');
-  if (!normalizedTerm) return false;
-
-  const pattern = escapeRegex(normalizedTerm).replace(/\\\s+/g, '\\s+');
-  const flags = normalizedTerm === 'Go' ? '' : 'i';
-  return new RegExp(`(?<![A-Za-z0-9])${pattern}(?![A-Za-z0-9])`, flags).test(text);
-}
-
-function getLibraryMatches(sourceText: string, librarySkills: string[]): string[] {
-  if (!sourceText.trim()) return [];
-  return normalizeSkillsList(librarySkills.filter((skill) => containsLibraryTerm(sourceText, skill)));
-}
-
-/**
- * Everything the profile says about the work this person has actually done.
- *
- * Read for skills the same way a job description is, because in practice that
- * is the only place the evidence lives: a profile's own `skills` array is very
- * often empty, and the per-role `skills` arrays nearly always are, while the
- * role titles, companies, descriptions and achievements are always filled in.
- * Anything they HAVE listed is included too, and does not need matching.
- */
-function getProfileExperienceSkills(profile?: Profile): string[] {
-  if (!profile) return [];
-
-  const experienceText = [
-    profile.title,
-    profile.summary,
-    ...(profile.experience ?? []).flatMap((role) => [
-      role.title,
-      role.company,
-      role.description,
-      ...(role.achievements ?? []),
-    ]),
-    ...(profile.education ?? []).flatMap((entry) => [entry.degree, ...(entry.achievements ?? [])]),
-    ...(profile.certifications ?? []).map((entry) => entry.name),
-    ...(profile.strengths ?? []).flatMap((entry) => [entry.title, entry.description]),
-  ]
-    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    .join('\n');
-
-  const claimed = normalizeSkillsList([
-    ...(profile.skills ?? []),
-    ...(profile.experience ?? []).flatMap((role) => role.skills ?? []),
-  ]);
-
-  return normalizeSkillsList([...claimed, ...getLibraryMatches(experienceText, technicalSkills)]);
-}
-
-function canonicalSkillKey(skill: string): string {
-  return normalizeHardSkillAlias(skill)
-    .replace(/[^a-z0-9+#.]+/g, ' ')
-    .trim();
-}
-
-function isBroaderSkillCoveredBySpecificSkill(broader: string, specific: string): boolean {
-  const broadKey = canonicalSkillKey(broader);
-  const specificKey = canonicalSkillKey(specific);
-  if (!broadKey || !specificKey || broadKey === specificKey) return false;
-
-  return specificKey.startsWith(`${broadKey} `)
-    || specificKey.startsWith(`${broadKey}.`)
-    || specificKey.startsWith(`${broadKey}-`)
-    || specificKey.startsWith(`${broadKey}/`);
-}
-
-function removeBroaderCoveredSkills(skills: string[]): string[] {
-  const normalized = normalizeSkillsList(skills);
-  return normalized.filter((skill) =>
-    !normalized.some((candidate) => isBroaderSkillCoveredBySpecificSkill(skill, candidate))
-  );
-}
-
-type CategorizedSkillGroup = {
-  category: LibraryHardSkillCategory;
-  skills: string[];
-};
-
-const LANGUAGE_LIBRARY_CATEGORY: LibraryHardSkillCategory = 'Languages';
-const MIN_LANGUAGE_SKILLS_PER_LIBRARY_CATEGORY = 3;
-const MAX_LANGUAGE_SKILLS_PER_LIBRARY_CATEGORY = 5;
-const MIN_SKILLS_PER_LIBRARY_CATEGORY = 5;
-const MAX_SKILLS_PER_LIBRARY_CATEGORY = 10;
-const MIN_LIBRARY_CATEGORY_COUNT = 5;
-const LANGUAGE_FILL_EXCLUDED_SKILLS = new Set(['bash', 'c#', 'html', 'css']);
-const LANGUAGE_FILL_PRIORITY = new Map(
-  [
-    'python',
-    'java',
-    'javascript',
-    'typescript',
-    'go',
-    'ruby',
-    'php',
-    'sql',
-    'swift',
-    'kotlin',
-    'rust',
-    'scala',
-    'c++',
-    'dart',
-    'elixir',
-    'r',
-  ].map((skill, index) => [skill, index])
-);
-
-/**
- * Says what the skill blocks refused, once per distinct reason.
- *
- * Rejections used to be a `continue` inside whichever function noticed, so an
- * operator looking at a resume with a keyword missing had nothing to read. This
- * does not change what is printed; it makes the decision inspectable.
- */
-function reportRejectedSkills(kind: 'hard' | 'soft', rejected: SkillVerdict[]): void {
-  if (rejected.length === 0) return;
-  const byReason = new Map<string, string[]>();
-  for (const verdict of rejected) {
-    if (verdict.ok) continue;
-    byReason.set(verdict.reason, [...(byReason.get(verdict.reason) ?? []), verdict.term]);
-  }
-  for (const [reason, terms] of byReason) {
-    console.log(
-      `[Resume skills] ${kind}: ${terms.length} term(s) kept out of the block - ` +
-        `${REJECTION_DETAIL[reason as keyof typeof REJECTION_DETAIL]}. ` +
-        `They stay in the prose checklists. (${terms.slice(0, 6).join(', ')}${terms.length > 6 ? ', ...' : ''})`
-    );
-  }
-}
-
-function getHardSkillRecord(skill: string): (typeof hardSkillRecords)[number] | undefined {
-  const normalized = normalizeHardSkillAlias(skill);
-  return hardSkillRecords.find((record) => normalizeHardSkillAlias(record.skill) === normalized);
-}
-
-function getLibraryPriority(skill: string): number {
-  return getHardSkillRecord(skill)?.priority ?? Number.MAX_SAFE_INTEGER;
-}
-
-function sortByLibraryPriorityAndName(skills: string[]): string[] {
-  return normalizeSkillsList(skills).sort((left, right) => {
-    const priorityDiff = getLibraryPriority(left) - getLibraryPriority(right);
-    if (priorityDiff !== 0) return priorityDiff;
-    return left.localeCompare(right, undefined, { sensitivity: 'base' });
-  });
-}
-
-function getCategorySkillMinimum(category: LibraryHardSkillCategory): number {
-  return category === LANGUAGE_LIBRARY_CATEGORY
-    ? MIN_LANGUAGE_SKILLS_PER_LIBRARY_CATEGORY
-    : MIN_SKILLS_PER_LIBRARY_CATEGORY;
-}
-
-function getCategorySkillMaximum(category: LibraryHardSkillCategory): number {
-  return category === LANGUAGE_LIBRARY_CATEGORY
-    ? MAX_LANGUAGE_SKILLS_PER_LIBRARY_CATEGORY
-    : MAX_SKILLS_PER_LIBRARY_CATEGORY;
-}
-
-function isLibraryFillAllowed(record: (typeof hardSkillRecords)[number]): boolean {
-  return (
-    record.category !== LANGUAGE_LIBRARY_CATEGORY ||
-    !LANGUAGE_FILL_EXCLUDED_SKILLS.has(normalizeHardSkillAlias(record.skill))
-  );
-}
-
-function compareLibraryFillRecords(
-  left: (typeof hardSkillRecords)[number],
-  right: (typeof hardSkillRecords)[number]
-): number {
-  if (left.category === LANGUAGE_LIBRARY_CATEGORY && right.category === LANGUAGE_LIBRARY_CATEGORY) {
-    const leftRank = LANGUAGE_FILL_PRIORITY.get(normalizeHardSkillAlias(left.skill)) ?? Number.MAX_SAFE_INTEGER;
-    const rightRank = LANGUAGE_FILL_PRIORITY.get(normalizeHardSkillAlias(right.skill)) ?? Number.MAX_SAFE_INTEGER;
-    if (leftRank !== rightRank) return leftRank - rightRank;
-  }
-
-  if (left.priority !== right.priority) return left.priority - right.priority;
-  return left.skill.localeCompare(right.skill, undefined, { sensitivity: 'base' });
-}
-
-function buildCategorizedLibrarySkills(seedSkills: string[]): CategorizedSkillGroup[] {
-  const grouped = new Map<LibraryHardSkillCategory, string[]>(
-    HARD_SKILL_CATEGORIES.map((category) => [category, []])
-  );
-  const used = new Set<string>();
-
-  for (const skill of sortByLibraryPriorityAndName(seedSkills)) {
-    const record = getHardSkillRecord(skill);
-    if (!record) continue;
-    const display = record.skill;
-    const key = normalizeHardSkillAlias(display);
-    if (!key || used.has(key)) continue;
-    used.add(key);
-    grouped.get(record.category)?.push(display);
-  }
-
-  const hasDynamicCategory = HARD_SKILL_CATEGORIES
-    .filter((category) => category !== LANGUAGE_LIBRARY_CATEGORY)
-    .some((category) => (grouped.get(category)?.length ?? 0) > 0);
-  const includedCategories = new Set<LibraryHardSkillCategory>([LANGUAGE_LIBRARY_CATEGORY]);
-  for (const category of HARD_SKILL_CATEGORIES) {
-    if (category !== LANGUAGE_LIBRARY_CATEGORY && (grouped.get(category)?.length ?? 0) > 0) {
-      includedCategories.add(category);
-    }
-  }
-
-  if (!hasDynamicCategory) {
-    includedCategories.add('Frameworks and Libraries');
-    includedCategories.add('Cloud and Infrastructure');
-  }
-
-  for (const category of HARD_SKILL_CATEGORIES) {
-    if (includedCategories.size >= MIN_LIBRARY_CATEGORY_COUNT) break;
-    if (category !== LANGUAGE_LIBRARY_CATEGORY) {
-      includedCategories.add(category);
-    }
-  }
-
-  const recordsByCategory = new Map<LibraryHardSkillCategory, typeof hardSkillRecords>(
-    HARD_SKILL_CATEGORIES.map((category) => [
-      category,
-      hardSkillRecords
-        .filter((record) => record.category === category)
-        .sort(compareLibraryFillRecords),
-    ])
-  );
-
-  for (const category of includedCategories) {
-    const categorySkills = grouped.get(category) ?? [];
-    for (const record of recordsByCategory.get(category) ?? []) {
-      if (categorySkills.length >= getCategorySkillMinimum(category)) break;
-      if (!isLibraryFillAllowed(record)) continue;
-      const key = normalizeHardSkillAlias(record.skill);
-      if (!key || used.has(key)) continue;
-      used.add(key);
-      categorySkills.push(record.skill);
-    }
-    grouped.set(category, categorySkills.slice(0, getCategorySkillMaximum(category)));
-  }
-
-  return HARD_SKILL_CATEGORIES
-    .filter((category) => includedCategories.has(category))
-    .map((category) => ({
-      category,
-      skills: grouped.get(category) ?? [],
-    }))
-    .filter((group) => group.skills.length > 0);
-}
-
-function flattenCategorizedSkills(groups: CategorizedSkillGroup[]): string[] {
-  return uniqueCaseInsensitive(groups.flatMap((group) => group.skills));
-}
-
-function buildLibraryAugmentedPromptLists(jobAnalysis: JobAnalysis): {
-  skills: CategorizedSkillGroup[];
-  promptSkills: string[];
-  keywords: string[];
-} {
-  const sourceText = getTailoringSourceText(jobAnalysis);
-  const extractedKeywords = getKeywordChecklist(jobAnalysis);
-  /*
-   * The library's matches, AND the technologies this posting named outright.
-   *
-   * WHY THE SECOND HALF EXISTS. `promptSkills` is what the prompt calls "a
-   * starting point for skillGroups" - the list the skills block is built from -
-   * and it was library matches alone. The library is 1,247 rows with no entry
-   * for MCP, LLM, LLMs or Large Language Models, so a posting that names them
-   * every other line put them on `keywordsJson` instead, whose preamble says
-   * those are PROSE targets. Measured on one posting: skillsJSON came back as
-   * ["RAG","Scrum"] while keywordsJson carried LLMs, MCP, Large Language
-   * Models, RAG, MCP server and LLM.
-   *
-   * So a resume arrived with "Large Language Models" and "RAG" in its bullets
-   * and neither in its block, and the model was obeying: they reached it on the
-   * list labelled prose. Naming them in the prompt as block-legal only asks the
-   * model to cross that boundary, and it did so on two resumes in five. This
-   * puts them on the right list instead.
-   *
-   * TOOLS, TECHNOLOGIES AND PROTOCOLS ONLY - what `getJobNamedHardSkills`
-   * returns. Not domainKnowledge, which rule 3 forbids for an industry the
-   * candidate has not worked in; not skills.soft; and not keywords.actionVerbs,
-   * the field that once put "owned" in a skills block.
-   */
-  const matchedTechSkills = normalizeSkillsList([
-    ...removeBroaderCoveredSkills(getLibraryMatches(sourceText, technicalSkills)),
-    ...getJobNamedHardSkills(jobAnalysis),
-  ]);
-  const matchedSoftSkills = getLibraryMatches(sourceText, softSkills);
-  const categorizedSkills = buildCategorizedLibrarySkills(matchedTechSkills);
-
-  return {
-    skills: categorizedSkills,
-    promptSkills: matchedTechSkills,
-    keywords: normalizeSkillsList([
-      ...extractedKeywords,
-      ...matchedSoftSkills,
-    ]),
-  };
-}
-
-/**
- * The soft skills from the library that this job's text actually asks for.
- *
- * These used to be stitched into the summary after the fact, as a fixed
- * sentence - "Strengths include a, b, c across changing engineering contexts." -
- * appended to any summary that had missed them. It made every resume end on the
- * same clause with a different comma list inside it.
- *
- * They now feed the Soft Skills list, which is the section for them, and which
- * templates render. Reading the whole tailoring source rather than the analysis
- * alone is deliberate and is what the summary insertion did: a job that asks in
- * prose for someone adaptable says so in its description, not necessarily in
- * the `softSkills` array an analysis pass extracted from it.
- */
-function getMatchedLibrarySoftSkills(jobAnalysis?: JobAnalysis): string[] {
-  if (!jobAnalysis) return [];
-  return getLibraryMatches(getTailoringSourceText(jobAnalysis), softSkills);
-}
-
-
-function normalizeHardSkillAlias(skill: string): string {
-  return skill.trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
-/** Job titles to exclude from hard skills - these are roles, not technical skills */
-const JOB_TITLE_EXCLUSIONS = new Set([
-  'full stack developer', 'fullstack developer', 'full-stack developer',
-  'frontend developer', 'front-end developer', 'frotnend developer',
-  'backend developer', 'back-end developer',
-  'full stack engineer', 'frontend engineer', 'backend engineer',
-  'software developer', 'software engineer',
-]);
-
-function capitalizeHardSkill(s: string): string {
-  if (!s || s.length === 0) return s;
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function inferHardSkillCategory(skillAlias: string): HardSkillCategory {
-  const rules: Array<{ category: HardSkillCategory; patterns: string[] }> = [
-    {
-      category: 'backend',
-      patterns: [
-        'python', 'fastapi', 'django', 'flask', 'pydantic', 'node', 'express', 'nestjs', 'fastify', 'koa',
-        'rails', 'gin', 'echo', 'spring', 'laravel', 'symfony', 'grpc', 'websocket', 'server-sent',
-        'microservice', 'event-driven', 'domain-driven', 'ddd', 'celery', 'rabbitmq', 'kafka', 'rest api',
-        'restful api', 'graphql', 'async', 'background job', 'message queue', 'serverless', 'api gateway',
-      ],
-    },
-    {
-      category: 'frontend',
-      patterns: [
-        'react', 'angular', 'vue', 'next', 'nuxt', 'typescript', 'javascript', 'redux', 'zustand', 'mobx',
-        'rxjs', 'html', 'css', 'scss', 'sass', 'tailwind', 'bootstrap', 'mui', 'material ui', 'ant design',
-        'chakra', 'styled component', 'emotion', 'chart.js', 'd3', 'three.js', 'responsive design',
-        'mobile-first', 'pwa', 'webpack', 'vite', 'rollup', 'babel', 'eslint', 'prettier',
-      ],
-    },
-    {
-      category: 'databases',
-      patterns: [
-        'postgres', 'mysql', 'sql server', 'oracle', 'mongodb', 'dynamodb', 'cassandra', 'couchdb', 'redis',
-        'memcached', 'firestore', 'elasticsearch', 'solr', 'influxdb', 'timescaledb', 'neo4j', 'etl',
-        'warehouse', 'data lake', 'sqlalchemy', 'prisma', 'typeorm', 'sequelize', 'mongoose', 'activerecord',
-        'query optimization', 'indexing', 'sharding', 'replication', 'data model', 'database migration', 'acid',
-      ],
-    },
-    {
-      category: 'cloud-devops',
-      patterns: [
-        'aws', 'lambda', 'eks', 'ecs', 'fargate', 'ec2', 's3', 'cloudfront', 'rds', 'cloudwatch', 'sagemaker',
-        'step function', 'sns', 'sqs', 'iam', 'vpc', 'route 53', 'gcp', 'google cloud', 'azure', 'docker',
-        'kubernetes', 'helm', 'openshift', 'terraform', 'cloudformation', 'ansible', 'puppet', 'chef',
-        'github actions', 'jenkins', 'gitlab ci', 'circleci', 'travis ci', 'argocd', 'flux', 'ci/cd',
-        'infrastructure as code', 'iac', 'grafana', 'prometheus', 'datadog', 'new relic', 'elk', 'istio',
-        'linkerd', 'load balancing', 'auto scaling',
-      ],
-    },
-    {
-      category: 'testing-automation',
-      patterns: [
-        'pytest', 'jest', 'junit', 'testng', 'mocha', 'chai', 'jasmine', 'cypress', 'playwright', 'selenium',
-        'puppeteer', 'webdriverio', 'postman', 'insomnia', 'rest assured', 'locust', 'k6', 'jmeter',
-        'artillery', 'unit testing', 'integration testing', 'end-to-end', 'e2e', 'api testing', 'tdd', 'bdd',
-        'performance testing', 'security testing', 'penetration testing', 'code coverage', 'sonarqube', 'qa',
-        'test automation',
-      ],
-    },
-    {
-      category: 'ai-ml',
-      patterns: [
-        'openai', 'chatgpt', 'claude api', 'langchain', 'llamaindex', 'transformers', 'tensorflow', 'pytorch',
-        'keras', 'scikit-learn', 'xgboost', 'lightgbm', 'spacy', 'nltk', 'pandas', 'numpy', 'matplotlib',
-        'seaborn', 'jupyter', 'prompt engineering', 'fine-tuning', 'rag', 'pinecone', 'chroma', 'weaviate',
-        'mlops', 'computer vision', 'natural language processing', 'nlp', 'deep learning', 'machine learning',
-      ],
-    },
-    {
-      category: 'tools-methodologies',
-      patterns: [
-        'git', 'github', 'gitlab', 'bitbucket', 'jira', 'asana', 'trello', 'linear', 'monday', 'confluence',
-        'notion', 'swagger', 'figma', 'sketch', 'adobe xd', 'vscode', 'pycharm', 'intellij', 'webstorm',
-        'sublime', 'vim', 'agile', 'scrum', 'kanban', 'devops', 'clean architecture', 'solid', 'design pattern',
-        'code review', 'pair programming', 'npm', 'yarn', 'pip', 'poetry', 'maven', 'gradle',
-      ],
-    },
-  ];
-
-  for (const rule of rules) {
-    if (rule.patterns.some((pattern) => skillAlias.includes(pattern))) {
-      return rule.category;
-    }
-  }
-
-  return 'other';
-}
-
-function resolveHardSkill(skill: string): { display: string; category: HardSkillCategory; priority: number } | null {
-  const normalized = skill.trim().replace(/\s+/g, ' ');
-  if (!normalized || normalized.length > 50 || /[.!?]/.test(normalized)) return null;
-
-  const lower = normalizeHardSkillAlias(normalized);
-  // Exclude job titles (full stack developer, frontend developer, etc.)
-  if (JOB_TITLE_EXCLUSIONS.has(lower)) return null;
-  // Exclude soft skills only (communication, collaboration, ownership, etc.)
-  if (SOFT_SKILL_SIGNALS.some((signal) => lower.includes(signal))) return null;
-
-  // If in alias map, return canonical form (already properly capitalized)
-  const mapped = HARD_SKILL_ALIAS_MAP.get(lower);
-  if (mapped) return mapped;
-
-  // Pass through as hard skill: frameworks, tools, architectures, methodologies, tech names
-  const techIndicators = [
-    'api', 'rest', 'graphql', 'backend', 'frontend', 'fullstack', 'full-stack',
-    'microservice', 'event-driven', 'distributed', 'database', 'sql', 'etl',
-    'devops', 'ci/cd', 'docker', 'kubernetes', 'aws', 'cloud', 'architecture',
-    'python', 'javascript', 'typescript', 'react', 'vue', 'angular', 'nuxt', 'svelte', 'ember', 'django', 'node', 'go', 'rust', 'rails', 'spring', 'laravel',
-    'redis', 'postgres', 'mysql', 'kafka', 'airflow', 'dbt', 'snowflake',
-    'terraform', 'testing', 'celery', 'flutter', 'lambda', 'cloudflare',
-  ];
-  if (techIndicators.some((term) => lower.includes(term))) {
-    return {
-      display: capitalizeHardSkill(normalized),
-      category: inferHardSkillCategory(lower),
-      priority: Number.MAX_SAFE_INTEGER,
-    };
-  }
-
-  // Single-word tech (Airflow, dbt, Kafka) - allow if looks like a tool/framework name
-  if (/^[a-z0-9][a-z0-9+\-./]*$/.test(lower) && lower.length >= 2) {
-    return {
-      display: capitalizeHardSkill(normalized),
-      category: inferHardSkillCategory(lower),
-      priority: Number.MAX_SAFE_INTEGER,
-    };
-  }
-
-  return null;
-}
-
-function normalizeAllowedHardSkills(skills: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-
-  for (const raw of skills) {
-    const resolved = resolveHardSkill(raw);
-    if (!resolved) continue;
-    const display = resolved.display;
-    const key = display.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(display);
-  }
-
-  return result;
-}
-
-function getHardSkillPriority(skill: string): number {
-  return hardSkillPriorityMap.get(skill.trim().toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
-}
-
-function containsHardSkillPhrase(text: string, skill: string): boolean {
-  const escaped = skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const flags = skill === 'Go' ? '' : 'i';
-  return new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, flags).test(text);
-}
-
-function getExperienceSkillText(experience: Profile['experience'][number]): string {
-  return [
-    experience.title,
-    experience.company,
-    experience.location,
-    experience.description,
-    ...(experience.achievements ?? []),
-    ...(experience.skills ?? []),
-  ]
-    .filter((value) => typeof value === 'string' && value.trim().length > 0)
-    .join('\n');
-}
-
-function getLibraryHardSkillDisplayMap(): Map<string, string> {
-  return new Map(technicalSkills.map((skill) => [normalizeHardSkillAlias(skill), skill]));
-}
-
-function getMergedExperienceSkills(profile: Profile): string[] {
-  const libraryDisplayByKey = getLibraryHardSkillDisplayMap();
-  return uniqueCaseInsensitive(
-    profile.experience.flatMap((experience) =>
-      (experience.skills ?? [])
-        .map((skill) => libraryDisplayByKey.get(normalizeHardSkillAlias(skill)))
-        .filter((skill): skill is string => !!skill)
-    )
-  );
-}
-
-function restrictExperienceSkillsToLibrary(profile: Profile): Profile {
-  const libraryDisplayByKey = getLibraryHardSkillDisplayMap();
-  const experience = profile.experience.map((item) => ({
-    ...item,
-    skills: uniqueCaseInsensitive(
-      (item.skills ?? [])
-        .map((skill) => libraryDisplayByKey.get(normalizeHardSkillAlias(skill)))
-        .filter((skill): skill is string => !!skill)
-    ),
-  }));
-
-  return {
-    ...profile,
-    experience,
-    skills: getMergedExperienceSkills({ ...profile, experience }),
-  };
-}
-
-function getMatchedJobDescriptionHardSkills(jobAnalysis: JobAnalysis): string[] {
-  const libraryDisplayByKey = getLibraryHardSkillDisplayMap();
-  const originalOrder = new Map<string, number>();
-  const matchedSkills: string[] = [];
-  const candidates = [
-    ...getTechnicalSkills(jobAnalysis),
-    ...getRequiredSkills(jobAnalysis),
-    ...getPreferredSkills(jobAnalysis),
-    ...getSkillTools(jobAnalysis),
-    ...getTechnologies(jobAnalysis),
-    ...getProtocols(jobAnalysis),
-    ...getMethodologies(jobAnalysis),
-    ...getArchitecturePatterns(jobAnalysis),
-    ...extractTechSkills(getTailoringSourceText(jobAnalysis)),
-  ];
-
-  for (const rawSkill of candidates) {
-    const cleaned = rawSkill.trim();
-    if (!cleaned) continue;
-    const display = libraryDisplayByKey.get(normalizeHardSkillAlias(cleaned));
-    if (!display) continue;
-
-    const key = display.toLowerCase();
-    if (!originalOrder.has(key)) {
-      originalOrder.set(key, originalOrder.size);
-    }
-    matchedSkills.push(display);
-  }
-
-  return uniqueCaseInsensitive(matchedSkills).sort((a, b) => {
-    const aPriority = getHardSkillPriority(a);
-    const bPriority = getHardSkillPriority(b);
-    if (aPriority !== bPriority) {
-      return aPriority - bPriority;
-    }
-
-    return (originalOrder.get(a.toLowerCase()) ?? 0) - (originalOrder.get(b.toLowerCase()) ?? 0);
-  });
-}
-
-function scoreSkillForExperience(
-  skill: string,
-  experience: Profile['experience'][number],
-  assignedSkills: string[],
-  experienceIndex: number
-): number {
-  const experienceText = getExperienceSkillText(experience);
-  const resolved = resolveHardSkill(skill);
-  const skillCategory = resolved?.category;
-  const assignedCategories = new Set(
-    assignedSkills
-      .map((assignedSkill) => resolveHardSkill(assignedSkill)?.category)
-      .filter((category): category is HardSkillCategory => !!category)
-  );
-
-  let score = 0;
-
-  if (containsHardSkillPhrase(experienceText, skill)) {
-    score += 100;
-  }
-
-  if (skillCategory && assignedCategories.has(skillCategory)) {
-    score += 20;
-  }
-
-  // Small deterministic recency bias when other relevance signals tie.
-  score += Math.max(0, 5 - experienceIndex);
-
-  return score;
-}
-
-export function enrichProfileExperienceSkillsForJob(profile: Profile, jobAnalysis: JobAnalysis): Profile {
-  const matchedJobSkills = getMatchedJobDescriptionHardSkills(jobAnalysis);
-  if (matchedJobSkills.length === 0 || profile.experience.length === 0) {
-    return restrictExperienceSkillsToLibrary(profile);
-  }
-
-  const libraryDisplayByKey = getLibraryHardSkillDisplayMap();
-  const matchedSkillKeys = new Set(matchedJobSkills.map((skill) => skill.toLowerCase()));
-  const matchedSkillDisplay = new Map(matchedJobSkills.map((skill) => [skill.toLowerCase(), skill]));
-  const assignedSkillKeys = new Set<string>();
-  const originalUnmatchedSkillsByExperience: string[][] = [];
-  const enrichedExperience = profile.experience.map((experience, index) => {
-    const originalSkills = experience.skills ?? [];
-    const normalizedOriginalSkills = originalSkills
-      .map((skill) => libraryDisplayByKey.get(normalizeHardSkillAlias(skill)))
-      .filter((skill): skill is string => !!skill);
-    const relevantExistingSkills = normalizedOriginalSkills
-      .map((skill) => libraryDisplayByKey.get(normalizeHardSkillAlias(skill)) ?? skill)
-      .map((skill) => matchedSkillDisplay.get(skill.toLowerCase()) ?? skill)
-      .filter((skill) => matchedSkillKeys.has(skill.toLowerCase()));
-    const skills = uniqueCaseInsensitive(relevantExistingSkills);
-    const matchedExistingKeys = new Set(skills.map((skill) => skill.toLowerCase()));
-    originalUnmatchedSkillsByExperience[index] = uniqueCaseInsensitive(
-      normalizedOriginalSkills.filter((skill) => !matchedExistingKeys.has(skill.toLowerCase()))
-    );
-
-    for (const skill of skills) {
-      assignedSkillKeys.add(skill.toLowerCase());
-    }
-
-    return {
-      ...experience,
-      skills,
-    };
-  });
-
-  const remainingSkills = matchedJobSkills.filter((skill) => !assignedSkillKeys.has(skill.toLowerCase()));
-
-  for (const skill of remainingSkills) {
-    let bestIndex = 0;
-    let bestScore = Number.NEGATIVE_INFINITY;
-
-    enrichedExperience.forEach((experience, index) => {
-      const currentSkills = experience.skills ?? [];
-      const relevanceScore = scoreSkillForExperience(skill, experience, currentSkills, index);
-      const balancePenalty = currentSkills.length * 8;
-      const score = relevanceScore - balancePenalty;
-
-      if (
-        score > bestScore ||
-        (score === bestScore && currentSkills.length < (enrichedExperience[bestIndex].skills ?? []).length)
-      ) {
-        bestIndex = index;
-        bestScore = score;
-      }
-    });
-
-    enrichedExperience[bestIndex] = {
-      ...enrichedExperience[bestIndex],
-      skills: uniqueCaseInsensitive([...(enrichedExperience[bestIndex].skills ?? []), skill]),
-    };
-  }
-
-  enrichedExperience.forEach((experience, index) => {
-    const filledSkills = [...(experience.skills ?? [])];
-    const seen = new Set(filledSkills.map((skill) => skill.toLowerCase()));
-
-    for (const skill of originalUnmatchedSkillsByExperience[index] ?? []) {
-      if (filledSkills.length >= MIN_EXPERIENCE_SKILLS) {
-        break;
-      }
-
-      const key = skill.toLowerCase();
-      if (seen.has(key)) {
-        continue;
-      }
-
-      filledSkills.push(skill);
-      seen.add(key);
-    }
-
-    enrichedExperience[index] = {
-      ...experience,
-      skills: filledSkills,
-    };
-  });
-
-  return {
-    ...profile,
-    skills: getMergedExperienceSkills({ ...profile, experience: enrichedExperience }),
-    experience: enrichedExperience,
-  };
-}
-
-const MAX_SOFT_SKILL_LENGTH = 30;
-
-/** Map long soft skill phrases to short key points */
-const SOFT_SKILL_CONDENSE: Array<{ patterns: RegExp | string[]; key: string }> = [
-  { patterns: ['excellent communication', 'communication and collaboration', 'communication skills', 'communicate'], key: 'Communication' },
-  { patterns: ['collaboration', 'collaborative', 'collaborate'], key: 'Collaboration' },
-  { patterns: ['cross-functional', 'cross functional'], key: 'Cross-functional' },
-  { patterns: ['problem-solving', 'problem solving'], key: 'Problem-solving' },
-  { patterns: ['ownership', 'high ownership'], key: 'Ownership' },
-  { patterns: ['autonomy', 'self-directed', 'independent'], key: 'Autonomy' },
-  { patterns: ['transparency', 'transparent'], key: 'Transparency' },
-  { patterns: ['reliability', 'reliable'], key: 'Reliability' },
-  { patterns: ['supportive', 'support'], key: 'Supportive' },
-  { patterns: ['passionate', 'passion'], key: 'Passion' },
-  { patterns: ['mentorship', 'mentor', 'help fellow'], key: 'Mentorship' },
-  { patterns: ['adaptability', 'adapt'], key: 'Adaptability' },
-  { patterns: ['eager to learn', 'lifelong learning'], key: 'Eager to learn' },
-  { patterns: ['accountability', 'accountable'], key: 'Accountability' },
-  { patterns: ['attention to detail', 'detail-oriented'], key: 'Attention to detail' },
-  { patterns: ['team player', 'we are one team'], key: 'Team player' },
-  { patterns: ['diverse', 'diversity'], key: 'Diversity' },
-  { patterns: ['innovative', 'innovation', 'great ideas'], key: 'Innovation' },
-  { patterns: ['analytics', 'applied ai'], key: 'Analytics & AI' },
-  { patterns: ['scalable', 'polished'], key: 'Quality focus' },
-];
-
-function condenseSoftSkill(s: string): string {
-  const trimmed = s.trim();
-  if (trimmed.length <= MAX_SOFT_SKILL_LENGTH) {
-    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-  }
-  const lower = trimmed.toLowerCase();
-  for (const { patterns, key } of SOFT_SKILL_CONDENSE) {
-    const matches = Array.isArray(patterns)
-      ? patterns.some((p) => lower.includes(p.toLowerCase()))
-      : (patterns as RegExp).test(lower);
-    if (matches) return key;
-  }
-  const firstWord = trimmed.split(/\s+/)[0];
-  return firstWord ? firstWord.charAt(0).toUpperCase() + firstWord.slice(1) : trimmed;
-}
-
-function prioritizeSoftSkills(skills: string[]): string[] {
-  return [...skills].sort((a, b) => {
-    const aLower = a.toLowerCase();
-    const bLower = b.toLowerCase();
-    const aScore = SOFT_SKILL_SIGNALS.reduce((count, signal) =>
-      count + (aLower.includes(signal) ? 1 : 0), 0);
-    const bScore = SOFT_SKILL_SIGNALS.reduce((count, signal) =>
-      count + (bLower.includes(signal) ? 1 : 0), 0);
-
-    if (bScore !== aScore) return bScore - aScore;
-    return a.length - b.length;
-  });
-}
-
-function inferAtsSoftSkillsFromText(text: string): string[] {
-  const lower = text.toLowerCase();
-  return ATS_SOFT_SKILL_RULES
-    .filter((rule) => rule.patterns.some((pattern) => lower.includes(pattern)))
-    .map((rule) => rule.canonical);
-}
-
-function inferAtsSoftSkillsFromAnalysis(jobAnalysis?: JobAnalysis): string[] {
-  if (!jobAnalysis) return [];
-
-  const text = [
-    ...getSoftSkills(jobAnalysis),
-    ...getKeywordChecklist(jobAnalysis),
-    ...getResponsibilities(jobAnalysis),
-    ...getIndustryTerms(jobAnalysis),
-  ].join(' | ');
-
-  return inferAtsSoftSkillsFromText(text);
-}
-
-function buildJobDescriptionSkillPriority(jobAnalysis?: JobAnalysis): Map<string, number> {
-  const normalized = normalizeAllowedHardSkills(getHardSkillChecklist(jobAnalysis));
-  const priorityMap = new Map<string, number>();
-
-  normalized.forEach((skill, index) => {
-    priorityMap.set(skill.toLowerCase(), index);
-  });
-
-  return priorityMap;
-}
-
-function prioritizeHardSkills(skills: string[], jobAnalysis?: JobAnalysis): string[] {
-  // Ordered, not filtered. This used to open with `normalizeAllowedHardSkills`,
-  // which canonicalises and deduplicates and drops what it does not recognise -
-  // so choosing "order by relevance to the job" silently removed skills. A
-  // twenty-skill block came out at fifteen, because React and React.js had
-  // already been counted as two and were now printed as one. The renaming is
-  // right; doing it here was not, and it now happens during selection where the
-  // count can account for it.
-  const normalized = uniqueCaseInsensitive(skills);
-  const originalOrder = new Map<string, number>();
-  const jdPriority = buildJobDescriptionSkillPriority(jobAnalysis);
-
-  normalized.forEach((skill, index) => {
-    originalOrder.set(skill.toLowerCase(), index);
-  });
-
-  return [...normalized].sort((a, b) => {
-    const aResolved = resolveHardSkill(a);
-    const bResolved = resolveHardSkill(b);
-    const aCategory = aResolved?.category ?? 'other';
-    const bCategory = bResolved?.category ?? 'other';
-    const categoryDiff = HARD_SKILL_CATEGORY_WEIGHT[aCategory] - HARD_SKILL_CATEGORY_WEIGHT[bCategory];
-
-    if (categoryDiff !== 0) {
-      return categoryDiff;
-    }
-
-    const aJdOrder = jdPriority.get(a.toLowerCase());
-    const bJdOrder = jdPriority.get(b.toLowerCase());
-    const aInJd = typeof aJdOrder === 'number';
-    const bInJd = typeof bJdOrder === 'number';
-
-    if (aInJd !== bInJd) {
-      return aInJd ? -1 : 1;
-    }
-
-    if (aInJd && bInJd && aJdOrder !== bJdOrder) {
-      return (aJdOrder ?? 0) - (bJdOrder ?? 0);
-    }
-
-    const libraryPriorityDiff = getHardSkillPriority(a) - getHardSkillPriority(b);
-    if (libraryPriorityDiff !== 0) {
-      return libraryPriorityDiff;
-    }
-
-    const templatePriorityDiff = (aResolved?.priority ?? Number.MAX_SAFE_INTEGER)
-      - (bResolved?.priority ?? Number.MAX_SAFE_INTEGER);
-    if (templatePriorityDiff !== 0) {
-      return templatePriorityDiff;
-    }
-
-    return (originalOrder.get(a.toLowerCase()) ?? 0) - (originalOrder.get(b.toLowerCase()) ?? 0);
-  });
-}
-
-function sortHardSkillsByLibraryPriority(skills: string[]): string[] {
-  return [...skills].sort((a, b) => {
-    const priorityDiff = getHardSkillPriority(a) - getHardSkillPriority(b);
-    if (priorityDiff !== 0) {
-      return priorityDiff;
-    }
-
-    return a.localeCompare(b, undefined, { sensitivity: 'base' });
-  });
-}
-
-/**
- * "Collaboration" and "Collaboration skills" are one soft skill.
- *
- * MEASURED ON THE FIRST RUN WITH THE SECTION BACK: a ten-term list came back
- * holding "Collaboration" beside "Collaboration skills" and "Problem Solving"
- * beside "Strong problem-solving skills" - two of its ten slots spent saying
- * the same thing twice, in a section eight to ten terms long. The entries come
- * from three sources that spell them differently: the posting's own soft
- * skills, the library's rows, and whatever the model returned.
- *
- * `condenseSoftSkill` does not catch it, by design: it only rewrites an entry
- * that is too LONG to print, and "Collaboration skills" is short enough to pass.
- *
- * The key is the term with the decoration taken off - a leading intensifier, a
- * trailing "skills", the hyphens that make "problem-solving" a different string
- * from "problem solving". Six stop words rather than a vocabulary: this is
- * English grammar around a term, not a judgement about what the term means.
- */
-const SOFT_SKILL_INTENSIFIERS = /^(?:strong|excellent|exceptional|great|proven|solid)\s+/;
-const SOFT_SKILL_TRAILERS = /\s+(?:skills?|abilities|ability)$/;
-
-function softSkillKey(skill: string): string {
-  let key = skill.toLowerCase().replace(/[-_/]+/g, ' ').replace(/\s+/g, ' ').trim();
-  key = key.replace(SOFT_SKILL_INTENSIFIERS, '');
-  key = key.replace(SOFT_SKILL_TRAILERS, '');
-  // "problem solving" and "problem solve" are the same claim.
-  return key.replace(/\b(\w+?)ing\b/g, '$1').trim();
-}
-
-function dedupeSoftSkills(skills: string[]): string[] {
-  const bestByKey = new Map<string, string>();
-  const order: string[] = [];
-
-  for (const skill of skills) {
-    const key = softSkillKey(skill);
-    if (!key) continue;
-    const held = bestByKey.get(key);
-    if (held === undefined) {
-      bestByKey.set(key, skill);
-      order.push(key);
-      continue;
-    }
-    // The plainest spelling wins: shortest, and the first seen on a tie, so the
-    // priority order above decides when two forms are the same length.
-    if (skill.length < held.length) bestByKey.set(key, skill);
-  }
-
-  /*
-   * AND THE GENERIC INSIDE THE SPECIFIC. "Empathy" beside "Customer empathy",
-   * "Communication" beside "Written communication" - the library carries the
-   * bare noun and the posting asked for the qualified one, and both printed.
-   * In a section eight to ten long that is a slot spent saying a weaker
-   * version of the line above it.
-   *
-   * THE FIRST ONE SURVIVES, which is the whole point of ordering by source
-   * first: the posting's "Customer empathy" arrives before the library's
-   * "Empathy", so the qualified term is the one kept. A scanner looking for
-   * the bare noun still matches it inside the longer phrase, because a term is
-   * matched on word boundaries rather than as a whole string.
-   */
-  const kept: string[] = [];
-  for (const key of order) {
-    const skill = bestByKey.get(key) as string;
-    const words = key.split(' ').filter(Boolean);
-    const coveredByEarlier = kept.some((earlier) => {
-      const earlierWords = softSkillKey(earlier).split(' ').filter(Boolean);
-      if (earlierWords.length <= words.length) {
-        // The earlier one is the shorter: is it the tail of this one?
-        return earlierWords.length > 0
-          && earlierWords.join(' ') === words.slice(words.length - earlierWords.length).join(' ');
-      }
-      return words.join(' ') === earlierWords.slice(earlierWords.length - words.length).join(' ');
-    });
-    if (!coveredByEarlier) kept.push(skill);
-  }
-
-  return kept;
-}
-
-/**
- * The list as it will print: deduped, capped, and IN THE ORDER IT ARRIVED.
- *
- * `prioritizeSoftSkills` used to run here, and it was the second half of the
- * same defect as the merge order above. It re-sorts the whole list by how many
- * of a fixed set of signal words each term contains, which threw away the
- * source ordering the caller had just established - and then the ten-entry cap
- * took the top of a list ordered by that count.
- *
- * MEASURED on a posting asking for eight specific soft skills: "Bias for
- * action", "Ambiguity tolerance" and "Technical mentorship" were all dropped,
- * while "Reliability", "Empathy", "Mentorship" and "Collaboration" - none of
- * which the posting named - survived into the printed ten. The posting's own
- * relevance order, which the prompt asks the model for explicitly, was being
- * discarded one step before the cap.
- *
- * The sort is still there for callers that want it; what changed is that this
- * function no longer imposes it on a list whose order already means something.
- *
- * A POSTING TERM IS NOT REWRITTEN. `condenseSoftSkill` shortens an entry too
- * long to print, and its fallbacks rewrite the words - "Technical mentorship"
- * would become "Mentorship", which is a different string to a scanner, and the
- * prompt spends two sections insisting the posting's spelling is a quotation.
- * So terms the posting named are left exactly as they are and only the rest
- * are condensed.
- */
-function finalizeSoftSkills(skills: string[], fromPosting: Iterable<string> = []): string[] {
-  const protectedTerms = new Set(
-    [...fromPosting].map((term) => term.trim().toLowerCase()).filter(Boolean)
-  );
-  const shaped = normalizeSkillsList(skills).map((skill) =>
-    protectedTerms.has(skill.trim().toLowerCase()) ? skill : condenseSoftSkill(skill)
-  );
-  return dedupeSoftSkills(uniqueCaseInsensitive(shaped)).slice(0, MAX_SOFT_SKILLS);
 }
 
 function buildFallbackExperienceDescription(title: string, jobAnalysis?: JobAnalysis): string {
@@ -3322,103 +1879,6 @@ function promptJson(value: unknown): string {
 }
 
 /**
- * Each concept the posting named, with the tools it is built with.
- *
- * WHY THE MODEL GETS OPTIONS RATHER THAN A DECISION. A posting says "CI/CD",
- * "containerization", "infrastructure as code"; a skills block has to say
- * Jenkins, Docker, Terraform. Which one is right depends on the candidate -
- * a Node shop runs GitHub Actions where a Java shop runs Jenkins - and the
- * model has the profile in front of it. Code does not, and code may not touch
- * the block it returns.
- *
- * WHY THE ORDER IS SHUFFLED. Handed the same list in the same order, a model
- * reaches for the same first entry every time, and fifty resumes come back
- * naming Jenkins. The order changes per request, so the pick varies between
- * candidates while still being one of the tools the concept is actually built
- * with. A tool the POSTING named is not affected: that one is written as the
- * posting spells it, which the prompt says plainly.
- */
-function buildConceptToolOptions(
-  jobAnalysis: JobAnalysis,
-  concepts: string[]
-): Array<{ concept: string; tools: string[] }> {
-  /*
-   * What the posting names as a TOOL - its tools, technologies and protocols.
-   *
-   * `skills.technical` is deliberately not here. The analyser defines that
-   * field as "technical abilities NOT tied to a specific named tool", and its
-   * own examples are "code review", "root cause analysis", "load testing".
-   * Counting it as a named tool meant every ability was treated as already
-   * answered, so the four that most needed a tool - "audit logging", "code
-   * review", "observability tooling", "dynamic policy engines" - were skipped
-   * by the very step that exists to map them.
-   */
-  const named = new Set(
-    [
-      ...getJobNamedHardSkills(jobAnalysis),
-      // The raw fields, not `getRequiredSkills`: that one folds
-      // `skills.technical` into required, which would put every ability back
-      // in here and skip the mapping again.
-      ...normalizeSkillsList(jobAnalysis?.skills?.required as string[] | undefined),
-      ...normalizeSkillsList(jobAnalysis?.skills?.preferred as string[] | undefined),
-    ]
-      .map((term) => term.trim().toLowerCase())
-      .filter(Boolean)
-  );
-
-  /*
-   * Every term the posting produced, not only the ones already classified.
-   *
-   * The options used to be built from the concept list alone, so a phrase the
-   * table HAD tools for went without them whenever the concept rules had not
-   * recognised it first. Measured on one posting's output: "audit logging",
-   * "observability tooling", "Data Observability", "SLA-Based Alerting" and
-   * "automation framework" each had an entry in the table and each reached the
-   * resume as a phrase, because the code asked the table about classified
-   * concepts only. The table is asked about everything now; a term it does not
-   * know simply produces no row.
-   */
-  const candidates = uniqueCaseInsensitive([
-    ...concepts,
-    ...getTechnicalSkills(jobAnalysis),
-    ...getJobNamedHardSkills(jobAnalysis),
-    ...getResponsibilities(jobAnalysis),
-    ...getDomainKnowledge(jobAnalysis),
-    ...getRequiredSkills(jobAnalysis),
-    ...getPreferredSkills(jobAnalysis),
-  ]);
-
-  const rows: Array<{ concept: string; tools: string[] }> = [];
-  const seen = new Set<string>();
-  for (const concept of candidates) {
-    const options = conceptToolOptions(concept);
-    if (options.length === 0) continue;
-    // A term the posting names as a tool is not a concept to be mapped: the
-    // model writes it as spelled, which the prompt says.
-    if (named.has(concept.trim().toLowerCase())) continue;
-    const key = concept.trim().toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    // A tool the posting named for itself comes first and unshuffled - it is
-    // not a choice, it is the answer.
-    const fromPosting = options.filter((tool) => named.has(tool.toLowerCase()));
-    const rest = shuffled(options.filter((tool) => !named.has(tool.toLowerCase())));
-    rows.push({ concept, tools: [...fromPosting, ...rest] });
-  }
-  return rows;
-}
-
-function shuffled<T>(items: T[]): T[] {
-  const copy = [...items];
-  for (let at = copy.length - 1; at > 0; at -= 1) {
-    const swap = Math.floor(Math.random() * (at + 1));
-    [copy[at], copy[swap]] = [copy[swap], copy[at]];
-  }
-  return copy;
-}
-
-/**
  * Says what the model returned for the skills block. Changes nothing.
  *
  * Two things an operator would want to know and cannot see from the page:
@@ -3526,33 +1986,7 @@ function reportSkillBlock(
         + `${MIN_SKILL_GROUPS} the prompt asks for.`
     );
   }
-
-  const ordinary = skills.filter((skill) => ORDINARY_WORD_SKILLS.has(skill.trim().toLowerCase()));
-  if (ordinary.length > 0) {
-    console.warn(
-      `[Resume skills] ${profileName}: ${ordinary.length} ordinary word(s) printed as skill names - `
-        + `${ordinary.join(', ')}. Each is a product too, so none was removed.`
-    );
-  }
 }
-
-/**
- * The words the prompt names under WHAT STAYS OUT.
- *
- * Every one is both an English word and a real product - Logs, Echo, Behave,
- * Less, Reflection - which is exactly why they reach the page and why code
- * cannot settle them.
- */
-const ORDINARY_WORD_SKILLS = new Set([
-  'logs',
-  'echo',
-  'behave',
-  'less',
-  'reflection',
-  'camel',
-  'spark',
-  'flow',
-]);
 
 /**
  * The floor the prompt states, and the operator asked for by number.
@@ -3648,24 +2082,54 @@ function normalizeTailoredContent(
     }))
     .filter((group) => group.category);
 
-  /*
-   * EVERYTHING THIS POSTING NAMED, in one set, so the router can tell a
-   * keyword from an invention.
-   *
-   * Read from the analysis rather than from a list in code: these are the
-   * employer's own words for this one job, which is the only thing that makes
-   * the exception safe. `getKeywordChecklist` is the widest of them - tools,
-   * technologies, protocols, methodologies, domain knowledge and the
-   * must-include list - and a capability phrase reaches it from whichever
-   * field the analyser filed it under.
-   */
+  // Everything this posting named, for the count below of how much of the block it asked for.
   const postingVocabulary = normalizeSkillsList([
     ...getKeywordChecklist(jobAnalysis),
     ...getConceptKeywords(jobAnalysis),
   ]);
 
-  const tidied = tidySkillGroups(modelSkillGroups, { postingTerms: postingVocabulary });
+  // A re-parsed block was capitalised on its first pass; doing it again would
+  // undo a name kept in lower case.
+  const knownCasing = namesWithInnerCapitals([
+    getTailoringSourceText(jobAnalysis),
+    content.summary ?? '',
+    ...(content.experience ?? []).flatMap((role) => role.achievements ?? []),
+    profile?.summary ?? '',
+    ...(profile?.skills ?? []),
+    ...(profile?.experience ?? []).flatMap((role) => [
+      role.description ?? '',
+      ...(role.achievements ?? []),
+      ...(role.skills ?? []),
+    ]),
+  ]);
+  /*
+   * A name stays in lower case only where a PERSON wrote it that way - the
+   * posting or the candidate's profile. The models' own word is not enough: the
+   * skills check once marked "terraform" as officially lower case, and the
+   * posting it was answering wrote "Terraform".
+   */
+  const writtenByPeople = [
+    getTailoringSourceText(jobAnalysis),
+    profile?.summary ?? '',
+    ...(profile?.skills ?? []),
+    ...(profile?.experience ?? []).flatMap((role) => [
+      role.description ?? '',
+      ...(role.achievements ?? []),
+      ...(role.skills ?? []),
+    ]),
+  ].join('\n');
+  const confirmsLowercase = (name: string): boolean =>
+    new RegExp(`(?<![A-Za-z0-9])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9])`).test(writtenByPeople);
+  const tidied = tidySkillGroups(modelSkillGroups, {
+    capitalize: !options.alreadyRouted,
+    knownCasing,
+    // The posting's own terms: never deleted for repeating a heading, and the
+    // form kept when one name is written two ways.
+    asked: new Set(postingVocabulary.map((term) => term.toLowerCase())),
+    confirmsLowercase,
+  });
   const skillGroups = tidied.groups;
+  const technicalGroups = skillGroups.filter((group) => !isSoftSkillsGroup(group.category));
 
   const said: string[] = [];
   const list = (entries: readonly string[], show: number) =>
@@ -3717,13 +2181,13 @@ function normalizeTailoredContent(
     );
   }
 
-  const hardSkills = skillGroups.length > 0
-    ? skillGroups.flatMap((group) => group.skills)
+  const hardSkills = technicalGroups.length > 0
+    ? technicalGroups.flatMap((group) => group.skills)
     // No groups in the answer - an older prompt, or a build with no posting to
     // tailor against. The model's flat list, then the profile's own skills.
     : normalizeSkillsList(content.hardSkills ?? content.skills ?? profile?.skills ?? []);
 
-  reportSkillBlock(profile?.name ?? 'resume', skillGroups, hardSkills, jobAnalysis);
+  reportSkillBlock(profile?.name ?? 'resume', technicalGroups, hardSkills, jobAnalysis);
 
   /*
    * HOW MUCH OF THE BLOCK THIS POSTING ACTUALLY ASKED FOR.
@@ -3749,106 +2213,12 @@ function normalizeTailoredContent(
     );
   }
 
-  // Ordering used to happen here - job-priority first, or the library's own
-  // priority column. Neither applies now: the model returns the block in the
-  // order it wants it read, and that order is part of the answer.
-  const atsSoftPriority = inferAtsSoftSkillsFromAnalysis(jobAnalysis);
-  const softFromModel = normalizeSkillsList(content.softSkills);
-  const softFromAnalysis = getSoftSkills(jobAnalysis);
-  const softFromLibrary = getMatchedLibrarySoftSkills(jobAnalysis);
-  /*
-   * THE POSTING'S OWN WORDS FIRST, THE CANNED VOCABULARY LAST.
-   *
-   * MEASURED across a delivered batch of five: a Data Developer role, an AI
-   * Lead role and an Applied AI role came back with near-identical soft-skill
-   * sections - "Supportive, Leadership, Reliability, Communication,
-   * Collaboration skills, Cross-functional team" - because the nine canned
-   * canonicals in ATS_SOFT_SKILL_RULES were merged FIRST and a list capped at
-   * ten has no room left by the time the posting's own terms arrive.
-   *
-   * A scanner matches strings. A section that says "Cross-functional team" to
-   * a posting that asked for "stakeholder management" matches nothing, and it
-   * is also the clearest possible tell that nobody read the job.
-   *
-   * So the order is now by SOURCE: what the model returned (it read the
-   * posting and is told to spell terms as the posting spells them), then what
-   * the analyser extracted from the posting, then the library's matches
-   * against the posting text, and only then the canonicals - which are a
-   * fallback for a posting that named almost nothing, not a headline.
-   */
-  const softMerged = normalizeSkillsList([
-    ...softFromModel,
-    ...softFromAnalysis,
-    ...softFromLibrary,
-    ...atsSoftPriority,
-  ]);
-  const softVerdicts = partitionSkills(softMerged, validateSoftSkill);
-  reportRejectedSkills('soft', softVerdicts.rejected);
-  /*
-   * THE POSTING'S CULTURE LANGUAGE DOES NOT GET A LINE IN THIS SECTION.
-   *
-   * `validateSoftSkill` passes "accuracy obsession", "valued all voices" and
-   * "relentless bias toward action" - they are soft-skill shaped, and the
-   * analyser hands them over under `skills.soft`. The first run with the
-   * section back printed all three. A row of slogans is the thing the operator
-   * objected to when the old group was removed, and bringing the section back
-   * is not a reason to bring them with it. The same filter already keeps them
-   * out of the prompt's checklists and out of the coverage measurement, so all
-   * three agree about what belongs on the page.
-   */
-  const softWithoutValues = withoutValuesPhrases(softVerdicts.accepted);
-  // The posting's own words, which are the ones that may not be rewritten.
-  const postingSoft = normalizeSkillsList([...softFromModel, ...softFromAnalysis]);
-  const softLimited = finalizeSoftSkills(softWithoutValues.terms, postingSoft);
-
-  /*
-   * WHERE THE PRINTED TERMS CAME FROM, because the alternative is arguing
-   * about it. A section built out of the canned canonicals rather than the
-   * posting is the defect this ordering was changed to fix, and the only way
-   * to see it on the next batch is to count it on this one.
-   */
-  const postingSet = new Set(postingSoft.map((term) => term.toLowerCase()));
-  const fromPosting = softLimited.filter((term) => postingSet.has(term.toLowerCase()));
-  console.log(
-    `[Resume soft section] ${profile?.name ?? 'resume'}: ${softLimited.length} printed, `
-      + `${fromPosting.length} of them the posting's own words`
-      + `${softLimited.length > fromPosting.length
-        ? ` - filled out with ${softLimited.filter((t) => !postingSet.has(t.toLowerCase())).join(', ')}`
-        : ''}.`
-  );
-  if (softLimited.length < MIN_SOFT_SKILLS) {
-    console.warn(
-      `[Resume soft section] ${profile?.name ?? 'resume'}: ${softLimited.length} entry(ies) for the `
-        + `Soft Skills section, under the ${MIN_SOFT_SKILLS} asked for - `
-        + `${softLimited.join(', ') || '(none)'}. The posting and the library between them named `
-        + `no more; nothing is invented to reach the floor.`
-    );
-  }
-
   const trimIncompleteEnd = (s: string): string =>
     s.trim().replace(/,+\s*$/, '').replace(/\s+(and|or)\s*$/i, '').trim();
-  /*
-   * Every prose funnel below starts here, so the clean-ups ride along with the
-   * tag strip rather than being remembered in four places: the stand-in dashes
-   * a model writes when told not to use em-dashes, and the banned vocabulary -
-   * "leveraged", "spearheaded", "scalable", "cross-functional" and the rest.
-   * The prompt asks for plain words; this is what makes it true of every
-   * resume rather than of most of them.
-   */
-  /*
-   * The terms the posting asked for, which the rewrite must not touch.
-   *
-   * Without this the app asked for a word and then deleted it: the analyser
-   * extracts past-tense action verbs as required keywords - its own examples
-   * are "architected" and "orchestrated" - the prompt tells the model to write
-   * every one of them, and the vocabulary rules swapped them straight back
-   * out. Measured on an answer that placed every term perfectly, coverage fell
-   * from 34/34 to 17/34, eleven of them lost exactly this way.
-   */
-  const askedFor = getProseChecklist(jobAnalysis);
-
+  // Every prose funnel below starts here: the tag strip and the stand-in dashes
+  // a model writes when told not to use em-dashes. Word choice is the prompt's.
   const stripBoldTags = (s: string): string =>
-    plainLanguage(normalizeDashes(s.replace(/<\/?strong>/gi, '').replace(/<\/?b>/gi, '')), askedFor);
+    normalizeDashes(s.replace(/<\/?strong>/gi, '').replace(/<\/?b>/gi, ''));
   const sanitizeResumeText = (s: string): string => {
     const clean = stripUnsafeResumeSentences(stripBoldTags(s), undefined);
     return isUnsafeJobPostingPhrase(clean) ? '' : clean;
@@ -3893,9 +2263,7 @@ function normalizeTailoredContent(
   // stand-in dashes. It is not prose the resume renders, so none of the
   // funnels above has seen it; an absent letter stays absent.
   const coverLetterFields = content.coverLetter
-    // No protected terms: the letter is a separate document and does not count
-    // towards keyword coverage, so it can be plain throughout.
-    ? { coverLetter: plainLanguage(normalizeDashes(content.coverLetter)) }
+    ? { coverLetter: normalizeDashes(content.coverLetter) }
     : {};
 
   const cap = bulletCap();
@@ -3976,27 +2344,24 @@ function normalizeTailoredContent(
     };
   });
 
-  // The model's own wording, kept. Only sanitising and the numeric cap run over
-  // it; the shape of the sentences is the model's to choose, and forcing a lead
-  // sentence here is what made every summary read alike.
+  // The model's own wording, kept. Only sanitising and the three-sentence limit
+  // run over it; the shape of the sentences is the model's to choose, and forcing
+  // a lead sentence here is what made every summary read alike.
   const modelSummary = useNumeralsForExperienceYears(
     removeCompanyMentionsFromSummary(normalizeSummary((content.summary ?? '').trim()), profile)
   );
-  // Last, after the sanitising: trimming first and then removing an employer
-  // mention would leave a paragraph shorter than the cap meant to allow.
-  const capped = capSummaryWords(modelSummary);
+  // Last, after the sanitising, so the count is of what will print.
+  const capped = capSummarySentences(modelSummary);
   if (capped.dropped > 0) {
     console.log(
-      `[Resume summary] ${profile?.name ?? 'resume'}: trimmed to ${capped.words} words, ` +
-        `dropping ${capped.dropped} sentence(s) past the ${summaryWordCap()}-word cap.`
+      `[Resume summary] ${profile?.name ?? 'resume'}: dropped ${capped.dropped} sentence(s) past the `
+        + `${MAX_SUMMARY_SENTENCES}-sentence limit.`
     );
-  } else if (capped.words > summaryWordCap()) {
-    // One sentence longer than the whole budget. Nothing was cut, because
-    // there is no cut that improves it - but the prompt asked for 3-4
-    // sentences and got one, which is worth seeing.
-    console.log(
-      `[Resume summary] ${profile?.name ?? 'resume'}: ${capped.words} words in a single ` +
-        `sentence, past the ${summaryWordCap()}-word cap. Left alone rather than cut mid-sentence.`
+  }
+  if (capped.summary && capped.sentences < MIN_SUMMARY_SENTENCES) {
+    console.warn(
+      `[Resume summary] ${profile?.name ?? 'resume'}: one sentence, under the `
+        + `${MIN_SUMMARY_SENTENCES}-${MAX_SUMMARY_SENTENCES} asked for.`
     );
   }
   const finalSummary = capped.summary || (profile ? buildFallbackSummary(profile) : '');
@@ -4095,7 +2460,7 @@ function normalizeTailoredContent(
     const blockText = hardSkills.join(SKILL_TEXT_SEPARATOR);
     const bullets = normalizedExperience.flatMap((role) => role.achievements ?? []).join(PROSE_SEPARATOR);
     const wholePage = `${finalSummary}${PROSE_SEPARATOR}${bullets}${PROSE_SEPARATOR}${blockText}`;
-    const conceptsWanted = withoutValuesPhrases(getConceptKeywords(jobAnalysis)).terms;
+    const conceptsWanted = getConceptKeywords(jobAnalysis);
     const neverWritten = conceptsWanted.filter((term) => !containsTerm(wholePage, term));
     if (neverWritten.length > 0) {
       console.warn(
@@ -4126,26 +2491,6 @@ function normalizeTailoredContent(
     );
   }
 
-  /*
-   * What the swaps could not take out.
-   *
-   * A banned adjective is deleted and a banned verb is swapped, so anything
-   * still here is the kind that cannot be fixed a word at a time: a metaphor
-   * needs the sentence rewritten, and only the model knows what it meant.
-   * Said out loud, once per resume, because the answer is a prompt change and
-   * an operator cannot ask for one they cannot see.
-   */
-  const leftover = bannedTermsIn(
-    [finalSummary, ...normalizedExperience.flatMap((role) => role.achievements ?? [])].join(' '),
-    askedFor
-  );
-  if (leftover.length > 0) {
-    console.log(
-      `[Resume tone] ${profile?.name ?? 'resume'}: ${leftover.length} banned term(s) the rewrite ` +
-        `could not remove: ${leftover.slice(0, 8).join(', ')}${leftover.length > 8 ? ', ...' : ''}`
-    );
-  }
-
   return {
     ...content,
     ...coverLetterFields,
@@ -4154,33 +2499,8 @@ function normalizeTailoredContent(
     experience: normalizedExperience,
     hardSkills,
     skillGroups,
-    /*
-     * The Soft Skills section, printed under the technical block.
-     *
-     * IT WAS EMPTY HERE FOR SEVERAL ROUNDS, and not because the list could not
-     * be built: everything above - the posting's own soft skills, the library
-     * matches, the validation and the cap - ran exactly as it does now, and the
-     * result was dropped on the next line. The operator asked for the section
-     * back, 8 to 10 entries.
-     *
-     * What was right about removing it is kept: 44 of the library's entries are
-     * the register the operator objected to - "Innovation", "Creative
-     * solutions", "Proactiveness", "Visionary Leadership".
-     *
-     * THE SECTION IS OFF AGAIN, and this is the third position this field has
-     * held. It was removed once as "a row of unprovable adjectives", brought
-     * back when the operator asked for 8 to 10 of them, and is now off because
-     * a reviewer read the delivered batch: MEASURED across 60 resumes, every
-     * one carried the section and there were only TWELVE distinct lists among
-     * them - five resumes to a list, word for word, whatever the job. A
-     * recruiter seeing two of those sees a template.
-     *
-     * The list is still BUILT, because `softLimited` is what the Unconfirmed
-     * Skills panel reconciles against and what the coverage report counts. It
-     * is simply not printed. Soft skills reach the page the way the reviewer
-     * asked for - shown by the work a bullet describes - and the prompt's
-     * SOFT SKILLS section is what says how.
-     */
+    // Empty: the soft skills print as the last group of `skillGroups`, chosen
+    // by the model for this posting.
     softSkills: [],
     strengths: normalizedStrengths,
     // Keep legacy field aligned with hard skills for older templates/components.
@@ -4308,73 +2628,29 @@ export function buildTailorResumePromptValues(
 ): Record<string, string> {
   const { sourceJobDescription: _sourceJobDescription, ...jobAnalysisForPrompt } = jobAnalysis;
   const profileForPrompt = buildPromptProfile(profile);
-  const augmentedPromptLists = buildLibraryAugmentedPromptLists(jobAnalysis);
-
-  /*
-   * The posting's culture language never reaches the model.
-   *
-   * REPORTED AS pasted job-description phrases: "radical ownership mindset",
-   * "accuracy obsession", "valued all voices", "relentless bias toward action",
-   * tacked onto the ends of bullets where they break the sentence. The prompt
-   * now refuses them under fault 1 - and a rule alone could not have held,
-   * because these arrive on the analyser's own checklists and three things in
-   * this file then push them onto the page: the prompt is told to place EVERY
-   * term, the coverage measurement counts a missing one as a shortfall, and a
-   * big enough shortfall buys a revision call whose whole job is to write the
-   * missing terms in. A model obeying the rule would have been overruled by
-   * its own corrections.
-   *
-   * So the phrase is taken off the lists here, at the one point they are
-   * assembled. Set aside, not missed: the same decision rule 3 makes about an
-   * industry the candidate has never worked in.
-   */
-  const setAside = new Set<string>();
-  const withoutValues = (terms: string[]): string[] => {
-    const result = withoutValuesPhrases(terms);
-    for (const term of result.setAside) setAside.add(term);
-    return result.terms;
-  };
-
-  const promptSkills = withoutValues(augmentedPromptLists.promptSkills);
-  const conceptKeywords = withoutValues(getConceptKeywords(jobAnalysis, promptSkills));
+  // Everything below is read off the analysis, which an AI call produced from
+  // the posting. No list in this file decides what is a tool or a soft skill.
+  const promptSkills = getJobNamedHardSkills(jobAnalysis);
+  const conceptKeywords = getConceptKeywords(jobAnalysis);
   const conceptSet = new Set(conceptKeywords.map((keyword) => keyword.toLowerCase()));
 
   /*
    * Nothing the posting said is allowed to reach the prompt in no list at all.
-   *
-   * Every list here is assembled by its own function reading its own subset of
-   * the analysis, and for a long time nobody compared the union of them against
-   * the posting. A field left out of one list - `skills.required` and
-   * `skills.preferred` were both out of the prose checklist - meant a term
-   * extracted from the posting, carried through the whole analysis, and then
-   * written nowhere.
-   *
-   * So the last step subtracts: take every term the analysis produced, remove
-   * everything already spoken for, and append the remainder to the prose
-   * checklist. Fixing the checklist itself is the real repair and was done
-   * above; this is the backstop that makes the guarantee hold for the NEXT
-   * field somebody adds, rather than relying on them to remember this file.
-   *
-   * Concepts are excluded because they have their own list and the two are kept
-   * disjoint, so a term is asked for once rather than twice.
+   * Every term the analysis produced that no list above carries is appended to
+   * the prose checklist, so a field somebody adds later is not silently lost.
+   * Concepts have their own list and the two are kept disjoint.
    */
-  const spokenFor = [promptSkills, augmentedPromptLists.keywords, conceptKeywords,
+  const keywords = getKeywordChecklist(jobAnalysis);
+  const spokenFor = [promptSkills, keywords, conceptKeywords,
     getResponsibilities(jobAnalysis), getDomainKnowledge(jobAnalysis)];
   const uncovered = findUncoveredKeywords(collectJobKeywords(jobAnalysis), spokenFor)
     .filter((keyword) => !conceptSet.has(keyword.toLowerCase()));
 
-  const proseKeywords = withoutValues(normalizeSkillsList([
-    ...augmentedPromptLists.keywords.filter((keyword) => !conceptSet.has(keyword.toLowerCase())),
+  const proseKeywords = normalizeSkillsList([
+    ...keywords.filter((keyword) => !conceptSet.has(keyword.toLowerCase())),
     ...uncovered,
-  ]));
+  ]);
 
-  if (setAside.size > 0) {
-    console.log(
-      `[Resume values] ${profile.name}: set aside ${setAside.size} values phrase(s) the `
-        + `posting asked for - ${[...setAside].slice(0, 6).join(', ')}`
-        + `${setAside.size > 6 ? ', ...' : ''}`
-    );
-  }
   const promptValues = {
     profileJson: promptJson(profileForPrompt),
     jobAnalysisJson: promptJson(jobAnalysisForPrompt),
@@ -4391,23 +2667,11 @@ export function buildTailorResumePromptValues(
     // still keywords an ATS scores, so the prompt is told to place each one in
     // the prose - which is where a concept belongs anyway, attached to
     // something the candidate actually did.
-    //
-    // Read from the ANALYSIS, not from the library matches. Sourcing it from
-    // the library meant a concept the library had never heard of - which is
-    // most of them, the library being 1,492 entries against an industry that is
-    // larger - was dropped from the skills block for being a concept and never
-    // named to the prompt either, because it was not in the library. It landed
-    // nowhere at all. "Full-stack engineering" and "Product Engineering" went
-    // missing from finished resumes exactly that way.
     conceptKeywordsJson: promptJson(conceptKeywords),
     // Disjoint from the list above, so a term is asked for once. Both are prose
     // checklists; splitting them lets the prompt say something specific about
     // concepts without saying it twice about everything else.
     keywordsJson: promptJson(proseKeywords),
-    // The tools each concept this posting names is actually built with, so a
-    // concept becomes a tool on the resume rather than a line of jargon.
-    // Shuffled per request: see `buildConceptToolOptions`.
-    conceptToolsJson: promptJson(buildConceptToolOptions(jobAnalysis, conceptKeywords)),
     keyResponsibilitiesJson: promptJson(getResponsibilities(jobAnalysis)),
 
     // The five the posting leans on. The prompt builds bullets around these.
@@ -4443,45 +2707,9 @@ export function parseTailoredResumeContent(
   const jsonText = extractJSON(content);
   const parsed = JSON.parse(jsonText) as TailoredContent;
   const finalResult = normalizeTailoredContent(parsed, jobAnalysis, profile, options);
-  const tailoringSourceText = getTailoringSourceText(jobAnalysis);
-
-  const {
-    confirmedSkills: confirmedSoftSkills,
-    unconfirmedSkills: unconfirmedSoftSkills,
-  } = reconcileSkillBuckets({
-    extractedSkills: extractSoftSkills(tailoringSourceText),
-    modelSkills: finalResult.softSkills,
-    referenceSkills: softSkills,
-    supplementSkills: supplimentSoftSkills,
-    minimumCount: 5,
-    finalizeSkills: finalizeSoftSkills,
-  });
-  /**
-   * The terms that reached the resume without a library entry behind them.
-   *
-   * Reported rather than swallowed, because the app already has somewhere to
-   * report them: the Unconfirmed Skills panel lists them with a control that
-   * adds them to the library for good. So a posting naming a technology nobody
-   * has catalogued yet puts it on this resume AND offers to catalogue it,
-   * instead of dropping it in silence as it used to.
-   */
-  // Empty now, and the panel with it. It listed skills that reached a resume
-  // without a library row behind them, so an operator could add them - useful
-  // while the library chose the block. It no longer does: the model writes the
-  // block, and every skill on it would be "unconfirmed", which is a list of
-  // everything and therefore a list of nothing.
-  const unconfirmedHardSkills: string[] = [];
-
   return {
     ...finalResult,
-    // Carried through rather than blanked. This used to empty the list because
-    // there was no section to print it in; there is one again, and emptying it
-    // here would undo the work done upstream without saying so. The
-    // reconciliation above still runs either way - the Unconfirmed Skills panel
-    // is built from it.
     softSkills: finalResult.softSkills,
-    unconfirmedHardSkills,
-    unconfirmedSoftSkills,
     skills: finalResult.hardSkills,
   };
 }
@@ -4535,9 +2763,11 @@ export async function tailorResume(
   const secondCallEndedAt = process.hrtime.bigint();
   console.log(`[Resume timing] Second LLM call finished in ${formatDuration(secondCallStartedAt, secondCallEndedAt)}`);
 
+  const checked = await checkSkillBlock(content, profile, jobAnalysis, choice, signal);
+
   let tailored: TailoredContent;
   try {
-    tailored = parseTailoredResumeContent(content, profile, jobAnalysis);
+    tailored = parseTailoredResumeContent(checked.text, profile, jobAnalysis);
   } catch {
     console.error('Failed to parse model response:', content);
     throw new Error('Failed to parse tailored resume response');
@@ -4561,7 +2791,7 @@ export async function tailorResume(
    * If the revision fails, parses badly, or covers no more than the draft did,
    * the draft stands: a thin resume is worth more than no resume.
    */
-  const gap = measureCoverageGap(tailored, jobAnalysis);
+  const gap = measureCoverageGap(tailored, jobAnalysis, checked.concepts);
   if (gap.inBlockOnly.length > 0) {
     console.log(
       `[Resume coverage] ${profile.name}: ${gap.inBlockOnly.length} checklist term(s) are in the `
@@ -4618,16 +2848,22 @@ export async function tailorResume(
       // The block came back from the first pass already routed, so its entries
       // are names without kinds and there is nothing left to route.
     }), profile, jobAnalysis, { alreadyRouted: true });
-    const after = measureCoverageGap(revised, jobAnalysis);
+    const after = measureCoverageGap(revised, jobAnalysis, checked.concepts);
     // Better on either axis, worse on neither: a revision that places three
     // terms by dropping two figures has not helped.
     const placedMore = after.missingTerms.length < gap.missingTerms.length;
     const countedMore = after.figures > gap.figures;
-    if ((placedMore || countedMore) && after.missingTerms.length <= gap.missingTerms.length
-      && after.figures >= gap.figures) {
+    // The summary counts as an axis of its own: one sentence made two or three
+    // is better, and two or three made one is worse.
+    const twoOrMore = (count: number) => count >= MIN_SUMMARY_SENTENCES;
+    const fixedSummary = !twoOrMore(gap.summarySentences) && twoOrMore(after.summarySentences);
+    const brokeSummary = twoOrMore(gap.summarySentences) && !twoOrMore(after.summarySentences);
+    if ((placedMore || countedMore || fixedSummary) && after.missingTerms.length <= gap.missingTerms.length
+      && after.figures >= gap.figures && !brokeSummary) {
       console.log(
         `[Resume coverage] ${profile.name}: revision placed `
-          + `${gap.missingTerms.length - after.missingTerms.length} more term(s) and carries ${after.figures} figure(s).`
+          + `${gap.missingTerms.length - after.missingTerms.length} more term(s) and carries ${after.figures} figure(s)`
+          + `${fixedSummary ? `, and the summary is now ${after.summarySentences} sentences` : ''}.`
       );
       return revised;
     }
@@ -4642,7 +2878,9 @@ export async function tailorResume(
      */
     const lostTerms = after.missingTerms.length > gap.missingTerms.length;
     const lostFigures = after.figures < gap.figures;
-    const why = lostTerms && lostFigures
+    const why = brokeSummary
+      ? 'it cut the summary to one sentence'
+      : lostTerms && lostFigures
       ? 'it lost ground on both'
       : lostTerms
         ? 'it placed more figures but lost a checklist term, and the gate takes the revision whole'

@@ -78,18 +78,13 @@ type CoverLetterStyle = {
   accent: string;
 };
 
-/** Ten typefaces, each with a fallback chain that survives either platform. */
+/**
+ * One typeface: Arial, the same standard font as the resume it goes out with.
+ * ASKED FOR: "use standard font for all resumes", cover letters included. The
+ * letters still differ - by the five page forms below, the inks and the accents.
+ */
 const FAMILIES: Array<{ key: string; stack: string; serif: boolean }> = [
-  { key: 'georgia', stack: "Georgia, 'Times New Roman', Times, serif", serif: true },
-  { key: 'times', stack: "'Times New Roman', Times, Georgia, serif", serif: true },
-  { key: 'palatino', stack: "Palatino, 'Palatino Linotype', 'Book Antiqua', Georgia, serif", serif: true },
-  { key: 'cambria', stack: "Cambria, Georgia, 'Times New Roman', serif", serif: true },
-  { key: 'garamond', stack: "Garamond, 'EB Garamond', Georgia, serif", serif: true },
-  { key: 'helvetica', stack: "'Helvetica Neue', Helvetica, Arial, sans-serif", serif: false },
-  { key: 'arial', stack: 'Arial, Helvetica, sans-serif', serif: false },
-  { key: 'segoe', stack: "'Segoe UI', 'Helvetica Neue', Arial, sans-serif", serif: false },
-  { key: 'verdana', stack: "Verdana, Geneva, 'Segoe UI', sans-serif", serif: false },
-  { key: 'trebuchet', stack: "'Trebuchet MS', 'Lucida Grande', Tahoma, sans-serif", serif: false },
+  { key: 'arial', stack: "Arial, Helvetica, 'Liberation Sans', sans-serif", serif: false },
 ];
 
 /**

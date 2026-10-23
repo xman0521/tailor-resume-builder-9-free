@@ -28,8 +28,8 @@ By default it runs on **a chat tab you are already signed in to** rather than me
 | **ATS Optimization** | AI extracts keywords and tailors content for applicant tracking systems |
 | **Templates** | Built-in professional templates plus manual and uploaded templates |
 | **Cover Letters** | Auto-generated PDF and DOCX cover letters with professional formatting |
-| **Per-Profile Settings** | Each profile chooses its prompts, template, file naming, and skill ordering |
-| **Admin Panel** | Manage profiles, groups, templates, prompts, skills, and AI model settings |
+| **Per-Profile Settings** | Each profile chooses its prompts, template, file naming, and skills layout |
+| **Admin Panel** | Manage profiles, groups, templates, prompts, and AI model settings |
 | **PDF & DOCX** | Export resumes in both formats |
 
 ---
@@ -116,21 +116,18 @@ Two model calls, and then a lot of code.
 2. **Tailor**, which writes the prose: the summary, each role's description and
    bullets, and the cover letter.
 
-**The model does not choose the skill lists.** It is told to omit them, and code
-decides them instead:
+**The model writes the skills block; no fixed list of skills is kept anywhere.**
 
-- **Technical Skills** come from the job. The analyser's named technologies, tools
-  and protocols lead, then library terms found in the posting's raw text, then
-  skills evidenced in your own roles. Ideas are never listed - "microservices" is
-  translated into Docker and Kubernetes, "CI/CD" into Jenkins - because a concept
-  is not something a reader can screen for. The block fills toward 20 and is capped
-  at 35, and only terms the job or your history named can reach the space between.
-  A technology the library has never heard of still gets through, and is reported
-  back as an *unregistered skill* you can add in one click.
-- **Soft skills** come from the posting too, capped at 10 with a floor of 5.
-- Ideas that were kept out of the skills block are handed to the tailoring prompt
-  as prose targets, so the keyword still reaches the page - in a sentence about
-  work you actually did, rather than as a line in a list.
+- **Technical Skills**: the tailoring call returns 5-7 groups of real tools, 35-45
+  in all, starting from the technologies the analysis read off the posting and
+  filled out from your own roles. A second call (`check-skills`) swaps any concept
+  in the block for the tools it is built with and fixes names and casing. Code then
+  removes repeats - the same name twice, an acronym beside its expansion, a plural
+  beside its singular - judged from the names alone.
+- **Soft skills**: one last group, 5-8 the posting asks for, in its own words.
+- Concepts kept out of the block are handed to the tailoring prompt as prose
+  targets, so the keyword still reaches the page - in a sentence about work you
+  actually did, rather than as a line in a list.
 
 Layout is per profile: **One plain list** (default) or **Grouped under headings**.
 Templates that draw a Soft Skills section get one; those that do not are untouched.
@@ -139,10 +136,9 @@ Templates that draw a Soft Skills section get one; those that do not are untouch
 
 | Data | Storage |
 |------|---------|
-| Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, skill library, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
+| Profiles, groups, custom templates, custom prompts, edited built-in prompts, app settings, bid-assistant jobs and answers | SQLite database in `DB_DIR` (default `/data/db/free_tailor.db`) |
 | API keys for the metered providers | `.env` only. The app keeps no keys of its own: a settings row upgraded from an older release has its stored keys deleted on first read, and says so in the log |
 | Default prompts (one per feature) | `backend/static/prompts/*.json` |
-| Skill library seed (loaded into the database on first run) | `backend/static/skills/skills.json` |
 | Built-in resume templates | `backend/static/templates/*.json` |
 
 Nothing under `backend/static` is written to at runtime. Edits made in the admin panel always go to the database.
@@ -368,7 +364,6 @@ free_tailor/
 │   │   ├── database/       # SQLite connection, schema, repositories
 │   │   │   └── migrations/ # One-time data migrations, run on first DB use
 │   │   ├── routes/         # API routes
-│   │   ├── controllers/    # Skill library endpoints
 │   │   ├── middleware/     # Auth, AI error mapping
 │   │   ├── extractors/     # Template extraction from uploaded PDFs
 │   │   ├── integrations/   # Google Sheets
@@ -380,14 +375,13 @@ free_tailor/
 │   │   │   │       ├── browserChat/  # claude.ai and chatgpt.com tabs (default)
 │   │   │   │       ├── claudeCli/    # The `claude` CLI provider
 │   │   │   │       └── ...           # openai, deepseek, anthropicHttp
-│   │   │   ├── utils/      # hardSkillSelection.ts - what goes in Technical Skills
+│   │   │   ├── utils/      # resumeQuality.ts - tidying the skills block, bullet checks
 │   │   │   └── resumeService.ts  # Resume/cover-letter domain logic
 │   │   ├── generators/     # PDF, DOCX, cover letter generation
 │   │   ├── scripts/        # Legacy import, debug browsers, chat doctor
 │   │   └── types/          # TypeScript types
 │   ├── static/
 │   │   ├── prompts/        # Default prompt per feature
-│   │   ├── skills/         # Skill library seed
 │   │   └── templates/      # Resume templates (yours to fill)
 │   └── test/               # node:test suite
 │       └── fixtures/cli/   # Recorded `claude` CLI event streams
@@ -421,7 +415,7 @@ File and folder names are templated per profile.
 
 | Section | Purpose |
 |---------|---------|
-| **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and hard-skill ordering. Three ways in: **Add Manually**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile) |
+| **Profiles** | Create/edit candidate profiles, prompts, template, file naming, and skills layout. Three ways in: **Add Manually**, **Upload Resume PDF** (an AI call reads the PDF), and **Import JSON** (no AI call - the file already is a profile) |
 | **Profile JSON import** | Takes one profile, a list of them, or `{ "profiles": [ ... ] }` - the shapes `GET /api/profiles/:id` hands out. An import never overwrites a profile you already have: an id that is free is kept, so a backup restored into an empty install keeps the ids its groups reference, and one that is taken gets a new profile instead. A file with one bad entry imports nothing rather than half |
 | **Groups** | Group profiles for batch generation |
 | **Browser chat providers** | `Claude (browser)` and `ChatGPT (browser)` drive claude.ai and chatgpt.com in a Chrome you started and signed in to yourself, over the DevTools protocol. No API key, nothing metered - your existing chat plan is the quota. Slow, one conversation at a time, and the prompt goes into that account's chat history |
@@ -430,7 +424,6 @@ File and folder names are templated per profile.
 | **AI defaults per profile** | Each profile picks its own model, effort (`low`..`max`) and thinking mode; the builder shows those defaults and can override any of them for a single run. Both menus list every model, with the locked ones greyed out behind a 🔒 rather than hidden. Effort is the CLI's `--effort` flag. Thinking is on by default and adaptive - the models decide per answer - so the choice is whether to allow it, not how much; depth is what effort controls |
 | **Templates** | Every template in `backend/static/templates` plus manual and uploaded ones. That directory is yours to fill: the app reads whatever is in it, so a set can be swapped wholesale without touching code. **View** renders any of them with a full sample resume in that template's own page box, read from its `@page` rule, so the preview and the printed PDF agree |
 | **Prompts** | Edit default prompts or add custom variants per feature |
-| **Skills** | Maintain the hard/soft skill library |
 | **Settings** | AI providers, models, output location, and live Claude subscription status (sign-in, usage window, in-flight calls). Each provider row shows what it reports right now; a metered provider's key comes from `.env`. A provider this installation cannot run is marked 🔒 with the reason, and its checkbox is fixed at whatever the operator last chose |
 
 ---
@@ -483,8 +476,8 @@ See `.env.example` for the full `AI_CLI_*` list.
 | One browser is out of messages and the whole request fails | Fixed. A browser that is reachable but cannot take the prompt - out of messages, signed out, wedged, or a previous turn that never let go - is passed over for the next browser of that site, and left out for a few minutes so later calls skip it too. That is the reason to run more than one: each window is a separate session, so an account's wall is not the site's. The retry only happens when the prompt never reached the site; once it has landed, another browser would be asking the same question twice. When every browser refuses, the error is still that browser's own (a usage wall is a 429, a signed-out tab a 503) with each browser and its reason named in the log. |
 | A free account runs out of messages halfway through a batch | Set the profile's model to **Hybrid (free)**. It spreads calls across both free accounts - a tailoring run is two calls (the analysis, then the tailoring, which returns the cover letter with it) and a batch of ten profiles is twenty, which one account may not carry - and moves to the other one when either is out of messages, signed out, or has no browser running. Hybrid only appears when both free providers are enabled, since with one there is nothing to be hybrid between. |
 | Effort and Thinking are greyed out | The chosen model is a chat window, and a chat window has no effort flag and no thinking budget - there is nowhere to put either. The two selects go inactive rather than accept a setting that would change nothing. Pick the Claude CLI seat to get them back. |
-| Technical Skills is one plain list and you want headings | Set **Technical Skills Layout** to `Grouped under headings` under the profile's settings. One plain list is the default: the headings are inferred by the shared library rather than authored, and a heading nobody chose is a claim nobody made. Switching is a rendering choice only - a grouping you typed in is kept either way. |
-| A skill is filed under the wrong heading | The shared skill library guesses a heading per skill, and it cannot know that your Vault is infrastructure rather than a library. Press **Assign headings** on the profile's Hard Skills and set that one; the rest keep being worked out. A profile's own headings are used exactly as written and are never padded out to a count. |
+| Technical Skills is one plain list and you want headings | Set **Technical Skills Layout** to `Grouped under headings` under the profile's settings. One plain list is the default. A tailored resume prints the headings the model chose; a profile rendered on its own prints only the headings you assign. Switching is a rendering choice only - a grouping you typed in is kept either way. |
+| A skill is filed under the wrong heading | Press **Assign headings** on the profile's Hard Skills and type the heading for it. A skill left without one prints under a last **Other** heading. A profile's own headings are used exactly as written and are never padded out to a count. |
 | An exported set of templates will not import | Fixed. The JSON upload now takes one template, a list of them, or `{ "templates": [ ... ] }`, works `sections` out from the markup when the file names none, and says which entry is wrong rather than failing the file. It saves all of them or none, and never overwrites a template already here. |
 | An uploaded profile lost its skills | It should not now: a flat list, a `{ "Languages": [ ... ] }` map, a list of `{ category, skills }` groups, and a mix of names and groups all import to the same profile. Every grouped skill also lands in the flat list the tailoring prompt reads. |
 | A model is greyed out with a 🔒 and cannot be picked | Its provider is locked in this installation - the row says why. `claude-cli` needs a Claude subscription seat signed in to the CLI on this machine; sign it in and add `AI_UNLOCKED_PROVIDERS=claude-cli` to `.env`, then restart. Use `Claude (free)` or `ChatGPT (free)` otherwise. |

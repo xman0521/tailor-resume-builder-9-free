@@ -1,6 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+// These stubs answer AI calls in order; the skills check has its own tests.
+process.env.RESUME_SKILL_CHECK_OFF = '1';
+
 const {
   countFigures,
   parseJobAnalysisContent,
@@ -64,7 +67,7 @@ const draft = (bullets, summary) => JSON.stringify({
 /** Carries almost nothing: five focus skills and three concepts all missing. */
 const THIN = draft(
   ['Built settlement services for the payments path.'],
-  'Engineer of 9 years on payment platforms.'
+  'Engineer of 9 years on payment platforms. Runs the settlement path end to end.'
 );
 
 /** Carries everything the checklist wants, and clears the figure floor. */
@@ -75,12 +78,12 @@ const FULL = draft(
     'Shipped artificial intelligence features over Postgres and Kafka across 4 services, watching Datadog.',
     'Reviewed 30 changes a month, where communication skills and ownership kept releases predictable.',
   ],
-  'Engineer of 9 years on payment platforms.'
+  'Engineer of 9 years on payment platforms. Runs the settlement path end to end.'
 );
 
 /** What the revision returns now: only what it changed. */
 const PATCH = JSON.stringify({
-  summary: 'Engineer of 9 years on payment platforms, across full-stack development and artificial intelligence.',
+  summary: 'Engineer of 9 years on payment platforms. Works across full-stack development and artificial intelligence.',
   experience: [{
     company: 'Acme',
     title: 'Senior Software Engineer',
@@ -154,7 +157,7 @@ test('one stray ordinary term is not worth a call', async () => {
       'Shipped artificial intelligence features over Postgres and Kafka across 4 services.',
       'Reviewed 30 changes a month, where communication skills and ownership kept releases predictable.',
     ],
-    'Engineer of 9 years on payment platforms.'
+    'Engineer of 9 years on payment platforms. Runs the settlement path end to end.'
   );
 
   const { calls } = await withStub([nearlyComplete]);
@@ -167,6 +170,37 @@ test('a draft that clears both floors costs one call', async () => {
   assert.ok(countFigures(result) >= 5);
 });
 
+test('a one-sentence summary alone does not buy a call', async () => {
+  // ASKED FOR: "no need 1 extra call for 1 sentence summary." The prompt asks
+  // for two or three; a draft fine everywhere else ships as it came.
+  const oneSentence = draft(
+    JSON.parse(FULL).experience[0].achievements,
+    'Engineer of 9 years on payment platforms.'
+  );
+  const { calls } = await withStub([oneSentence]);
+  assert.equal(calls.length, 1);
+});
+
+test('a revision made for another reason is told to split a one-sentence summary', async () => {
+  const thinOneSentence = draft(
+    JSON.parse(THIN).experience[0].achievements,
+    'Engineer of 9 years on payment platforms.'
+  );
+  const { calls } = await withStub([thinOneSentence, PATCH]);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].promptValues.summaryNote, /THE SUMMARY IS ONE SENTENCE/);
+});
+
+test('a revision that cuts the summary to one sentence is rejected', async () => {
+  const oneSentencePatch = JSON.stringify({
+    summary: 'Engineer of 9 years on payment platforms across full-stack development and artificial intelligence.',
+  });
+  const { calls, result } = await withStub([THIN, oneSentencePatch]);
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.summary, 'Engineer of 9 years on payment platforms. Runs the settlement path end to end.');
+});
+
 test('a draft short on figures alone is still sent back', async () => {
   const noFigures = draft(
     [
@@ -174,7 +208,7 @@ test('a draft short on figures alone is still sent back', async () => {
       'Took full-stack development of the checkout path through Terraform, Postgres and Kafka.',
       'Shipped artificial intelligence features, watching Datadog, where communication skills and ownership held.',
     ],
-    'Engineer of 9 years on payment platforms.'
+    'Engineer of 9 years on payment platforms. Runs the settlement path end to end.'
   );
   const { calls } = await withStub([noFigures, PATCH]);
 
@@ -378,7 +412,7 @@ test('a draft missing only its soft skills is sent back', async () => {
       'Shipped artificial intelligence features over Postgres and Kafka across 4 services, watching Datadog.',
       'Reviewed 30 changes a month and kept 12 releases a quarter predictable.',
     ],
-    'Engineer of 9 years on payment platforms.'
+    'Engineer of 9 years on payment platforms. Runs the settlement path end to end.'
   );
 
   const { calls } = await withStub([softSkillsMissing, PATCH]);
@@ -408,7 +442,7 @@ test('one missing soft skill is not worth a call', async () => {
       'Shipped artificial intelligence features over Postgres and Kafka across 4 services, watching Datadog.',
       'Reviewed 30 changes a month, where communication skills kept 12 releases a quarter predictable.',
     ],
-    'Engineer of 9 years on payment platforms.'
+    'Engineer of 9 years on payment platforms. Runs the settlement path end to end.'
   );
 
   const { calls } = await withStub([oneMissing]);
@@ -424,7 +458,7 @@ test('a draft carrying its soft skills is told not to add more', async () => {
       'Took full-stack development of the checkout path through Terraform, Postgres and Kafka.',
       'Shipped artificial intelligence features, watching Datadog, where communication skills and ownership held.',
     ],
-    'Engineer of 9 years on payment platforms.'
+    'Engineer of 9 years on payment platforms. Runs the settlement path end to end.'
   );
   const { calls } = await withStub([noFigures, PATCH]);
 
@@ -450,7 +484,7 @@ test('a revised resume does not report its block as unlabelled', async () => {
         'Took full-stack development of the checkout path through Terraform, Postgres and Kafka.',
         'Shipped artificial intelligence features, watching Datadog, where communication skills and ownership held.',
       ],
-      'Engineer of 9 years on payment platforms.'
+      'Engineer of 9 years on payment platforms. Runs the settlement path end to end.'
     );
     const { calls } = await withStub([noFigures, PATCH]);
     assert.equal(calls.length, 2, 'this draft should have bought a revision');
@@ -489,7 +523,7 @@ test('a term sitting in the skills block is not asked for again', async () => {
    */
   const blockCarriesTheStack = JSON.stringify({
     title: 'Model Title',
-    summary: 'Engineer of 9 years on payment platforms.',
+    summary: 'Engineer of 9 years on payment platforms. Runs the settlement path end to end.',
     experience: [{
       title: 'Senior Software Engineer', company: 'Acme', startDate: '01/2019', endDate: 'Present',
       location: 'Remote', description: '',

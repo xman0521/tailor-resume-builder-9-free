@@ -11,18 +11,13 @@ const {
   bulletsNamingATool,
   capSkillBlock,
   dropRestatedSkillsFromGroups,
-  findAnachronisms,
   MAX_SKILL_GROUPS,
   findBrokenBullets,
   findGarbledMetrics,
   isAllowedSoftSkill,
   isConceptEntry,
-  isValuesPhrase,
   looksLikeADescription,
-  recentRolesWithoutScope,
   restatesSkill,
-  roleEndYear,
-  rolesWithoutScale,
   skillWords,
   tidySkillGroups,
 } = require('../dist/services/utils/resumeQuality');
@@ -80,10 +75,11 @@ test('an entry goes in the block or into the prose according to its own label', 
 
   assert.deepEqual(groups, [
     { category: 'Languages & Frameworks', skills: ['Python', 'React', 'MCP', 'LLMs', 'Agile'] },
+    { category: 'Soft Skills', skills: ['Ownership'] },
   ]);
   assert.deepEqual(
     report.routedToProse.map((entry) => `${entry.name} [${entry.kind}]`),
-    ['Prompt Engineering [practice]', 'Ownership [soft]', 'Cloud [category]', 'claims adjudication [domain]']
+    ['Prompt Engineering [practice]', 'Cloud [category]', 'claims adjudication [domain]']
   );
 });
 
@@ -165,7 +161,99 @@ test('a group emptied by the routing is dropped rather than printed headless', (
     { category: 'Languages', skills: [{ name: 'Python', kind: 'language' }] },
     { category: 'Ways of Working', skills: [{ name: 'Ownership', kind: 'soft' }, { name: 'Mentoring', kind: 'soft' }] },
   ]);
-  assert.deepEqual(groups, [{ category: 'Languages', skills: ['Python'] }]);
+  assert.deepEqual(groups, [
+    { category: 'Languages', skills: ['Python'] },
+    { category: 'Soft Skills', skills: ['Ownership', 'Mentoring'] },
+  ]);
+});
+
+test('soft skills form one group, printed last and outside the group cap', () => {
+  // Seven technical groups is the cap; the soft group must not be merged into
+  // one of them, wherever the model put its soft entries.
+  const technical = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map((name) => ({
+    category: name,
+    skills: [{ name: `${name}1`, kind: 'tool' }, { name: `${name}2`, kind: 'tool' }],
+  }));
+  technical[2].skills.push({ name: 'Mentoring', kind: 'soft' });
+  const { groups, report } = tidySkillGroups([
+    { category: 'Soft Skills', skills: [{ name: 'Communication', kind: 'soft' }] },
+    ...technical,
+  ]);
+
+  assert.equal(report.mergedGroups.length, 0);
+  assert.equal(groups.length, 8);
+  assert.deepEqual(groups[groups.length - 1], { category: 'Soft Skills', skills: ['Communication', 'Mentoring'] });
+});
+
+test('a re-parsed block keeps its Soft Skills group, known by heading', () => {
+  // The revision path sends the finished block back as bare names.
+  const { groups, report } = tidySkillGroups([
+    { category: 'Languages', skills: ['Python', 'Go'] },
+    { category: 'Soft Skills', skills: ['Communication', 'Ownership'] },
+  ]);
+  assert.deepEqual(groups, [
+    { category: 'Languages', skills: ['Python', 'Go'] },
+    { category: 'Soft Skills', skills: ['Communication', 'Ownership'] },
+  ]);
+  assert.deepEqual(report.unlabelled, ['Python', 'Go']);
+});
+
+test('an abbreviation beside its expansion is one entry, read off the initials', () => {
+  const { duplicateOf } = require('../dist/services/utils/resumeQuality');
+  assert.deepEqual(duplicateOf('RAG', 'Retrieval-Augmented Generation'), { keep: 'RAG', drop: 'Retrieval-Augmented Generation' });
+  assert.deepEqual(duplicateOf('Large Language Models', 'LLMs'), { keep: 'Large Language Models', drop: 'LLMs' });
+  assert.deepEqual(duplicateOf('IaC', 'Infrastructure as Code'), { keep: 'IaC', drop: 'Infrastructure as Code' });
+  assert.deepEqual(duplicateOf('CI/CD', 'Continuous Integration/Continuous Delivery'), {
+    keep: 'CI/CD', drop: 'Continuous Integration/Continuous Delivery',
+  });
+
+  // A word that happens to spell initials is not an acronym, and digits count.
+  for (const [a, b] of [['Go', 'Google Optimize'], ['EC2', 'Elastic Cloud'], ['AWS', 'AWS Lambda']]) {
+    assert.equal(duplicateOf(a, b), null, `${a} and ${b} are two things`);
+    assert.equal(duplicateOf(b, a), null);
+  }
+});
+
+/*
+ * REPORTED: core skills missing from the block. Two tidy-up rules could take
+ * out a term the posting asked for; neither may now.
+ */
+test('when one name is written two ways, the posting\'s spelling is the one kept', () => {
+  const asked = new Set(['machine learning', 'sql']);
+  const { groups, report } = tidySkillGroups([
+    { category: 'ML & AI', skills: [{ name: 'ML', kind: 'technology' }, { name: 'Machine Learning', kind: 'technology' }] },
+    { category: 'Data', skills: [{ name: 'Azure SQL', kind: 'database' }, { name: 'SQL', kind: 'language' }] },
+  ], { asked });
+
+  assert.deepEqual(groups, [
+    { category: 'ML & AI', skills: ['Machine Learning'] },
+    { category: 'Data', skills: ['SQL'] },
+  ]);
+  assert.deepEqual(report.duplicates, [
+    { kept: 'Machine Learning', dropped: 'ML' },
+    { kept: 'SQL', dropped: 'Azure SQL' },
+  ]);
+
+  // Both forms asked for: both stay, because a scanner looks for each.
+  const both = tidySkillGroups([
+    { category: 'ML & AI', skills: [{ name: 'LLMs', kind: 'technology' }, { name: 'Large Language Models', kind: 'technology' }] },
+  ], { asked: new Set(['llms', 'large language models']) });
+  assert.deepEqual(both.groups[0].skills, ['LLMs', 'Large Language Models']);
+});
+
+test('only a whole part of the heading is a repeat, and never a term the posting asked for', () => {
+  const { groups, report } = tidySkillGroups([
+    { category: 'AWS Cloud', skills: [{ name: 'AWS', kind: 'platform' }, { name: 'Lambda', kind: 'tool' }] },
+    { category: 'ML & AI', skills: [{ name: 'AI', kind: 'technology' }, { name: 'PyTorch', kind: 'library' }] },
+    { category: 'CI/CD & Automation', skills: [{ name: 'Automation', kind: 'tool' }, { name: 'Jenkins', kind: 'tool' }] },
+  ], { asked: new Set(['ai']) });
+
+  assert.deepEqual(groups, [
+    { category: 'AWS Cloud', skills: ['AWS', 'Lambda'] },
+    { category: 'ML & AI', skills: ['AI', 'PyTorch'] },
+    { category: 'CI/CD & Automation', skills: ['Jenkins'] },
+  ]);
+  assert.deepEqual(report.repeated, ['Automation']);
 });
 
 test('the prompt asks for the kind, and says where each one goes', () => {
@@ -189,7 +277,6 @@ test('the prompt asks for the kind, and says where each one goes', () => {
    * the resume - measured at 37% of everything the old rules removed.
    */
   assert.match(content, /WHAT LEAVES THE BLOCK MUST LAND IN A SENTENCE/);
-  assert.match(content, /37% of what the old rules removed vanished from the\s+page entirely/);
   assert.match(content, /IF YOU CANNOT NAME THE KIND, THE ENTRY DOES NOT GO IN/);
 });
 
@@ -248,274 +335,11 @@ test('the ceiling is enforced from the longest group, not the end of the block',
 });
 
 
-/* ─── 2. A values phrase is not a skill ───────────────────────────────────── */
-
-test('the posting culture language the operator reported is refused', () => {
-  for (const phrase of [
-    'radical ownership mindset',
-    'accuracy obsession',
-    'valued all voices',
-    'relentless bias toward action',
-    "what agents can and can't do",
-    'ownership mindset',
-    'customer obsession',
-    'passion for data',
-    'can-do attitude',
-    'bias for action',
-  ]) {
-    assert.equal(isValuesPhrase(phrase), true, `${phrase} is a claim about character`);
-  }
-});
-
-test('the soft skills a scanner actually scores still pass', () => {
-  /*
-   * THE HALF THAT KEEPS THIS SAFE. The prompt asks for every soft skill in
-   * KEYWORDS and a scanner scores them as skills, so a filter that swept up
-   * "Ownership" along with "radical ownership mindset" would cost real matches
-   * in exchange for a style complaint. What is refused is the slogan built
-   * around one.
-   */
-  for (const term of [
-    'Ownership',
-    'Collaboration',
-    'Mentoring',
-    'Communication',
-    'Communication skills',
-    'Troubleshooting',
-    'attention to detail',
-    'problem-solving',
-    'root cause analysis',
-    'incident response',
-    // Terms that would die under a looser rule: a real ML task, a domain term,
-    // a methodology, a field and a product category.
-    'bias detection',
-    'US GAAP',
-    'extreme programming',
-    'deep learning',
-    'voice interfaces',
-    'Python',
-  ]) {
-    assert.equal(isValuesPhrase(term), false, `${term} must survive`);
-  }
-});
-
-const valuesAnalysis = () =>
-  parseJobAnalysisContent(
-    JSON.stringify({
-      jobMeta: { title: 'Data Engineer', seniority: 'Senior', industry: 'SaaS', department: 'Engineering' },
-      skills: {
-        technical: ['data pipelines', 'radical ownership mindset'],
-        tools: ['Airflow'],
-        soft: ['collaboration', 'accuracy obsession', 'relentless bias toward action'],
-      },
-      technologies: ['Python'],
-      protocols: [], methodologies: [], architecturePatterns: [],
-      responsibilities: ['own the ingestion path'],
-      domainKnowledge: [],
-      softSkills: ['valued all voices', 'ownership'],
-      keywords: { actionVerbs: [], buzzwords: [], mustInclude: ['Python'] },
-    }),
-    'A posting about data pipelines in Python, for somebody with a radical ownership mindset.'
-  );
-
-const dataProfile = () => ({
-  id: 'p', name: 'Values Test', title: 'Data Engineer', createdAt: '', updatedAt: '',
-  contact: { phone: '1', email: 'a@b.c', location: 'X' },
-  summary: 'Engineer.',
-  experience: [{
-    title: 'Data Engineer', company: 'Acme', startDate: '01/2019', endDate: 'Present',
-    location: 'Remote', description: 'Built Python pipelines on Airflow.', achievements: [], skills: [],
-  }],
-  strengths: [], skills: [], education: [], certifications: [],
-});
-
-const VALUES_PHRASES = [
-  'radical ownership mindset',
-  'accuracy obsession',
-  'relentless bias toward action',
-  'valued all voices',
-];
-
-test('a values phrase never reaches the model', () => {
-  /*
-   * A PROMPT RULE ALONE WOULD NOT HAVE HELD. These phrases arrive on the
-   * analyser's own checklists, and the prompt is told to place EVERY term on
-   * them - so the model was being asked for the thing fault 1 forbids, in the
-   * same document, and the later instruction is the one it was counted against.
-   * Taking them off the list is what settles it.
-   */
-  const values = buildTailorResumePromptValues(dataProfile(), valuesAnalysis());
-  const sent = [
-    values.skillsJSON,
-    values.hardSkillsJson,
-    values.keywordsJson,
-    values.conceptKeywordsJson,
-  ].join(' ').toLowerCase();
-
-  for (const phrase of VALUES_PHRASES) {
-    assert.equal(sent.includes(phrase), false, `${phrase} was still handed to the model`);
-  }
-
-  // And the real terms beside them are untouched, which is the point: this is a
-  // filter on one shape of phrase, not a quieter checklist.
-  assert.ok(sent.includes('data pipelines'));
-  assert.ok(sent.includes('collaboration'));
-  assert.ok(sent.includes('ownership'));
-});
-
-test('a term set aside is reported, and not then counted as one the resume missed', (t) => {
-  /*
-   * The second half of the same fix. The prose checklist feeds the coverage
-   * measurement, the bullet chooser, and the gap that decides whether to pay
-   * for a revision call - and that call's whole job is to write the missing
-   * terms in. Left on the checklist, a values phrase would have been put back
-   * by the app itself after the model correctly left it out.
-   *
-   * Read off the log lines, which is where the numbers an operator reacts to
-   * come from.
-   */
-  const lines = [];
-  const realLog = console.log;
-  const realWarn = console.warn;
-  console.log = (line) => lines.push(String(line));
-  console.warn = (line) => lines.push(String(line));
-  t.after(() => { console.log = realLog; console.warn = realWarn; });
-
-  const analysis = valuesAnalysis();
-  buildTailorResumePromptValues(dataProfile(), analysis);
-  parseTailoredResumeContent(
-    JSON.stringify({
-      title: 'Data Engineer',
-      summary: 'Data engineering of 9 years across ingestion platforms, where ownership of the nightly path and collaboration with the analytics team shaped the work.',
-      experience: [{
-        title: 'Data Engineer', company: 'Acme', startDate: '01/2019', endDate: 'Present',
-        location: 'Remote', description: '',
-        achievements: ['Rebuilt the data pipelines in Python on Airflow, cutting failed runs from 9 a week to 1.'],
-      }],
-      strengths: [],
-      skillGroups: [{ category: 'Data', skills: ['Python', 'Airflow'] }],
-      coverLetter: 'I build pipelines.',
-    }),
-    dataProfile(),
-    analysis
-  );
-  console.log = realLog;
-  console.warn = realWarn;
-
-  // Set aside out loud: a silent filter on the posting's own words would be
-  // worse than the phrases it removes.
-  assert.ok(
-    lines.some((line) => /set aside \d+ values phrase/.test(line)),
-    `the decision was not reported: ${lines.join(' | ').slice(0, 300)}`
-  );
-
-  // The set-aside line carries its own tag, so what the measurement says can be
-  // read apart from what was deliberately left out.
-  const measured = lines
-    .filter((line) => /\[Resume (keywords|soft skills|concepts)\]/.test(line))
-    .filter((line) => !/set aside/.test(line))
-    .join(' ')
-    .toLowerCase();
-  assert.ok(measured.length > 0, 'nothing measured the coverage at all');
-  for (const phrase of VALUES_PHRASES) {
-    assert.equal(
-      measured.includes(phrase),
-      false,
-      `${phrase} is still counted against the resume: ${measured.slice(0, 300)}`
-    );
-  }
-});
-
-/* ─── 3. Claims inside the years they could be true ───────────────────────── */
-
-test('a claim newer than the role it sits in is found', () => {
-  // The operator's example: LLM-as-a-judge, RAG, prompt injection testing and
-  // agent orchestration under 2017-2019 roles.
-  const found = findAnachronisms([
-    {
-      company: 'Globex',
-      startDate: '03/2017',
-      endDate: '12/2019',
-      achievements: [
-        'Built LLM-as-a-judge evaluation for agent orchestration across the telemetry pipeline.',
-        'Ran prompt injection testing on the intake API.',
-        'Shipped RAG retrieval over a vector database.',
-        'Built the regression suite for the telemetry ETL jobs in Python.',
-      ],
-    },
-  ]);
-
-  const terms = found.map((hit) => hit.term);
-  assert.ok(terms.includes('LLM-as-a-judge'));
-  assert.ok(terms.includes('agent orchestration'));
-  assert.ok(terms.includes('prompt injection'));
-  assert.ok(terms.includes('RAG'));
-  // The era-appropriate bullet is not a finding. ETL and a regression suite are
-  // what that work WAS, which is the whole point of the rule.
-  assert.equal(
-    found.some((hit) => /regression suite/.test(hit.bullet)),
-    false
-  );
-  assert.equal(found[0].company, 'Globex');
-  assert.equal(found[0].endedIn, 2019);
-});
-
-test('one finding per thing named, not one per matching string', () => {
-  // "LLM" is inside "LLM-as-a-judge" and both are dated, so a bullet with the
-  // longer phrase would otherwise be counted twice and read as two faults.
-  const found = findAnachronisms([
-    { company: 'Globex', endDate: '12/2019', achievements: ['Built LLM-as-a-judge scoring.'] },
-  ]);
-  assert.deepEqual(found.map((hit) => hit.term), ['LLM-as-a-judge']);
-});
-
-test('a current role can carry anything, and a recent one carries its own era', () => {
-  /*
-   * "Present" means the work is still going on, so nothing in it can be too
-   * new - and this must not be read as "this year", which would make every
-   * current role a false report the moment a term is added to the list.
-   */
-  assert.equal(roleEndYear('Present'), null);
-  assert.equal(roleEndYear('current'), null);
-  assert.equal(roleEndYear(''), null);
-  assert.equal(roleEndYear(undefined), null);
-  assert.equal(roleEndYear('12/2019'), 2019);
-  assert.equal(roleEndYear('Dec 2019'), 2019);
-
-  assert.deepEqual(
-    findAnachronisms([
-      {
-        company: 'Acme',
-        endDate: 'Present',
-        achievements: ['Built an agent orchestration layer in Python.', 'Shipped RAG retrieval.'],
-      },
-      {
-        company: 'Hooli',
-        endDate: '06/2025',
-        achievements: ['Built an agent runtime on MCP.'],
-      },
-    ]),
-    []
-  );
-});
-
-test('a term is not found inside an ordinary word', () => {
-  // "RAG" is three letters and lives inside "storage" and "ragged". A check
-  // that matched those would report the fault on resumes that do not have it.
-  assert.deepEqual(
-    findAnachronisms([
-      {
-        company: 'Initech',
-        endDate: '02/2016',
-        achievements: [
-          'Tuned the storage layer for the ragged nightly loads.',
-          'Managed the agent pool for the build fleet.',
-        ],
-      },
-    ]),
-    []
-  );
-});
+/* ─── 2. A values phrase is not a skill ─────────────────────────────────────
+ *
+ * Decided by the analyser's prompt, which is told never to extract one: no
+ * list in code filters them any more. See the prompt pins at the bottom.
+ */
 
 /* ─── 5. A figure a reader can parse ──────────────────────────────────────── */
 
@@ -584,21 +408,21 @@ test('a bullet that is not one finished sentence is found, by shape', () => {
 test('a product that is written in lower case is not reported as a lowercase start', () => {
   /*
    * "dbt models were rewritten..." is correct and "built the..." is not, and
-   * the only difference is the word. A check that reported the product names
-   * would be the fastest way to get an operator to stop reading the log.
+   * the only difference is the word. The names come from the resume's own
+   * skills block, which writes them in lower case - not from a list in code.
    */
-  assert.deepEqual(
-    findBrokenBullets([
-      {
-        achievements: [
-          'dbt models were rewritten to cut the nightly build from 90 minutes to 25 minutes.',
-          'iOS releases moved to a weekly train, which ended the Friday hotfixes.',
-          'npm audit was wired into the pipeline, cutting known advisories from 23 to 0.',
-        ],
-      },
-    ]),
-    []
-  );
+  const bullets = [
+    {
+      achievements: [
+        'dbt models were rewritten to cut the nightly build from 90 minutes to 25 minutes.',
+        'iOS releases moved to a weekly train, which ended the Friday hotfixes.',
+        'npm audit was wired into the pipeline, cutting known advisories from 23 to 0.',
+      ],
+    },
+  ];
+  assert.deepEqual(findBrokenBullets(bullets, ['dbt', 'iOS', 'npm', 'Python']), []);
+  // A name the block does not write in lower case is an ordinary lower-case start.
+  assert.equal(findBrokenBullets(bullets, ['Python']).length, 3);
 });
 
 test('a bullet names a tool when it names one this resume itself claims', () => {
@@ -624,48 +448,6 @@ test('a bullet names a tool when it names one this resume itself claims', () => 
   // Bounded on both sides, so a tool is not found inside another word: "Go"
   // must not match "Google" and "R" must not match every sentence.
   assert.equal(bulletsNamingATool([{ achievements: ['Moved the Google Analytics tags.'] }], ['Go']).named, 0);
-});
-
-test('a role with only improvement figures is reported as having no scale', () => {
-  // "40 tables carrying 2B rows a day" says what was being run; "cut failures
-  // by 40%" says only that something got better, and a reader cannot tell a
-  // weekend project from a payments platform.
-  assert.deepEqual(
-    rolesWithoutScale([
-      { company: 'Acme', achievements: ['Cut failed runs by 40% and dropped p99 latency from 180ms to 118ms.'] },
-      { company: 'Globex', achievements: ['Rewrote the ingestion across 40 tables carrying 2B rows a day.'] },
-      { company: 'Initech', achievements: ['Ran the platform at 12k requests a second through two regions.'] },
-      { company: 'Hooli', achievements: ['Mentored 3 engineers through the migration.'] },
-    ]),
-    ['Acme']
-  );
-
-  // A role with no bullets at all is not a role with no scale: there is
-  // nothing to report, and a fallback bullet is not the model's answer.
-  assert.deepEqual(rolesWithoutScale([{ company: 'Empty', achievements: [] }]), []);
-});
-
-test('ownership and mentoring are looked for in the two most recent roles only', () => {
-  /*
-   * The rule is that scope WIDENS, so an earliest role without an ownership
-   * bullet is the rule working rather than failing. Checking every role would
-   * report the correct shape as a fault on every resume.
-   */
-  const roles = [
-    { company: 'Acme', achievements: ['Owned the release path for three services.'] },
-    { company: 'Globex', achievements: ['Tuned the query plan for the reporting service.'] },
-    { company: 'Initech', achievements: ['Fixed the nightly export job.'] },
-  ];
-  assert.deepEqual(recentRolesWithoutScope(roles), ['Globex']);
-
-  assert.deepEqual(
-    recentRolesWithoutScope([
-      { company: 'Acme', achievements: ['Mentored two engineers through their first on-call rotation.'] },
-      { company: 'Globex', achievements: ['Took ownership of the settlement path after two outages.'] },
-      { company: 'Initech', achievements: ['Fixed the nightly export job.'] },
-    ]),
-    []
-  );
 });
 
 /* ─── What only the prompt can fix ────────────────────────────────────────── */
@@ -738,10 +520,17 @@ test('the prompt carries the rules for the faults no code can repair', () => {
   assert.match(content, /ARE ILLUSTRATIONS, NOT NUMBERS TO REUSE/);
   assert.match(content, /AND NOT A FIGURE OUT OF AN EXAMPLE/);
 
-  // 6. Named tools and scale, as counts rather than as encouragement.
-  assert.match(content, /NAME THE TOOL IN THE BULLET, AND GIVE EACH ROLE ONE FIGURE OF SCALE/);
+  // 6. Named tools, and what was being run said in words: the scale figure per
+  // role is gone, because the numbers are rationed across the whole page.
+  assert.match(content, /NAME THE TOOL IN THE BULLET, AND SAY HOW BIG THE THING WAS/);
   assert.match(content, /At least two of every three bullets name a specific technology/);
-  assert.match(content, /ONE FIGURE OF SCALE PER ROLE/);
+  assert.match(content, /SAY WHAT WAS BEING RUN/);
+  assert.doesNotMatch(content, /ONE FIGURE OF SCALE PER ROLE/);
+
+  // Five to seven bullets carry a number; the rest say what changed in words.
+  assert.match(content, /NUMBERS ARE RATIONED/);
+  assert.match(content, /five to seven bullets carry a number - never more/);
+  assert.doesNotMatch(content, /half of each role's bullets carry exactly one concrete metric/);
 
   // 7. Outcomes rather than activity chains.
   assert.match(content, /A BULLET ENDS ON THE RESULT, NOT ON ANOTHER ACTIVITY/);
@@ -788,24 +577,18 @@ test('the skills block is told one entry per real skill, and the padding target 
   assert.match(content, /Not from writing one thing five ways/);
 });
 
-test('the summary is 50 words, which is a reversal the operator made knowingly', () => {
+test('the summary is measured in sentences, not words', () => {
   /*
-   * THIS TEST USED TO PIN THE OPPOSITE, and the history is the point.
-   *
-   * Asked whether fault 8's "2-3 plain sentences" should override the 65-80
-   * words set after a measured ten-point ATS fall, the operator said "Leave the
-   * summary as it is now". A later resume-writing spec asked for 50 words, they
-   * were asked the same question again with the same measurement in front of
-   * them, and that time chose 50: it reads better to a person, and a person is
-   * who the resume is for.
-   *
-   * So the scanner numbers are expected to fall. That is the trade, not a
-   * regression.
+   * THIS TEST HAS PINNED THREE BUDGETS, and the history is the point: 65-80
+   * words after a measured ten-point ATS fall, then 50 words on a later
+   * resume-writing spec, and now no word count at all - "just 2-3 sentences and
+   * at least 2". The 50-word cap was what cut two-sentence summaries to one.
    */
   const content = promptBody();
-  assert.match(content, /Summary: 2-3 sentences, AT MOST 50 words/);
+  assert.match(content, /Summary: 2-3 sentences - TWO AT LEAST, never one\./);
   assert.doesNotMatch(content, /AIM AT 80, never under 65/);
   assert.doesNotMatch(content, /Summary: 65-80 words/);
+  assert.doesNotMatch(content, /AT MOST 50 words/);
 });
 test('the analyser no longer manufactures several strings per idea', () => {
   /*
@@ -829,10 +612,12 @@ test('the analyser no longer manufactures several strings per idea', () => {
   assert.doesNotMatch(analyser, /"distributed systems" . extract "distributed systems" AND/);
   assert.match(analyser, /ONE ENTRY PER THING THE POSTING ASKS FOR/);
 
-  // The abbreviation pair survives, and is the only multiplier left: a scanner
-  // matches strings and will not connect "LLM" to "Large Language Models".
-  assert.match(analyser, /Abbreviations and their expansions are the ONE exception/);
-  assert.match(analyser, /"machine learning" . also extract "ML"/);
+  // The abbreviation pair is gone too: it put "RAG" and "Retrieval-Augmented
+  // Generation" side by side in delivered blocks. Only the posting's own forms.
+  assert.match(analyser, /Abbreviations are no exception/);
+  assert.match(analyser, /where it writes one, never add the other/);
+  assert.doesNotMatch(analyser, /also extract "ML"/);
+  assert.doesNotMatch(analyser, /BOTH FORMS OF EVERY SHORT NAME/);
 
   // Implied skills still exist - the rule is sound - but give one term each.
   assert.match(analyser, /ONE term each, the one an engineer would write on a resume/);
@@ -840,52 +625,42 @@ test('the analyser no longer manufactures several strings per idea', () => {
   assert.doesNotMatch(analyser, /"unit testing", "test automation", "software testing"/);
 });
 
-test('the analyser prefers the house list but may use the posting\'s own word', () => {
+test('a named thing is filed as a named thing, and a named methodology may be listed', () => {
   /*
-   * THE LIST WAS THE ONLY PERMITTED VOCABULARY, and that was measured as a
-   * cost: two scans of delivered resumes reported three and four soft skills
-   * missing, and the two sections were near-identical - "Adaptability,
-   * Cross-functional collaboration, Ownership, Accountability" on a Data & AI
-   * posting and on a Security posting - because every job was being described
-   * with the same forty-two words.
-   *
-   * The list stays as the house vocabulary, which is what keeps these
-   * consistent. What changed is that a requirement the list has no word for is
-   * no longer silently dropped.
+   * REPORTED: core skills missing from the block. The block is written from
+   * the analysis's named fields, so a name filed under abilities ("Python
+   * programming") went out as a concept; and the tailoring prompt allowed only
+   * seven methodologies, so "MLOps" on an MLOps posting stayed out.
    */
   const analyser = analyserBody();
-  assert.match(analyser, /NAME THEM FROM THE LIST BELOW WHERE THE LIST HAS THE WORD/);
-  assert.match(analyser, /WHERE IT DOES NOT, USE THE POSTING'S OWN WORD/);
-  assert.doesNotMatch(analyser, /NAMED FROM THE LIST BELOW and from nothing else/);
+  assert.match(analyser, /NEVER A NAMED THING/);
+  assert.match(analyser, /puts\s+"Python" in technologies/);
+  assert.match(analyser, /methodologies: NAMED approaches/);
+  assert.doesNotMatch(analyser, /"pair programming", "trunk-based development", "code review", "sprint planning", "retrospectives"/);
 
-  // The slogan ban is what the list was really protecting, and it no longer
-  // depends on the list.
-  assert.match(analyser, /A SLOGAN IS STILL NOT A SKILL/);
-  assert.match(analyser, /radical ownership mindset" is Ownership/);
+  const content = promptBody();
+  assert.match(content, /A methodology with a NAME belongs in the block/);
+  assert.doesNotMatch(content, /write the\s+seven that belong/);
+  assert.match(content, /A named technology that turns up on this list anyway is still a technology/);
+});
 
-  // Every term the analyser is told to choose from is one the application will
-  // accept. These are set in two files and would drift silently: the prompt
-  // would ask for a term the code then deletes, and the group would come back
-  // short with nobody able to see why.
-  const listed = /THE LIST:\n([\s\S]*?)\n\n/.exec(analyser);
-  assert.ok(listed, 'the analyser must carry the list itself');
-  const terms = listed[1]
-    .split(/[,.]/)
-    .map((term) => term.trim())
-    .filter(Boolean);
-  assert.ok(terms.length >= 40, `only ${terms.length} terms listed`);
+test('the analyser names soft skills in the posting\'s own words, from no house list', () => {
   /*
-   * THIS USED TO CROSS-CHECK A CODE LIST. `isAllowedSoftSkill` held the same
-   * forty-odd terms, and the pair could drift: the prompt would ask for a term
-   * the code then deleted from the block, and the group came back short with
-   * nobody able to see why. The code list is gone - a soft skill is routed out
-   * of the block by its own label now, whatever it is called - so there is
-   * nothing left to drift against, and what is worth pinning is that the
-   * analyser still names them rather than taking the posting's wording.
+   * ASKED FOR: no fixed lists. The analyser used to choose from a house
+   * vocabulary of forty-two soft skills; it now names each in the posting's own
+   * word, and writes the plain skill only where the posting implies one.
    */
-  for (const expected of ['Ownership', 'Collaboration', 'Mentoring', 'Communication']) {
-    assert.ok(terms.includes(expected), `${expected} is not on the analyser's list`);
-  }
+  const analyser = analyserBody();
+  assert.doesNotMatch(analyser, /THE LIST:/);
+  assert.doesNotMatch(analyser, /house\s+vocabulary/i);
+  assert.match(analyser, /NAME EACH IN THE POSTING'S OWN WORD/);
+
+  // Nothing in code filters a slogan out any more, so the analyser is the
+  // only place it can be refused - for soft skills and for every other field.
+  assert.match(analyser, /A SLOGAN IS NOT A SKILL/);
+  assert.match(analyser, /radical ownership mindset" is Ownership/);
+  assert.match(analyser, /Nothing after this step filters them out/);
+  assert.match(analyser, /a values or culture phrase/);
 });
 
 test('the tailor prompt describes the application that now exists', () => {
@@ -907,11 +682,12 @@ test('the tailor prompt describes the application that now exists', () => {
    * match on Ownership, Collaboration and Mentoring in exchange for a block of
    * tools a reader believes.
    */
-  assert.match(content, /NO SOFT SKILLS IN THIS BLOCK, AND NO CATEGORY WORDS/);
-  assert.doesNotMatch(content, /THE LAST GROUP IS/, 'there is no last group of them any more');
-  assert.doesNotMatch(content, /fill it with the soft skills this posting named/);
+  // Soft skills are back as ONE group, last, chosen per posting; never in a
+  // technical group.
+  assert.match(content, /NO SOFT SKILLS IN THE TECHNICAL GROUPS, AND NO CATEGORY WORDS/);
+  assert.match(content, /THE SOFT SKILLS GROUP COMES LAST/);
+  assert.match(content, /two postings should\s+not get the same list/);
   assert.match(content, /Nor do category words/, 'Cloud and Infrastructure go too');
-  // The prose rule is untouched, and is now the ONLY place a soft skill lands.
   assert.match(content, /SOFT SKILLS ARE SHOWN rule above still/);
 
   // Descriptions, with the rule stated exactly as the code applies it.
@@ -920,7 +696,7 @@ test('the tailor prompt describes the application that now exists', () => {
   assert.doesNotMatch(content, /the application deletes too/, 'the application stopped doing this');
   assert.match(
     content,
-    /"Large\s+Language Models", "Infrastructure as Code"/,
+    /"Large\s+Language Models", "Model Context Protocol"/,
     'the long names that survive are shown'
   );
 
@@ -932,62 +708,6 @@ test('the tailor prompt describes the application that now exists', () => {
 
   // A past-tense verb, which reached a delivered block as "owned".
   assert.match(content, /A past-tense verb\./);
-});
-
-test('degree notation is standardised only where the source is unambiguous', () => {
-  /*
-   * ASKED FOR: "Use standard degree notation (e.g. B.S. in Computer Science)".
-   * Education is the one section the model never writes - it is passed to the
-   * page from the profile - so nothing had ever normalised it.
-   *
-   * THE LINE THIS WILL NOT CROSS: "Bachelor's degree in Computer Science" may
-   * be a B.S. or a B.A., the profile does not say, and guessing would put a
-   * false claim on somebody's resume. Those are left exactly as written.
-   */
-  const { standardDegree, standardDegreeNotation } = require('../dist/services/utils/resumeQuality');
-
-  assert.equal(standardDegree('Bachelor of Science in Computer Science'), 'B.S. in Computer Science');
-  assert.equal(standardDegree('Bachelor of Science, Computer Science'), 'B.S. in Computer Science');
-  assert.equal(standardDegree('BS Computer Science'), 'B.S. in Computer Science');
-  assert.equal(standardDegree('B.Sc. Information Systems'), 'B.S. in Information Systems');
-  assert.equal(standardDegree('Master of Science Data Science'), 'M.S. in Data Science');
-  assert.equal(standardDegree('MBA'), 'M.B.A.');
-  assert.equal(standardDegree('Ph.D in Machine Learning'), 'Ph.D. in Machine Learning');
-
-  // Already correct, and not mangled by being run through twice.
-  assert.equal(standardDegree('B.S. in Computer Science'), 'B.S. in Computer Science');
-  assert.equal(standardDegree(standardDegree('BS Computer Science')), 'B.S. in Computer Science');
-
-  // Ambiguous or simply not a degree of this shape: left alone.
-  assert.equal(standardDegree("Bachelor's degree in Computer Science"), "Bachelor's degree in Computer Science");
-  assert.equal(standardDegree('Diploma in Web Development'), 'Diploma in Web Development');
-  assert.equal(standardDegree(''), '');
-
-  // Across a profile's entries, touching nothing else on them.
-  const entries = [
-    { degree: 'Bachelor of Science in Computer Science', institution: 'State University', graduationDate: '2016' },
-    { institution: 'A bootcamp' },
-  ];
-  assert.deepEqual(standardDegreeNotation(entries), [
-    { degree: 'B.S. in Computer Science', institution: 'State University', graduationDate: '2016' },
-    { institution: 'A bootcamp' },
-  ]);
-  assert.deepEqual(standardDegreeNotation(undefined), []);
-});
-
-test('the render data carries the standardised degree, not the raw one', () => {
-  // The normaliser is only worth having where the page reads it: education is
-  // spread onto the render data straight off the profile, so this is the one
-  // line that decides whether any of it reaches a PDF.
-  const { prepareResumeRenderData } = require('../dist/generators/pdfGenerator');
-  const data = prepareResumeRenderData({
-    id: 'p', name: 'T', title: 'Engineer', createdAt: '', updatedAt: '',
-    contact: { phone: '1', email: 'a@b.c', location: 'X' },
-    summary: 'Engineer.', experience: [], strengths: [], skills: [], certifications: [],
-    education: [{ degree: 'Bachelor of Science in Computer Science', institution: 'State University' }],
-  });
-  assert.equal(data.education[0].degree, 'B.S. in Computer Science');
-  assert.equal(data.education[0].institution, 'State University');
 });
 
 test('the block has a required Languages group, in 5-7 of them', () => {
@@ -1002,7 +722,7 @@ test('the block has a required Languages group, in 5-7 of them', () => {
    * than a block without the heading.
    */
   const content = promptBody();
-  assert.match(content, /skillGroups: 5-7 groups/);
+  assert.match(content, /skillGroups: 5-7 technical groups, then the Soft Skills group/);
   assert.match(content, /THE FIRST GROUP IS LANGUAGES AND FRAMEWORKS, ALWAYS/);
   assert.match(content, /Required on every\s+resume, never merged into another group/);
   assert.match(content, /Five groups need\s+seven entries each; six groups need six; seven groups need five/);
@@ -1074,13 +794,14 @@ test('the soft skills go in their own section AND in the bullets, and the prompt
    * the bullets, not listed as traits.
    */
   const content = promptBody();
-  assert.match(content, /THERE IS NO SOFT SKILLS SECTION/);
-  assert.match(content, /Do not return "softSkills"/);
+  // And the third: "add group for soft skills at the end of skill section".
+  assert.match(content, /SOFT SKILLS ARE ONE GROUP, THE LAST ONE IN THE SKILLS BLOCK/);
+  assert.match(content, /Do not return\s+"softSkills" as a separate field/);
   assert.match(content, /SOFT SKILLS ARE SHOWN, NOT NAMED/);
   assert.match(content, /THE BANNED SHAPES/);
-  // The TECHNICAL block still refuses them.
-  assert.match(content, /NO SOFT SKILLS IN THIS BLOCK/);
-  // The schema no longer asks for softSkills.
+  // The technical groups still refuse them.
+  assert.match(content, /NO SOFT SKILLS IN THE TECHNICAL GROUPS/);
+  // The schema does not ask for a separate softSkills field.
   assert.doesNotMatch(content, /"softSkills": string\[\]/);
 });
 
@@ -1203,7 +924,7 @@ test('the prompt no longer tells the model the skills block is not its to write'
   );
   // The exceptions are named here too, so a model reading only this paragraph
   // is not left with "none of them belongs in the block".
-  assert.match(preamble, /The other exceptions are named under CONCEPTS AND CAPABILITIES below/);
+  assert.match(preamble, /The other exceptions are named under CONCEPTS AND CAPABILITIES above/);
   assert.match(preamble, /"REST", "LLM", "RAG", "AI" - which go in the skills block as well/);
 
   /*
@@ -1256,12 +977,14 @@ test('the prompt says where thirty-five entries come from', () => {
   const content = promptBody();
   assert.match(content, /WHERE THIRTY-FIVE COME FROM/);
   assert.match(content, /THE CLOUD: THE PLATFORM, THEN ITS SERVICES/);
-  assert.match(content, /NAME THE PLATFORM ITSELF - "AWS", "Azure", "GCP"/);
-  assert.match(content, /Lambda, S3, EC2, ECS, RDS, CloudWatch, IAM,\s+SQS/);
-  // The other layers, so one of them is not carrying the whole count.
-  for (const layer of [/Data stores and what sits beside them/, /CI and delivery:/, /Testing: pytest, JUnit, Jest/, /Monitoring: Datadog, Prometheus, Grafana/]) {
+  assert.match(content, /NAME THE PLATFORM ITSELF/);
+  // The other layers, so one of them is not carrying the whole count - named
+  // as KINDS now, because the product lists were being copied onto resumes.
+  for (const layer of [/Data stores, and what sits beside them/, /CI and delivery:/, /Testing: the test runners/, /Monitoring: the dashboards/]) {
     assert.match(content, layer);
   }
+  assert.doesNotMatch(content, /Testing: pytest, JUnit, Jest/);
+  assert.doesNotMatch(content, /Lambda, S3, EC2, ECS, RDS, CloudWatch, IAM/);
   /*
    * NAMED PRODUCTS, NOT THE ROLES THEY PLAY. The first version of this list
    * said "the test runner, the linter and the formatter", and a delivered
@@ -1335,15 +1058,15 @@ test('the same product under two names is one entry', () => {
    */
   const { duplicateOf } = require('../dist/services/utils/resumeQuality');
 
-  // An abbreviation beside its expansion: the first written survives.
+  // An acronym beside its expansion, read off the initials: the first written survives.
   assert.deepEqual(duplicateOf('AWS', 'Amazon Web Services'), { keep: 'AWS', drop: 'Amazon Web Services' });
-  assert.deepEqual(duplicateOf('Azure', 'Microsoft Azure'), { keep: 'Azure', drop: 'Microsoft Azure' });
 
   /*
-   * A bare name beside its vendor-qualified form: the QUALIFIED one survives,
-   * which is the one place this file keeps the longer entry. "AWS Secrets
-   * Manager" says whose it is; "Secrets Manager" could be anyone's.
+   * A bare name beside the same name with words in front: the QUALIFIED one
+   * survives. "AWS Secrets Manager" says whose it is; "Secrets Manager" could
+   * be anyone's. No table of vendors decides it - the words do.
    */
+  assert.deepEqual(duplicateOf('Azure', 'Microsoft Azure'), { keep: 'Microsoft Azure', drop: 'Azure' });
   assert.deepEqual(
     duplicateOf('Secrets Manager', 'AWS Secrets Manager'),
     { keep: 'AWS Secrets Manager', drop: 'Secrets Manager' }
@@ -1355,9 +1078,9 @@ test('the same product under two names is one entry', () => {
 
   /*
    * AND THE PAIRS THAT MUST SURVIVE. A vendor in FRONT of a product is a
-   * different thing from the vendor; a trailing "s" that is part of the word is
-   * not a plural. The second case is a bug this test was written after: the
-   * word-level rule read "HTTPS" as the plural of "HTTP" and deleted it.
+   * different thing from the vendor; a trailing capital "S" is part of the
+   * name, not a plural. The second case is a bug this test was written after:
+   * the word-level rule read "HTTPS" as the plural of "HTTP" and deleted it.
    */
   for (const [a, b] of [
     ['AWS', 'AWS Lambda'],
@@ -1385,9 +1108,8 @@ test('the AI layer is in the checklist, and conditional', () => {
    */
   const content = promptBody();
   assert.match(content, /AI AND ML, WHERE THE POSTING OR THE CANDIDATE'S WORK IS AI OR ML/);
-  assert.match(content, /PyTorch, TensorFlow, Keras, scikit-learn, NumPy, Pandas/);
-  assert.match(content, /LangChain, LlamaIndex, LangGraph/);
-  assert.match(content, /MLflow, Weights & Biases/);
+  assert.match(content, /the model libraries, the ML platform, the LLM framework and vector\s+store/);
+  assert.doesNotMatch(content, /LangChain, LlamaIndex, LangGraph/, 'the product list is gone');
 
   // CONDITIONAL, and said twice: an AI block over a history with no AI work is
   // the worst version of this rule, not the best.
@@ -1474,7 +1196,8 @@ test('a block over the group maximum loses headings, never skills', () => {
     { category: 'Protocols', skills: ['REST', 'gRPC'] },
   ].map((group) => ({ ...group, skills: group.skills.map((name) => ({ name, kind: 'tool' })) }));
 
-  const before = groups.flatMap((group) => group.skills.map((s) => s.name));
+  const { capitalizeSkillWords } = require('../dist/services/utils/resumeQuality');
+  const before = groups.flatMap((group) => group.skills.map((s) => capitalizeSkillWords(s.name)));
   const { groups: tidied, report } = tidySkillGroups(groups);
 
   assert.ok(tidied.length <= MAX_SKILL_GROUPS, `${tidied.length} groups survived`);
@@ -1583,104 +1306,34 @@ const phraseGroups = () => ([{
   ],
 }]);
 
-test('a capability phrase the posting named reaches the block', () => {
+test('a phrase leaves the block on its label, whoever wrote it', () => {
   /*
-   * MEASURED against two scans of delivered resumes: of fourteen skills the
-   * scanner reported missing, ELEVEN were capability or category phrases -
-   * "Threat hunting", "Data Modeling", "Cloud infrastructure", "Security
-   * Solutions" - every one named in the job description, every one on no part
-   * of the page. The old carve-out was twenty-one hardcoded AI and web terms,
-   * so a security posting got none of it.
+   * ASKED FOR: "If a keyword is not a named tool or technology, do NOT force it
+   * into Tech Skills", and then "real tools only". The exception that kept a
+   * phrase because the posting wrote it is gone, so the label decides alone.
    */
-  const { groups, report } = tidy(phraseGroups(), {
-    postingTerms: ['Threat hunting', 'Security Solutions', 'Splunk', 'Wireshark', 'Python', 'Nmap'],
-  });
+  const { groups, report } = tidy(phraseGroups());
   const printed = groups.flatMap((g) => g.skills);
 
-  assert.ok(printed.includes('Threat hunting'), printed.join(', '));
-  assert.ok(printed.includes('Security Solutions'), printed.join(', '));
-  assert.equal(report.keptByPosting.length, 2);
-});
-
-test('the same shape the model invented is still routed out', () => {
-  const { groups, report } = tidy(phraseGroups(), {
-    postingTerms: ['Threat hunting', 'Security Solutions', 'Splunk', 'Wireshark', 'Python', 'Nmap'],
-  });
-  const printed = groups.flatMap((g) => g.skills);
-
-  for (const invented of ['agent orchestration', 'latency optimization']) {
-    assert.equal(printed.includes(invented), false, `"${invented}" reached the block`);
-    assert.ok(report.routedToProse.some((e) => e.name === invented));
+  assert.deepEqual(printed, ['Splunk', 'Wireshark', 'Python', 'Nmap']);
+  for (const phrase of ['Threat hunting', 'Security Solutions', 'agent orchestration', 'latency optimization']) {
+    assert.ok(report.routedToProse.some((e) => e.name === phrase), `"${phrase}" was not routed out`);
   }
 });
 
-test('with no posting vocabulary, every phrase is routed out as before', () => {
-  // The old behaviour is what a caller gets when it cannot say what the
-  // posting asked for, so nothing silently loosens.
-  const { groups } = tidy(phraseGroups());
-  const printed = groups.flatMap((g) => g.skills);
-  assert.deepEqual(printed, ['Splunk', 'Wireshark', 'Python', 'Nmap']);
-});
-
-test('phrases stay a minority of the block', () => {
-  /*
-   * The exception is a door, not a licence: a block that is half phrases is
-   * the keyword-stuffed list the operator sent screenshots of, whoever wrote
-   * the phrases.
-   */
-  const many = [{
-    category: 'Everything',
-    skills: [
-      { name: 'Splunk', kind: 'tool' },
-      { name: 'Python', kind: 'language' },
-      { name: 'Threat hunting', kind: 'practice' },
-      { name: 'Security Solutions', kind: 'category' },
-      { name: 'Cloud infrastructure', kind: 'category' },
-      { name: 'Data Modeling', kind: 'practice' },
-      { name: 'Branch security', kind: 'practice' },
-      { name: 'Emerging technologies', kind: 'category' },
-    ],
-  }];
-  const posting = ['Splunk', 'Python', 'Threat hunting', 'Security Solutions',
-    'Cloud infrastructure', 'Data Modeling', 'Branch security', 'Emerging technologies'];
-
-  const { groups, report } = tidy(many, { postingTerms: posting });
-  const printed = groups.flatMap((g) => g.skills);
-
-  assert.ok(
-    report.keptByPosting.length <= Math.floor(8 * 0.25),
-    `${report.keptByPosting.length} phrases admitted out of 8 entries: ${printed.join(', ')}`
-  );
-  // The products are untouched; it is the tail of the phrases that is routed.
-  assert.ok(printed.includes('Splunk') && printed.includes('Python'));
-});
-
-test('matching is on the name, not on the kind the model guessed', () => {
-  /*
-   * A posting term mislabelled "concept" still counts: the point of the rule
-   * is who said it, and the label is only the model's opinion about what the
-   * thing is. "SD-WAN" is a network technology that a model may well file as a
-   * concept, and it was one of the terms a scanner reported missing.
-   *
-   * The block here is a realistic size, because the phrase share is a share:
-   * on a two-entry block the budget rounds to zero, which is right and is not
-   * what this test is about.
-   */
-  const skills = ['Python', 'Splunk', 'Wireshark', 'Nmap', 'Snort', 'Suricata', 'Terraform', 'Docker']
-    .map((name) => ({ name, kind: 'tool' }));
-  const { groups } = tidy(
-    [{ category: 'X', skills: [{ name: 'SD-WAN', kind: 'concept' }, ...skills] }],
-    { postingTerms: ['SD-WAN', 'Python'] }
-  );
-  assert.ok(groups.flatMap((g) => g.skills).includes('SD-WAN'));
+test('a named technology stays when it is labelled technology', () => {
+  const { groups } = tidy([{
+    category: 'Networking',
+    skills: [{ name: 'SD-WAN', kind: 'technology' }, { name: 'Wireshark', kind: 'tool' }],
+  }]);
+  assert.deepEqual(groups.flatMap((g) => g.skills), ['SD-WAN', 'Wireshark']);
 });
 
 test('the prompt states the rule rather than a list of terms', () => {
   const content = promptBody();
-  assert.match(content, /WHAT STAYS, AND THE TEST IS WHO SAID IT, NOT WHAT IT IS/);
-  assert.match(content, /A capability phrase THE POSTING NAMED may go in the block/);
-  assert.match(content, /THE SAME SHAPE YOU INVENTED STAYS OUT/);
-  assert.match(content, /never more than a quarter of the block/);
+  assert.match(content, /WHAT STAYS IS DECIDED BY WHAT IT IS, NOT BY WHO SAID IT/);
+  assert.match(content, /leaves the block\s+even when the posting wrote it/);
+  assert.doesNotMatch(content, /never more than a quarter of the block/, 'the phrase share is gone');
 });
 
 test('the prompt warns that the layer examples are illustrations', () => {
@@ -1692,8 +1345,7 @@ test('the prompt warns that the layer examples are illustrations', () => {
    * appear nowhere in that candidate's history.
    */
   const content = promptBody();
-  assert.match(content, /THE PRODUCTS NAMED BELOW ARE ILLUSTRATIONS OF THE SHAPE, NOT A LIST TO PICK/);
-  assert.match(content, /78 of 183/);
+  assert.match(content, /THE LAYERS BELOW NAME KINDS OF THING, NOT PRODUCTS, ON PURPOSE/);
 });
 
 test('the prompt says a true tool this job has no use for stays out', () => {

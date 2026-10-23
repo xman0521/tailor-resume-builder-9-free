@@ -6,17 +6,14 @@
  * DOES - that is where a rule can change what the model writes. Three of them
  * can also be checked afterwards by a machine, which is what this file is:
  *
- *   - a skills entry that is another entry plus nothing but filler words,
- *     which is REMOVED, because there is no judgement in it;
- *   - a technology named in a role that ended before it existed, which is
- *     REPORTED, because only the model can rewrite the bullet;
- *   - a figure of the shape "by 40 minutes to 6", which is REPORTED for the
- *     same reason.
+ *   - a skills entry that is another entry written another way, which is
+ *     REMOVED, because there is no judgement in it;
+ *   - a figure of the shape "by 40 minutes to 6", which is REPORTED, because
+ *     only the model can rewrite the bullet.
  *
- * Everything else on that list - culture phrases, activity chains, missing
- * tools, missing scale, expanding scope - needs a sentence rewritten, and a
- * rule in the prompt is the only thing that can do it. Nothing here edits
- * prose.
+ * Everything else on that list needs a sentence rewritten, and a rule in the
+ * prompt is the only thing that can do it. Nothing here edits prose, and no
+ * check here reads a fixed list of words.
  */
 
 /*
@@ -28,13 +25,9 @@
  * "Secrets Manager" beside "AWS Secrets Manager", and "API, APIs, REST, REST
  * APIs" in one group.
  *
- * WHY `restatesSkill` MISSED THEM ALL. It only drops an entry whose extra words
- * are filler, and it exempts a vendor prefix outright so that "AWS Lambda"
- * survives beside "AWS". Both of those are right, and between them they let
- * every pair above through: "Amazon Web Services" shares no words with "AWS",
- * and "AWS Secrets Manager" is exempt for being vendor-prefixed.
- *
- * So three narrower rules, each of which answers one shape.
+ * The rules below read only the two strings - their letters, words and casing.
+ * No table of names: a nickname or older name ("K8s", "Postgres") is caught by
+ * the check-skills AI call, which is asked for exactly that.
  */
 
 /**
@@ -60,72 +53,6 @@ export function skillWords(skill: string): string[] {
     .map(singular);
 }
 
-/** Names of one thing, where a scanner reads two strings. */
-const EQUIVALENT_NAMES: ReadonlyArray<readonly string[]> = [
-  ['aws', 'amazon web services', 'amazon web service'],
-  ['azure', 'microsoft azure', 'ms azure'],
-  ['gcp', 'google cloud', 'google cloud platform'],
-  ['k8s', 'kubernetes'],
-  ['postgres', 'postgresql', 'postgre sql'],
-  ['javascript', 'js'],
-  ['typescript', 'ts'],
-  ['github actions', 'gh actions'],
-  ['node', 'node.js', 'nodejs'],
-  ['dotnet', '.net', 'dot net'],
-];
-
-const EQUIVALENCE_OF = new Map<string, number>();
-EQUIVALENT_NAMES.forEach((names, index) => {
-  for (const name of names) EQUIVALENCE_OF.set(name, index);
-});
-
-/**
- * Words that identify WHOSE product it is.
- *
- * "Secrets Manager" and "AWS Secrets Manager" are one thing; "AWS" and "AWS
- * Lambda" are two, because Lambda is the product and AWS is the vendor. The
- * difference is which side the extra words sit on: a vendor in FRONT of a name
- * already written in full is a qualifier, not a different product.
- */
-const VENDOR_WORDS = new Set([
-  'aws',
-  'amazon',
-  'azure',
-  'microsoft',
-  'ms',
-  'google',
-  'gcp',
-  'github',
-  'gitlab',
-  'apache',
-  'oracle',
-  'ibm',
-  'atlassian',
-  'hashicorp',
-  'elastic',
-  'confluent',
-  'redhat',
-  'jetbrains',
-]);
-
-/** Names whose final "s" is part of the word, not a plural. */
-const NOT_A_PLURAL = new Set([
-  'https',
-  'sass',
-  'less',
-  'css',
-  'aws',
-  'ios',
-  'redis',
-  'kubernetes',
-  'jenkins',
-  'prometheus',
-  'express',
-  'rails',
-  'docs',
-  'nats',
-]);
-
 const normalizedName = (skill: string) => skill.trim().toLowerCase().replace(/\s+/g, ' ');
 
 /** The two entries name one thing, and this says which one to keep. */
@@ -136,43 +63,27 @@ export function duplicateOf(first: string, second: string): DuplicateVerdict {
   const b = normalizedName(second);
   if (!a || !b || a === b) return null;
 
-  // 1. An abbreviation beside its expansion. The FIRST WRITTEN survives, as
-  //    everywhere else here: the model orders the block most relevant first,
-  //    and the prompt tells it to lead with the form the posting leads with.
-  const left = EQUIVALENCE_OF.get(a);
-  const right = EQUIVALENCE_OF.get(b);
-  if (left !== undefined && left === right) return { keep: first, drop: second };
+  // 1. An acronym beside the words it stands for: "RAG" and "Retrieval-Augmented
+  //    Generation", "AWS" and "Amazon Web Services". Read off the letters. The
+  //    FIRST WRITTEN survives: the model orders the block most relevant first.
+  if (isAcronymOf(first, second) || isAcronymOf(second, first)) return { keep: first, drop: second };
 
   const aWords = skillWords(first);
   const bWords = skillWords(second);
 
   /*
    * 2. The same name in singular and plural: "API" and "APIs", "REST API" and
-   *    "REST APIs". Compared as STRINGS rather than as singularised words,
-   *    because the word-level rule read "HTTPS" as the plural of "HTTP" and
-   *    deleted it - and the same trap waits for SASS against SAS. The pair has
-   *    to differ by exactly a trailing "s", and the few names that end in one
-   *    by coincidence are listed.
+   *    "REST APIs". The pair has to differ by exactly a trailing LOWER-CASE
+   *    "s": a plural is written "APIs", while "HTTPS", "SASS" and "NATS" end in
+   *    a capital because the S is part of the name.
    */
-  const plural = (short: string, long: string) =>
-    long === `${short}s` && short.length >= 3 && !NOT_A_PLURAL.has(long);
-  if (plural(a, b)) return { keep: first, drop: second };
-  if (plural(b, a)) return { keep: second, drop: first };
-
-  // 3. A bare product name beside its vendor-qualified form. The QUALIFIED one
-  //    survives here, unlike every other rule in this file: "AWS Secrets
-  //    Manager" says whose it is and "Secrets Manager" is ambiguous, and the
-  //    same goes for "GitHub Copilot" against "Copilot".
-  const qualified = (shortWords: string[], longWords: string[]) =>
-    longWords.length > shortWords.length
-    && longWords.slice(longWords.length - shortWords.length).every((word, i) => word === shortWords[i])
-    && longWords.slice(0, longWords.length - shortWords.length).every((word) => VENDOR_WORDS.has(word));
-
-  if (qualified(aWords, bWords)) return { keep: second, drop: first };
-  if (qualified(bWords, aWords)) return { keep: first, drop: second };
+  const plural = (short: string, long: string, longWritten: string) =>
+    long === `${short}s` && short.length >= 3 && longWritten.trim().endsWith('s');
+  if (plural(a, b, second)) return { keep: first, drop: second };
+  if (plural(b, a, first)) return { keep: second, drop: first };
 
   /*
-   * 4. The bare noun beside the same noun with a word in front of it.
+   * 3. The bare name beside the same name with a word in front of it.
    *
    * REPORTED BY A REVIEWER on a delivered batch, and MEASURED at 93% of 60
    * resumes with a mean of 5.5 such pairs each: "Automation" beside "workflow
@@ -187,9 +98,10 @@ export function duplicateOf(first: string, second: string): DuplicateVerdict {
    * catches is the same noun twice with a qualifier on one of them.
    *
    * THE MORE SPECIFIC ONE SURVIVES, unlike rule 2 above: "workflow automation"
-   * says what was automated and "Automation" says nothing, and a scanner
-   * looking for the bare noun still matches it inside the longer phrase
-   * because terms are matched on word boundaries.
+   * says what was automated and "Automation" says nothing, "AWS Secrets
+   * Manager" says whose it is and "Secrets Manager" does not, and a scanner
+   * looking for the bare name still matches it inside the longer one because
+   * terms are matched on word boundaries.
    */
   const sameHeadNoun = (shortWords: string[], longWords: string[]) =>
     longWords.length > shortWords.length
@@ -203,86 +115,23 @@ export function duplicateOf(first: string, second: string): DuplicateVerdict {
   return null;
 }
 
+/**
+ * Whether `short` is the initials of `long`'s words, a plural "s" aside:
+ * "LLMs" / "Large Language Models", "IaC" / "Infrastructure as Code".
+ */
+function isAcronymOf(short: string, long: string): boolean {
+  const compact = short.trim();
+  if (!compact || /\s/.test(compact)) return false;
+  // Two capitals at least, so a word that happens to spell initials is not one.
+  if ((compact.match(/[A-Z]/g) ?? []).length < 2) return false;
+  const words = long.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (words.length < 2) return false;
+  const initials = words.map((word) => word[0]).join('');
+  const letters = compact.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return letters === initials || letters === `${initials}s`;
+}
+
 export type RestatedSkill = { kept: string; dropped: string };
-
-/*
- * ─── Two shapes a reviewer spots before a scanner does ───────────────────────
- *
- * Both were reported on a delivered batch and both are measurable, so they are
- * counted rather than argued about.
- */
-
-/**
- * A soft skill bolted onto the end of a sentence about technical work.
- *
- * MEASURED at 87% of 60 resumes, 189 bullets: "Reviewed GitHub changes for
- * online banking features, applying accountability during code review",
- * "Practiced Curiosity when examining unfamiliar modules", "applying
- * Cross-functional collaboration and Decision making to resolve issues".
- *
- * It is what a rule asking for every soft skill to be WRITTEN IN A BULLET
- * produces: the sentence is finished, the keyword still has to go somewhere,
- * and a participle clause is where it goes. A reader sees a resume that was
- * filled in rather than written, which is the whole fault.
- *
- * The test is the shape, not the vocabulary: a soft-skill noun governed by one
- * of the joining words that attach a trailing clause. "Mentored two engineers
- * through their first on-call rotation" names no soft skill and trips nothing
- * - which is the sentence the rule is trying to encourage.
- */
-const SOFT_SKILL_NOUNS = [
-  'accountability', 'adaptability', 'ownership', 'collaboration', 'communication',
-  'mentoring', 'mentorship', 'initiative', 'teamwork', 'empathy', 'curiosity',
-  'attention to detail', 'problem solving', 'problem-solving', 'time management',
-  'documentation', 'leadership', 'transparency', 'autonomy', 'onboarding',
-  'decision making', 'critical thinking', 'flexibility', 'prioritization',
-];
-
-const BOLTED_ON = new RegExp(
-  '(?:,\\s*)?\\b(?:with|while|applying|demonstrating|showing|practicing|practised|practiced|through|using|leveraging)\\s+'
-  + '(?:[a-z-]+\\s+){0,2}(?:' + SOFT_SKILL_NOUNS.join('|') + ')\\b',
-  'i'
-);
-
-export function bulletsWithBoltedSoftSkills(
-  roles: ReadonlyArray<{ achievements?: string[] }>
-): string[] {
-  const hits: string[] = [];
-  for (const role of roles) {
-    for (const bullet of role.achievements ?? []) {
-      if (typeof bullet === 'string' && BOLTED_ON.test(bullet)) hits.push(bullet);
-    }
-  }
-  return hits;
-}
-
-/**
- * A bullet that stops at the activity instead of saying what changed.
- *
- * MEASURED at 73% of 1,246 delivered bullets. "Did X using Y" is a duty; the
- * shape that earns its line is "did X using Y, which changed Z". A figure is
- * the commonest way to end on an outcome but not the only one - "ended the
- * morning re-runs" is an outcome with no number in it - so this looks for the
- * turn towards a result rather than for a digit.
- */
-const OUTCOME_SIGNAL = new RegExp(
-  '\\b(?:cut|cutting|reduc\\w+|drop\\w+|rais\\w+|rose|grew|growing|sav\\w+|freed|ended|removed|'
-  + 'eliminat\\w+|halv\\w+|doubl\\w+|shorten\\w+|took\\s+\\w+\\s+from|which\\s+\\w+ed|'
-  + 'resulting in|so that|from\\s+[\\d$]|to\\s+[\\d$])\\b',
-  'i'
-);
-
-export function bulletsWithoutAnOutcome(
-  roles: ReadonlyArray<{ achievements?: string[] }>
-): string[] {
-  const hits: string[] = [];
-  for (const role of roles) {
-    for (const bullet of role.achievements ?? []) {
-      if (typeof bullet === 'string' && bullet.trim() && !OUTCOME_SIGNAL.test(bullet)) hits.push(bullet);
-    }
-  }
-  return hits;
-}
 
 /**
  * A phrase of three or four words written three or more times on one resume.
@@ -394,7 +243,8 @@ export const PROSE_KINDS = [
 const BLOCK_KIND_SET = new Set<string>(BLOCK_KINDS);
 const PROSE_KIND_SET = new Set<string>(PROSE_KINDS);
 
-export type SkillEntry = { name: string; kind: string };
+/** `keepCase`: the model says the name's official form starts in lower case ("dbt", "pytest"). */
+export type SkillEntry = { name: string; kind: string; keepCase?: boolean };
 
 /**
  * One block entry, from whichever shape the model returned.
@@ -417,44 +267,26 @@ export function parseSkillEntry(raw: unknown): SkillEntry | null {
   if (!name) return null;
 
   const kind = String(record.kind ?? record.type ?? '').trim().toLowerCase();
-  return { name, kind: kind || 'unlabelled' };
+  return { name, kind: kind || 'unlabelled', ...(record.keepCase === true ? { keepCase: true } : {}) };
 }
 
-/** Whether an entry's own label says it belongs in the block. */
 /**
- * A capability phrase the POSTING named, which the block may carry after all.
+ * Whether an entry's own label says it belongs in the block, whoever wrote it.
  *
- * WHY THE EXCEPTION STOPPED BEING A LIST. The prompt has always carved out
- * "CI/CD", "APIs", "REST", "LLM", "RAG", "AI" and a dozen AI/ML terms, for a
- * reason that is right and general: each is a string a scanner weights
- * heavily, and taking it off the block costs more than the tidiness is worth.
- * The carve-out itself was twenty-one hardcoded terms, so a security posting
- * got none of it.
- *
- * MEASURED on two scans of delivered resumes: of fourteen skills the scanner
- * reported missing, ELEVEN were capability or category phrases - "Threat
- * hunting", "Data Modeling", "Cloud infrastructure", "Security Solutions" -
- * every one of them named in the job description, every one of them on no part
- * of the page.
- *
- * So the test is no longer what the phrase is, it is who said it. A phrase the
- * employer wrote down is a keyword; the same shape invented by the model -
- * "agent orchestration", "latency optimization", "fast iteration" - is the
- * padding the operator objected to, and it stays out.
+ * Block kinds and anything unlabelled or unrecognised are kept: a kind this
+ * schema has never heard of is the model inventing one, which says nothing
+ * about whether the thing is a tool.
  */
-function namedByPosting(name: string, postingTerms: ReadonlySet<string>): boolean {
-  if (postingTerms.size === 0) return false;
-  return postingTerms.has(normalizedName(name));
+export function belongsInBlock(entry: SkillEntry): boolean {
+  return !PROSE_KIND_SET.has(entry.kind);
 }
 
-export function belongsInBlock(entry: SkillEntry, postingTerms?: ReadonlySet<string>): boolean {
-  if (PROSE_KIND_SET.has(entry.kind)) {
-    return postingTerms ? namedByPosting(entry.name, postingTerms) : false;
-  }
-  // Block kinds and anything unlabelled or unrecognised: kept. A kind this
-  // schema has never heard of is the model inventing one, which says nothing
-  // about whether the thing is a tool.
-  return true;
+/** The heading of the soft-skills group, which always prints last. */
+export const SOFT_SKILLS_GROUP = 'Soft Skills';
+const MAX_SOFT_SKILLS_IN_GROUP = 10;
+
+export function isSoftSkillsGroup(category: string): boolean {
+  return normalizedName(category) === normalizedName(SOFT_SKILLS_GROUP);
 }
 
 /** What a removal says about itself, for the report and for the prose check. */
@@ -593,30 +425,20 @@ export type SkillBlockTidyReport = {
   trimmed: string[];
   /** Headings joined to bring the block within `MAX_SKILL_GROUPS`. */
   mergedGroups: Array<{ kept: string; joined: string }>;
-  /**
-   * Capability phrases kept because the POSTING named them.
-   *
-   * Reported so the share is visible: these are the entries that would have
-   * been routed out under the old rule, and a block where they outnumber the
-   * products is the one worth looking at.
-   */
-  keptByPosting: RoutedSkill[];
 };
-
-/**
- * At most this share of the block may be posting-named capability phrases.
- *
- * The exception above is a door, not a licence. A block that is half phrases is
- * the keyword-stuffed list the operator sent screenshots of, whoever wrote the
- * phrases - so the named products stay the bulk of it, and the phrases ride
- * along in the slots left over. The ones past the share are routed to the prose
- * like any other concept, most relevant first, so what is lost is the tail.
- */
-const MAX_PHRASE_SHARE = 0.25;
 
 export function tidySkillGroups<T extends { category: string; skills: unknown[] }>(
   groups: readonly T[],
-  options: { cap?: number; groupCap?: number; postingTerms?: Iterable<string> } = {}
+  options: {
+    cap?: number;
+    groupCap?: number;
+    capitalize?: boolean;
+    knownCasing?: ReadonlyMap<string, string>;
+    /** Every term the posting asked for, lower-cased. */
+    asked?: ReadonlySet<string>;
+    /** Whether a person's own text writes this name in lower case; without it, a keepCase mark is trusted. */
+    confirmsLowercase?: (name: string) => boolean;
+  } = {}
 ): { groups: Array<{ category: string; skills: string[] }>; report: SkillBlockTidyReport } {
   const report: SkillBlockTidyReport = {
     repeated: [],
@@ -625,21 +447,16 @@ export function tidySkillGroups<T extends { category: string; skills: unknown[] 
     unlabelled: [],
     trimmed: [],
     mergedGroups: [],
-    keptByPosting: [],
   };
-
-  const postingTerms = options.postingTerms
-    ? new Set([...options.postingTerms].map((term) => normalizedName(term)).filter(Boolean))
-    : undefined;
-  // Counted against the whole block, so the share is a share of what prints.
-  const totalEntries = groups.reduce((n, group) => n + (group.skills?.length ?? 0), 0);
-  const phraseBudget = Math.floor(totalEntries * MAX_PHRASE_SHARE);
-  let phrasesKept = 0;
 
   // 1. Parse whatever shape arrived, and route on the label.
   const seen = new Set<string>();
+  const keepCase = new Set<string>();
+  const soft: string[] = [];
   const working = groups.map((group) => {
     const kept: string[] = [];
+    // A re-parsed block arrives without kinds, so its soft group is known by heading.
+    const softGroup = isSoftSkillsGroup(group.category);
     for (const raw of group.skills ?? []) {
       const entry = parseSkillEntry(raw);
       if (!entry) continue;
@@ -651,16 +468,15 @@ export function tidySkillGroups<T extends { category: string; skills: unknown[] 
         continue;
       }
       seen.add(key);
+      if (entry.keepCase) keepCase.add(key);
 
-      const isPhrase = PROSE_KIND_SET.has(entry.kind);
-      const admitted = belongsInBlock(entry, postingTerms) && (!isPhrase || phrasesKept < phraseBudget);
-      if (!admitted) {
-        report.routedToProse.push({ name: entry.name, kind: entry.kind });
+      if (softGroup || entry.kind === 'soft') {
+        soft.push(entry.name);
         continue;
       }
-      if (isPhrase) {
-        phrasesKept += 1;
-        report.keptByPosting.push({ name: entry.name, kind: entry.kind });
+      if (!belongsInBlock(entry)) {
+        report.routedToProse.push({ name: entry.name, kind: entry.kind });
+        continue;
       }
       if (entry.kind === 'unlabelled') report.unlabelled.push(entry.name);
       kept.push(entry.name);
@@ -673,22 +489,29 @@ export function tidySkillGroups<T extends { category: string; skills: unknown[] 
    *
    * A LABEL CANNOT SETTLE THIS: "AWS" and "Amazon Web Services" are both tools
    * and both correctly labelled, and a reader still sees one thing written
-   * twice. `duplicateOf` is mechanical - an abbreviation beside its expansion, a
-   * singular beside its plural, a bare name beside its vendor-qualified form -
-   * and it is the one place a short table of names survives, because those
-   * three shapes are facts about English and about vendors rather than
-   * judgements about what a thing is.
+   * twice. `duplicateOf` is mechanical - an acronym beside its expansion, a
+   * singular beside its plural, a bare name beside its qualified form - read
+   * off the two strings alone, with no table of names behind it.
    */
+  /*
+   * THE POSTING'S SPELLING WINS. Left to itself the rule keeps the first form
+   * written, or the longer one - so "ML" written before "Machine Learning"
+   * deleted the form the posting used, and "SQL" beside "Azure SQL" left only
+   * "Azure SQL". When the form about to go is one the posting asked for, the
+   * two swap; when the posting asked for both, both stay.
+   */
+  const asked = (name: string) => options.asked?.has(name.trim().toLowerCase()) ?? false;
   const placed: Array<{ name: string; group: number; index: number }> = [];
   const deduped = working.map((group) => ({ category: group.category, skills: [] as string[] }));
   working.forEach((group, groupIndex) => {
     for (const name of group.skills) {
       const clash = placed
         .map((entry) => ({ entry, verdict: duplicateOf(entry.name, name) }))
-        .find((pair) => pair.verdict !== null);
+        .find((pair) => pair.verdict !== null && !(asked(pair.verdict.keep) && asked(pair.verdict.drop)));
 
       if (clash && clash.verdict) {
-        const { keep, drop } = clash.verdict;
+        const verdict = clash.verdict;
+        const { keep, drop } = asked(verdict.drop) ? { keep: verdict.drop, drop: verdict.keep } : verdict;
         report.duplicates.push({ kept: keep, dropped: drop });
         if (keep === name) {
           // The new one wins: it takes the earlier one's place, so the model's
@@ -703,6 +526,34 @@ export function tidySkillGroups<T extends { category: string; skills: unknown[] 
       placed.push({ name, group: groupIndex, index: deduped[groupIndex].skills.length - 1 });
     }
   });
+
+  /*
+   * 2.5. An entry that restates the group's own category name.
+   *
+   * "Automation" in the "CI/CD & Automation" group, "Monitoring" in the
+   * "Monitoring" group - each is the heading repeated as though it were a
+   * skill, so the entry is removed.
+   *
+   * A WHOLE PART OF THE HEADING, not any word in it: "AWS" under "AWS Cloud"
+   * and "Python" under "Python Ecosystem" are skills, not the heading again.
+   * And never a term the posting asked for - "AI" under "ML & AI" on an AI
+   * posting is a core skill, whatever the heading says.
+   */
+  for (const group of deduped) {
+    const headingParts = group.category
+      .toLowerCase()
+      .split(/\s*(?:&|,|\band\b)\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    group.skills = group.skills.filter((skill) => {
+      const skillLower = skill.toLowerCase().trim();
+      if (headingParts.includes(skillLower) && !asked(skill)) {
+        report.repeated.push(skill);
+        return false;
+      }
+      return true;
+    });
+  }
 
   /*
    * 3. The heading count, before the entry ceiling and after the removals.
@@ -722,128 +573,60 @@ export function tidySkillGroups<T extends { category: string; skills: unknown[] 
   const capped = capSkillBlock(withHeadings.groups, options.cap);
   report.trimmed = capped.dropped;
 
+  // 5. The soft skills, after every technical group and outside its counts.
+  const technical = capped.groups.filter((group) => group.category && group.skills.length > 0);
+  const printed = soft.length > 0
+    ? [...technical, { category: SOFT_SKILLS_GROUP, skills: soft.slice(0, MAX_SOFT_SKILLS_IN_GROUP) }]
+    : technical;
   return {
-    groups: capped.groups.filter((group) => group.category && group.skills.length > 0),
+    groups: options.capitalize === false
+      ? printed
+      : printed.map((group) => ({
+        category: group.category,
+        skills: group.skills.map((name) => (
+          keepCase.has(name.toLowerCase()) && (options.confirmsLowercase?.(name) ?? true)
+            ? restoreKnownCasing(name, options.knownCasing)
+            : capitalizeSkillWords(name, options.knownCasing))),
+      })),
     report,
   };
 }
 
-/*
- * ─── Claims inside the years they could be true ──────────────────────────────
- *
- * REPORTED AS anachronisms: LLM-as-a-judge, RAG, prompt injection testing and
- * agent orchestration written into 2017-2019 roles, because the posting asked
- * for them and every role is tailored towards the posting. It is the fault that
- * ends an interview - an engineer who reads "RAG pipelines" under a 2018 role
- * knows a machine wrote the page.
- *
- * The years are the ones the words could first be used of production work, not
- * the first research paper: the RAG paper is 2020 and nobody shipped one until
- * 2023; ChatGPT is November 2022; agent frameworks and MCP are 2024. A role
- * that ENDED before the year beside a term cannot carry it.
- *
- * ONLY TERMS THAT MEAN ONE THING. "Guardrails" is on the prompt's list and not
- * on this one, because engineers put guardrails on deploy pipelines years before
- * anybody put them on a model: a word with an older ordinary sense cannot be
- * dated by a machine, and a false report is worse than none.
- */
-const EARLIEST_USE: ReadonlyArray<{ term: string; from: number }> = [
-  { term: 'LLM', from: 2023 },
-  { term: 'LLMs', from: 2023 },
-  { term: 'Large Language Model', from: 2023 },
-  { term: 'Large Language Models', from: 2023 },
-  { term: 'LLM-as-a-judge', from: 2023 },
-  { term: 'ChatGPT', from: 2023 },
-  { term: 'GPT-3', from: 2021 },
-  { term: 'GPT-4', from: 2023 },
-  { term: 'prompt engineering', from: 2023 },
-  { term: 'prompt injection', from: 2023 },
-  { term: 'RAG', from: 2023 },
-  { term: 'retrieval-augmented generation', from: 2023 },
-  { term: 'vector database', from: 2023 },
-  { term: 'vector databases', from: 2023 },
-  { term: 'LangChain', from: 2023 },
-  { term: 'Copilot', from: 2022 },
-  { term: 'GitHub Copilot', from: 2022 },
-  { term: 'generative AI', from: 2023 },
-  { term: 'GenAI', from: 2023 },
-  { term: 'agentic', from: 2024 },
-  { term: 'AI agent', from: 2024 },
-  { term: 'AI agents', from: 2024 },
-  { term: 'agent orchestration', from: 2024 },
-  { term: 'agent runtime', from: 2024 },
-  { term: 'multi-agent', from: 2024 },
-  { term: 'MCP', from: 2024 },
-  { term: 'Model Context Protocol', from: 2024 },
-  { term: 'Kubernetes', from: 2016 },
-  { term: 'Terraform', from: 2015 },
-];
-
-export type Anachronism = {
-  company: string;
-  /** The year the role ended, which is the year the claim has to fit inside. */
-  endedIn: number;
-  term: string;
-  from: number;
-  bullet: string;
-};
-
 /**
- * The year a role ended, or null when it has not.
- *
- * A current role is given no year at all rather than this year's, because
- * "Present" means the work is still going on and nothing in it can be too new.
+ * Every all-lowercase word of a skill entry gets a capital first letter:
+ * "vector databases" -> "Vector Databases", "scikit-learn" -> "Scikit-Learn".
+ * A word that already has a capital in it is the maker's own casing and is
+ * left alone, so "iOS", "eBPF", "gRPC" and "PyTorch" are untouched.
  */
-export function roleEndYear(endDate: string | undefined): number | null {
-  const value = (endDate ?? '').trim();
-  if (!value) return null;
-  if (/present|current|now|ongoing/i.test(value)) return null;
-
-  const year = /\b(19|20)\d{2}\b/.exec(value);
-  return year ? Number.parseInt(year[0], 10) : null;
+export function capitalizeSkillWords(name: string, known?: ReadonlyMap<string, string>): string {
+  return name.replace(/[^\s/(-]+/g, (word) => {
+    if (/[A-Z]/.test(word)) return word;
+    return known?.get(word.toLowerCase()) ?? word.charAt(0).toUpperCase() + word.slice(1);
+  });
 }
 
-/** Bounded on both sides, so "RAG" does not match "storage". */
-function namesTerm(text: string, term: string): boolean {
-  const pattern = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s-]+/g, '[\\s-]+');
-  return new RegExp(`(?<![A-Za-z0-9])${pattern}(?![A-Za-z0-9])`, 'i').test(text);
+/** An entry the model kept in lower case, unless real text writes the name with inner capitals. */
+function restoreKnownCasing(name: string, known?: ReadonlyMap<string, string>): string {
+  if (!known) return name;
+  return name.replace(/[^\s/(-]+/g, (word) => (/[A-Z]/.test(word) ? word : known.get(word.toLowerCase()) ?? word));
 }
 
 /**
- * Every claim in the bullets that is newer than the role it sits in.
- *
- * ONE FINDING PER THING NAMED. "LLM" is inside "LLM-as-a-judge" and both are on
- * the list, so a bullet carrying the longer one would be reported twice and the
- * count would read as two faults where a reader sees one phrase. The shorter
- * term is dropped when a longer match covers it; two genuinely different claims
- * in one bullet are still two findings.
+ * How names are cased in real text - the posting, the profile, the resume's own
+ * sentences - for every word with a capital after its first letter: "NumPy",
+ * "OpenAPI", "iOS". A model often writes a library as its lower-case import name
+ * ("numpy"); a capital inside the word in real text is the maker's own casing.
+ * All-capital words ("DBT", "AWS") are left out: they say nothing about casing.
  */
-export function findAnachronisms(
-  roles: ReadonlyArray<{ company?: string; endDate?: string; achievements?: string[] }>
-): Anachronism[] {
-  const found: Anachronism[] = [];
-
-  for (const role of roles) {
-    const endedIn = roleEndYear(role.endDate);
-    if (endedIn === null) continue;
-
-    for (const bullet of role.achievements ?? []) {
-      const hits = EARLIEST_USE.filter(
-        (entry) => endedIn < entry.from && namesTerm(bullet, entry.term)
-      );
-      const specific = hits.filter(
-        (entry) =>
-          !hits.some(
-            (other) =>
-              other !== entry && other.term.toLowerCase().includes(entry.term.toLowerCase())
-          )
-      );
-      for (const { term, from } of specific) {
-        found.push({ company: role.company ?? 'a role', endedIn, term, from, bullet });
-      }
+export function namesWithInnerCapitals(texts: readonly string[]): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const text of texts) {
+    for (const word of text.match(/[A-Za-z][A-Za-z0-9+#]*/g) ?? []) {
+      if (!/[A-Z]/.test(word.slice(1)) || !/[a-z]/.test(word)) continue;
+      const key = word.toLowerCase();
+      if (!found.has(key)) found.set(key, word);
     }
   }
-
   return found;
 }
 
@@ -891,151 +674,6 @@ export function findGarbledMetrics(
 }
 
 /*
- * ─── A values phrase is not a skill ──────────────────────────────────────────
- *
- * REPORTED AS pasted job-description phrases: "radical ownership mindset",
- * "accuracy obsession", "valued all voices", "relentless bias toward action",
- * "what agents can and can't do" - tacked onto the ends of bullets, where they
- * break the sentence. The operator asked for them deleted.
- *
- * A PROMPT RULE ALONE COULD NOT HAVE DONE IT, which is why this exists. Those
- * phrases arrive on the analyser's KEYWORDS list, and three places in this file
- * then push them onto the page: the prompt is told to place EVERY keyword, the
- * coverage measurement counts a missing one as a shortfall, and a shortfall
- * large enough buys a second model call whose whole job is to write the missing
- * terms in. A model obeying fault 1 would have been corrected by a revision
- * pass. So the phrase is taken off the list instead - the model never sees it,
- * nothing counts it missing, and no revision asks for it.
- *
- * SET ASIDE, NOT A SHORTFALL. This is the same decision rule 3 of the prompt
- * makes about an industry the candidate has not worked in: a term deliberately
- * left off the page is not a term the resume failed to carry.
- */
-
-/** Words that only ever belong to a claim about character. */
-const VALUES_WORDS = [
-  'mindset',
-  'mentality',
-  'obsession',
-  'obsessed',
-  'attitude',
-  'ethos',
-  'passion',
-  'passionate',
-  'grit',
-  'hunger',
-  'humility',
-  'scrappy',
-  'scrappiness',
-  'voices',
-  'radical',
-  'relentless',
-  'relentlessly',
-  'insatiable',
-  'unwavering',
-  'fierce',
-  'fiercely',
-  'uncompromising',
-  'obsessive',
-  'maniacal',
-  'dogged',
-];
-
-/**
- * "bias toward action" is a slogan; "bias detection" is a real piece of ML
- * work, so the word alone cannot decide it.
- */
-const VALUES_PATTERNS = [
-  /\bbias (?:toward|towards|for)\b/i,
-  /\blove (?:of|for)\b/i,
-  /\bcan-do\b/i,
-  /\bfirst-principles\b/i,
-  // A clause rather than a noun phrase: "what agents can and can't do", "we
-  // value curiosity". Nothing a reader would put after "experience with ___".
-  /\b(?:can|cannot|can't|should|must)\b.*\b(?:do|be|say|know)\b/i,
-  // "us" is deliberately absent: "US GAAP" and "US regulations" are domain
-  // terms, and a pronoun check that ate them would drop real keywords.
-  /\b(?:we|our|you|your)\b/i,
-  /\?/,
-];
-
-const VALUES_WORD_SET = new Set(VALUES_WORDS);
-
-/**
- * The phrases themselves, where no word in them is a tell.
- *
- * "Ambiguity tolerance" and "decision agility" carry none of the words above
- * and are two words long, so neither the marker list nor the description rule
- * reaches them - and with the soft-skill group gone, the allowlist that used to
- * refuse them is gone too. They are named outright instead.
- *
- * A CLOSED LIST CANNOT CATCH THE NEXT ONE, and this does not pretend to: a
- * company writes a new values phrase every quarter. What makes it enough is
- * that the ANALYSER no longer produces them - `skills.soft` now names its
- * entries from a fixed vocabulary - so this is the second line rather than the
- * first.
- */
-const KNOWN_CULTURE_PHRASES = new Set([
-  'ambiguity tolerance',
-  'early sharing',
-  'decision agility',
-  'high bar for quality',
-  'fast-paced execution',
-  'reversible decision-making',
-  'reversible decision making',
-  'engineering teamwork',
-  'clarity focus',
-  'bias to action',
-  'extreme ownership',
-  'growth mindset',
-  'first principles thinking',
-  'intellectual honesty',
-  'low ego',
-  'high agency',
-  'strong opinions loosely held',
-  'disagree and commit',
-  'move fast',
-  'think big',
-  'customer first',
-]);
-
-/**
- * Whether a checklist term is a claim about character rather than a skill.
- *
- * "Ownership", "Collaboration" and "Mentoring" are soft skills and must pass:
- * the prompt asks for every one of them, and dropping those would cost real
- * matches. What fails is the slogan built around one.
- */
-export function isValuesPhrase(term: string): boolean {
-  const cleaned = term.trim();
-  if (!cleaned) return false;
-
-  // One of the words above is enough on its own, which is why that list holds
-  // only words that cannot mean anything else. "Ownership", "Collaboration" and
-  // "Mentoring" are not on it and never fail here.
-  if (KNOWN_CULTURE_PHRASES.has(cleaned.toLowerCase().replace(/\s+/g, ' '))) return true;
-
-  const words = cleaned.toLowerCase().split(/[^a-z'-]+/).filter(Boolean);
-  if (words.some((word) => VALUES_WORD_SET.has(word))) return true;
-
-  return VALUES_PATTERNS.some((pattern) => pattern.test(cleaned));
-}
-
-/** The checklist without the claims about character, and what was set aside. */
-export function withoutValuesPhrases(terms: readonly string[]): {
-  terms: string[];
-  setAside: string[];
-} {
-  const kept: string[] = [];
-  const setAside: string[] = [];
-  for (const term of terms) {
-    if (isValuesPhrase(term)) setAside.push(term);
-    else kept.push(term);
-  }
-  return { terms: kept, setAside };
-}
-
-/*
  * ─── A bullet that reads like a sentence somebody wrote ──────────────────────
  *
  * The last three faults on the operator's list cannot be repaired from here -
@@ -1044,43 +682,6 @@ export function withoutValuesPhrases(terms: readonly string[]): {
  * rule that quietly stops holding. That is the same reason `echoingBullets`
  * exists beside the ban on a verb repeating its own noun.
  */
-
-/**
- * Names that are written in lower case on purpose.
- *
- * A bullet opening "dbt models were..." is correct and a bullet opening "built
- * the..." is not, and the only difference is the word. Without this list the
- * check would report the product names as faults, which is the fastest way to
- * get an operator to stop reading the log.
- */
-const LOWERCASE_NAMES = new Set([
-  'dbt',
-  'ios',
-  'ipados',
-  'macos',
-  'npm',
-  'nginx',
-  'pandas',
-  'numpy',
-  'pytest',
-  'pytorch',
-  'scikit-learn',
-  'jquery',
-  'grpc',
-  'eslint',
-  'webpack',
-  'kubectl',
-  'bash',
-  'curl',
-  'cron',
-  'tvos',
-  'watchos',
-  'ggplot',
-  'matplotlib',
-  'jupyter',
-  'airflow',
-  'dbeaver',
-]);
 
 /** A clause left hanging where the outcome should be. */
 const DANGLING_END = /(?:,|\band|\bor|\bwith|\busing|\bto|\bfor|\bthe|\bof|\bin|\bon|\bat|\bby)\s*\.?$/i;
@@ -1113,9 +714,18 @@ function repeatsAPhrase(bullet: string): boolean {
  * evaluation", duplicated phrases, lowercase bullet starts.
  */
 export function findBrokenBullets(
-  roles: ReadonlyArray<{ achievements?: string[] }>
+  roles: ReadonlyArray<{ achievements?: string[] }>,
+  /*
+   * The resume's own skills block. A bullet may open with a name its maker
+   * writes in lower case - "dbt models were..." - and the block is where this
+   * resume writes it that way; no list of such names is kept here.
+   */
+  vocabulary: readonly string[] = []
 ): BrokenBullet[] {
   const found: BrokenBullet[] = [];
+  const lowerCaseNames = new Set(
+    vocabulary.flatMap((name) => name.split(/\s+/)).filter((word) => /^[a-z]/.test(word)).map((word) => word.toLowerCase())
+  );
 
   for (const role of roles) {
     for (const bullet of role.achievements ?? []) {
@@ -1124,7 +734,7 @@ export function findBrokenBullets(
 
       const firstWord = (/^[A-Za-z][A-Za-z.-]*/.exec(text)?.[0] ?? '').toLowerCase();
       if (SELF_TALK.test(text)) found.push({ bullet: text, shape: 'self-talk' });
-      else if (/^[a-z]/.test(text) && !LOWERCASE_NAMES.has(firstWord)) {
+      else if (/^[a-z]/.test(text) && !lowerCaseNames.has(firstWord)) {
         found.push({ bullet: text, shape: 'lower-start' });
       } else if (DANGLING_END.test(text)) found.push({ bullet: text, shape: 'dangling-end' });
       else if (repeatsAPhrase(text)) found.push({ bullet: text, shape: 'repeated-phrase' });
@@ -1167,118 +777,4 @@ export function bulletsNamingATool(
   }
 
   return { bullets, named, share: bullets === 0 ? 1 : named / bullets };
-}
-
-/**
- * A figure saying how big the thing was, rather than how much it improved.
- *
- * "40 Snowflake tables carrying 2B rows a day" is scale; "cut failures by 40%"
- * is an improvement, and a role carrying only the second never says what was
- * being run. The nouns are the ones an engineer measures a system in.
- */
-const SCALE_FIGURE = new RegExp(
-  String.raw`\b[\d.,]+\s*(?:[kmb]\+?|million|billion|thousand)?\s*(?:\+\s*)?` +
-    String.raw`(?:rows|events|requests|queries|transactions|records|users|customers|accounts|` +
-    String.raw`services|microservices|endpoints|apis|tables|datasets|jobs|pipelines|repos|` +
-    String.raw`repositories|clusters|nodes|engineers|developers|teams|markets|countries|stores|` +
-    String.raw`devices|tenants|merchants|files|documents|messages|tb|gb|pb)\b` +
-    String.raw`|\b(?:qps|rps|tps|req/s)\b`,
-  'i'
-);
-
-/** Roles whose bullets never say how big the work was. */
-export function rolesWithoutScale(
-  roles: ReadonlyArray<{ company?: string; achievements?: string[] }>
-): string[] {
-  return roles
-    .filter((role) => (role.achievements ?? []).some((bullet) => bullet.trim()))
-    .filter((role) => !(role.achievements ?? []).some((bullet) => SCALE_FIGURE.test(bullet)))
-    .map((role) => role.company ?? 'a role');
-}
-
-/**
- * Owning something, deciding something, or bringing other engineers along.
- *
- * The operator's eighth fault: "show expanding scope, ownership, or mentoring".
- * The prompt asks for one such bullet in each of the two most recent roles,
- * drawn only from what the profile shows, and this says whether it arrived.
- * Checked on the two most recent roles ONLY, because the rule is about scope
- * WIDENING - an earliest role without one is the rule working.
- */
-const SCOPE_WORDS = /\b(?:owned|ownership|mentored|mentoring|mentor|coached|onboarded|design review|set the standard)\b/i;
-
-export function recentRolesWithoutScope(
-  roles: ReadonlyArray<{ company?: string; achievements?: string[] }>
-): string[] {
-  return roles
-    .slice(0, 2)
-    .filter((role) => (role.achievements ?? []).some((bullet) => bullet.trim()))
-    .filter((role) => !(role.achievements ?? []).some((bullet) => SCOPE_WORDS.test(bullet)))
-    .map((role) => role.company ?? 'a role');
-}
-
-/*
- * ─── Standard degree notation ────────────────────────────────────────────────
- *
- * ASKED FOR: "Use standard degree notation (e.g. B.S. in Computer Science)".
- * Profiles carry whatever the person typed - "Bachelor of Science", "BS",
- * "B.Sc", "Bachelor of Science Computer Science" - and education is passed to
- * the page from the profile untouched, so the notation is the one thing on the
- * resume nothing has ever normalised.
- *
- * ONLY WHERE THE SOURCE IS UNAMBIGUOUS. "Bachelor of Science" is a B.S. and
- * there is nothing to decide. "Bachelor's degree in Computer Science" is NOT:
- * it may be a B.S. or a B.A., the profile does not say, and writing the wrong
- * one puts a false claim on somebody's resume. Those are left exactly as the
- * person wrote them.
- */
-const DEGREE_FORMS: ReadonlyArray<{ match: RegExp; write: string }> = [
-  { match: /^bachelor(?:'s)?\s+(?:of\s+)?science\b/i, write: 'B.S.' },
-  { match: /^b\.?\s?sc?\.?\b/i, write: 'B.S.' },
-  { match: /^bachelor(?:'s)?\s+(?:of\s+)?arts\b/i, write: 'B.A.' },
-  { match: /^b\.?\s?a\.?\b/i, write: 'B.A.' },
-  { match: /^bachelor(?:'s)?\s+(?:of\s+)?engineering\b/i, write: 'B.E.' },
-  { match: /^bachelor(?:'s)?\s+(?:of\s+)?technology\b/i, write: 'B.Tech.' },
-  { match: /^master(?:'s)?\s+(?:of\s+)?science\b/i, write: 'M.S.' },
-  { match: /^m\.?\s?sc?\.?\b/i, write: 'M.S.' },
-  { match: /^master(?:'s)?\s+(?:of\s+)?arts\b/i, write: 'M.A.' },
-  { match: /^master(?:'s)?\s+(?:of\s+)?business\s+administration\b/i, write: 'M.B.A.' },
-  { match: /^m\.?\s?b\.?\s?a\.?\b/i, write: 'M.B.A.' },
-  { match: /^master(?:'s)?\s+(?:of\s+)?engineering\b/i, write: 'M.Eng.' },
-  { match: /^doctor(?:ate)?\s+(?:of\s+)?philosophy\b/i, write: 'Ph.D.' },
-  { match: /^ph\.?\s?d\.?\b/i, write: 'Ph.D.' },
-  { match: /^associate(?:'s)?\s+(?:of\s+)?science\b/i, write: 'A.S.' },
-  { match: /^associate(?:'s)?\s+(?:of\s+)?arts\b/i, write: 'A.A.' },
-];
-
-/** One degree line, in standard notation, or exactly as it was. */
-export function standardDegree(degree: string): string {
-  const text = (degree ?? '').trim().replace(/\s+/g, ' ');
-  if (!text) return degree ?? '';
-
-  for (const { match, write } of DEGREE_FORMS) {
-    const hit = match.exec(text);
-    if (!hit) continue;
-
-    // What follows the degree name: the field, with "in", a comma or nothing
-    // between. "B.S. in Computer Science" is the form asked for.
-    // The dot is part of the class because an abbreviation matches without its
-    // final stop: "B.S. in Computer Science" leaves ". in Computer Science".
-    const rest = text
-      .slice(hit[0].length)
-      .replace(/^[\s,.:-]+/, '')
-      .replace(/^in\s+/i, '');
-    return rest ? `${write} in ${rest}` : write;
-  }
-
-  return text;
-}
-
-/** The same, across a profile's education entries. Nothing else is touched. */
-export function standardDegreeNotation<T extends { degree?: string }>(
-  entries: readonly T[] | undefined
-): T[] {
-  return (entries ?? []).map((entry) =>
-    entry?.degree ? { ...entry, degree: standardDegree(entry.degree) } : entry
-  );
 }

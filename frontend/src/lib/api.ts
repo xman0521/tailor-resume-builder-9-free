@@ -1362,8 +1362,6 @@ export interface Education {
   location: string;
 }
 
-export type HardSkillOrdering = 'library' | 'job-priority';
-
 /**
  * One heading in the Technical Skills block, and the skills under it.
  *
@@ -1381,52 +1379,6 @@ export interface SkillCategoryGroup {
  */
 export type TechnicalSkillsLayout = 'categorized' | 'flat';
 
-/**
- * The headings the shared skill library sorts skills into.
- *
- * Here rather than on the one page that used to hold it, because a second page
- * now offers the same list and two copies would drift - and the drift would
- * show up as a heading that files correctly on one screen and not the other.
- */
-export type HardSkillCategory =
-  | 'Languages'
-  | 'Frameworks and Libraries'
-  | 'Software Architecture & Design'
-  | 'Security'
-  | 'Cloud and Infrastructure'
-  | 'Databases and Storage'
-  | 'DevOps and CI/CD'
-  | 'Observability and Monitoring'
-  | 'Testing and Quality'
-  | 'APIs and Integration'
-  | 'Engineering Practices & Methodology'
-  | 'Data Engineering & Streaming'
-  | 'AI/ML & Data Science'
-  | 'Version Control & Collaboration'
-  | 'Operating Systems & Platforms'
-  | 'Frontend & UI/UX Development'
-  | 'Mobile Development';
-
-export const HARD_SKILL_CATEGORIES: HardSkillCategory[] = [
-  'Languages',
-  'Frameworks and Libraries',
-  'Software Architecture & Design',
-  'Security',
-  'Cloud and Infrastructure',
-  'Databases and Storage',
-  'DevOps and CI/CD',
-  'Observability and Monitoring',
-  'Testing and Quality',
-  'APIs and Integration',
-  'Engineering Practices & Methodology',
-  'Data Engineering & Streaming',
-  'AI/ML & Data Science',
-  'Version Control & Collaboration',
-  'Operating Systems & Platforms',
-  'Frontend & UI/UX Development',
-  'Mobile Development',
-];
-
 export interface ProfileSettings {
   resumePromptId?: string;
   analyzeJobPromptId?: string;
@@ -1434,7 +1386,6 @@ export interface ProfileSettings {
   resumeFileNameTemplate?: string;
   coverLetterFileNameTemplate?: string;
   companyFolderNameTemplate?: string;
-  hardSkillOrdering?: HardSkillOrdering;
   /**
    * What the line under the name says, when this profile wants its own wording.
    * Blank means "use the Title field". It changes only the printed line - the
@@ -1659,8 +1610,6 @@ export interface TailoredContent {
   requiredSkills?: string[];
   preferredSkills?: string[];
   strengths: TailoredStrength[];
-  unconfirmedHardSkills?: string[];
-  unconfirmedSoftSkills?: string[];
   coverLetter?: string;
 }
 
@@ -2019,8 +1968,6 @@ export const resumeApi = {
           downloadUrl: string;
           tailored: boolean;
           format?: 'pdf' | 'docx';
-          unconfirmedHardSkills?: string[];
-          unconfirmedSoftSkills?: string[];
         }
       | {
           pdf: { filename: string; downloadUrl: string };
@@ -2030,8 +1977,6 @@ export const resumeApi = {
             docx?: { filename: string; downloadUrl: string };
           };
           tailored: boolean;
-          unconfirmedHardSkills?: string[];
-          unconfirmedSoftSkills?: string[];
         }
     >(
       '/resume/generate',
@@ -2074,8 +2019,6 @@ export const resumeApi = {
       }>;
       failedCompanies: string[];
       tailored: boolean;
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
     }>('/resume/generate-all', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -2183,44 +2126,10 @@ export const resumeApi = {
       }>;
       failedCompanies: string[];
       tailored: boolean;
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
       /** Present only when the run was armed to turn the machine off. */
       shutdown?: ShutdownReport;
     }>('/resume/generate-multi-job', {
       method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  confirmSkill: (data: { type: 'hard' | 'soft'; skill: string }) =>
-    apiFetch<{ added: boolean; skill: string; type: 'hard' | 'soft' }>('/resume/skills/confirm', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  listSkills: (type: 'hard' | 'soft') =>
-    apiFetch<{ skills: string[] }>(`/resume/skills?type=${type}`),
-
-  addSkill: (data: {
-    type: 'hard' | 'soft';
-    skill: string;
-    category?: string;
-    priority?: number;
-  }) =>
-    apiFetch<{ added: boolean; skill: string; type: 'hard' | 'soft' }>('/resume/skills', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-
-  updateSkill: (data: { type: 'hard' | 'soft'; original: string; skill: string }) =>
-    apiFetch<{ updated: boolean; skill: string; type: 'hard' | 'soft' }>('/resume/skills', {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    }),
-
-  deleteSkill: (data: { type: 'hard' | 'soft'; skill: string }) =>
-    apiFetch<{ deleted: boolean; skill: string; type: 'hard' | 'soft' }>('/resume/skills', {
-      method: 'DELETE',
       body: JSON.stringify(data),
     }),
 
@@ -2258,8 +2167,6 @@ export const resumeApi = {
         tailoredContent?: TailoredContent;
       }>;
       tailored: boolean;
-      unconfirmedHardSkills?: string[];
-      unconfirmedSoftSkills?: string[];
     }>('/resume/preview-all', {
       method: 'POST',
       body: JSON.stringify(data),

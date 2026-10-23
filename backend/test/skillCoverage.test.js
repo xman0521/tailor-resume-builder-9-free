@@ -6,7 +6,6 @@ const {
   parseTailoredResumeContent,
   buildTailorResumePromptValues,
 } = require('../dist/services/resumeService');
-const { extractConceptKeywords, isConceptSkill } = require('../dist/services/utils/hardSkillSelection');
 
 function analysisFor(jobDescription, { technical = ['Python'], soft = [] } = {}) {
   return parseJobAnalysisContent(
@@ -84,21 +83,28 @@ test('the concepts kept out of the skills block are handed to the prompt', () =>
   // Keeping "Microservices" out of Technical Skills is a formatting decision,
   // not a decision to drop the keyword. It has to reach the model so it can be
   // written into the prose, or the ATS score pays for the formatting.
-  const analysis = analysisFor(
-    `Microservices on AWS with event-driven services, CI/CD pipelines, observability,
-     Python, Kubernetes, PostgreSQL, caching strategies, test automation, API design,
-     agile development.`,
-    { technical: ['Python', 'Kubernetes', 'PostgreSQL'] }
+  const analysis = parseJobAnalysisContent(
+    JSON.stringify({
+      jobMeta: { title: 'Engineer', seniority: 'Mid', industry: 'Software', department: 'Engineering' },
+      skills: { technical: ['API design', 'test automation'], tools: ['Kubernetes'], soft: [] },
+      technologies: ['Python', 'PostgreSQL'],
+      architecturePatterns: ['Microservices', 'event-driven services'],
+      responsibilities: [],
+      domainKnowledge: [],
+      keywords: { actionVerbs: [], buzzwords: [], mustInclude: [] },
+    }),
+    'Microservices on AWS with event-driven services, Python, Kubernetes, PostgreSQL, API design.'
   );
   const profile = profileFor('Built Django services on PostgreSQL with Docker.');
 
   const values = buildTailorResumePromptValues(profile, analysis);
   assert.ok('conceptKeywordsJson' in values, 'the prompt variable must be supplied');
   const concepts = JSON.parse(values.conceptKeywordsJson);
-  assert.ok(concepts.length > 0, 'this posting is full of concepts');
-  for (const concept of concepts) {
-    assert.ok(isConceptSkill(concept), `"${concept}" is not a concept`);
-  }
+  assert.deepEqual(
+    concepts.map((c) => c.toLowerCase()).sort(),
+    ['api design', 'event-driven services', 'microservices', 'test automation'],
+    'the abilities and patterns the analyser filed, and none of its named tools'
+  );
   assert.ok(
     concepts.some((c) => /microservice/i.test(c)),
     `microservices should be handed over: ${concepts.join(', ')}`
@@ -112,11 +118,4 @@ test('the concepts kept out of the skills block are handed to the prompt', () =>
       `"${concept}" is in both the prose list and the skills block`
     );
   }
-});
-
-test('extractConceptKeywords keeps the job order and drops the tools', () => {
-  const concepts = extractConceptKeywords([
-    'Python', 'Microservices', 'Docker', 'CI/CD', 'PostgreSQL', 'Agile Development', 'microservices',
-  ]);
-  assert.deepEqual(concepts, ['Microservices', 'CI/CD', 'Agile Development']);
 });

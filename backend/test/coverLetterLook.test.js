@@ -8,12 +8,10 @@ const { saveCoverLetter, pickCoverLetterStyle } = require('../dist/generators/co
 
 /**
  * The catalogue, reached the only way it is exposed: by pinning each name.
- * Ten typefaces times five page FORMS - not five reading rhythms, which is what
- * this was and why every letter still looked the same. See the note on the
- * shape test below.
+ * One typeface - Arial, the standard font the resume uses too - times five page
+ * FORMS. The forms are what makes letters differ; see the shape test below.
  */
-const FAMILIES = ['georgia', 'times', 'palatino', 'cambria', 'garamond',
-  'helvetica', 'arial', 'segoe', 'verdana', 'trebuchet'];
+const FAMILIES = ['arial'];
 const FORMS = ['block', 'indented', 'memo', 'formal', 'narrow'];
 const CATALOGUE = FAMILIES.flatMap((family) => FORMS.map((form) => `${family}-${form}`));
 const allStyles = () => CATALOGUE.map((name) => pickCoverLetterStyle('x', { COVER_LETTER_STYLE: name }));
@@ -35,8 +33,9 @@ const NAMES = [
   'Ryan Pham', 'William Cheng', 'Shane Earl Mays', 'Krishnakumar Ramesan',
 ];
 
-test('the catalogue holds fifty looks, and every one is really there', () => {
-  assert.equal(CATALOGUE.length, 50);
+test('the catalogue holds five looks, all in Arial, and every one is really there', () => {
+  assert.equal(CATALOGUE.length, 5);
+  for (const style of allStyles()) assert.match(style.fontFamily, /^Arial,/);
   for (const name of CATALOGUE) {
     assert.equal(
       pickCoverLetterStyle('anyone', { COVER_LETTER_STYLE: name }).name,
@@ -60,7 +59,7 @@ test('no two looks are the same once the label is ignored', () => {
     assert.equal(clash, undefined, `${style.name} is identical to ${clash}`);
     seen.set(key, style.name);
   }
-  assert.equal(seen.size, 50);
+  assert.equal(seen.size, 5);
 });
 
 test('the looks differ in PAGE SHAPE, not only in typeface', () => {
@@ -115,8 +114,10 @@ test('a form separates paragraphs with space OR indents them, never both', () =>
 });
 
 test('different people get different looks', () => {
+  // Five looks since the typeface became one standard font, so eight people
+  // cannot all differ; they must still spread across most of the five.
   const looks = new Set(NAMES.map((name) => pickCoverLetterStyle(name, {}).name));
-  assert.ok(looks.size >= 5, `eight people produced only ${looks.size} look(s): ${[...looks].join(', ')}`);
+  assert.ok(looks.size >= 3, `eight people produced only ${looks.size} look(s): ${[...looks].join(', ')}`);
 });
 
 test('the whole catalogue gets used, not a favoured corner of it', () => {
@@ -134,7 +135,7 @@ test('the whole catalogue gets used, not a favoured corner of it', () => {
   }
 
   const used = new Set(people.map((person) => pickCoverLetterStyle(person, {}).name));
-  assert.equal(used.size, 50, `only ${used.size} of 50 looks were ever chosen`);
+  assert.equal(used.size, 5, `only ${used.size} of 5 looks were ever chosen`);
 });
 
 test('one person keeps the same look, so their letters match each other', () => {
@@ -155,12 +156,12 @@ test('one person keeps the same look, so their letters match each other', () => 
 
 test('the look can be pinned, and a bad value falls back rather than throwing', () => {
   assert.equal(
-    pickCoverLetterStyle('Anyone', { COVER_LETTER_STYLE: 'garamond-formal' }).name,
-    'garamond-formal'
+    pickCoverLetterStyle('Anyone', { COVER_LETTER_STYLE: 'arial-formal' }).name,
+    'arial-formal'
   );
   assert.equal(
-    pickCoverLetterStyle('Anyone', { COVER_LETTER_STYLE: 'GARAMOND-FORMAL' }).name,
-    'garamond-formal'
+    pickCoverLetterStyle('Anyone', { COVER_LETTER_STYLE: 'ARIAL-FORMAL' }).name,
+    'arial-formal'
   );
 
   // A form on its own is not a style name - it needs a typeface too - so it

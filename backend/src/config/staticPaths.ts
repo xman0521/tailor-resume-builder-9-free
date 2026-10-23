@@ -2,7 +2,7 @@ import path from 'path';
 
 /**
  * Resolves the directory that holds read-only, shipped assets:
- * default prompts, the skill library seed, and built-in resume templates.
+ * default prompts and built-in resume templates.
  * Dynamic data never lives here; it is stored in the SQLite database.
  */
 export function getStaticDir(): string {
@@ -16,8 +16,4 @@ export function getStaticPromptsDir(): string {
 
 export function getStaticTemplatesDir(): string {
   return path.join(getStaticDir(), 'templates');
-}
-
-export function getStaticSkillsFile(): string {
-  return path.join(getStaticDir(), 'skills', 'skills.json');
 }

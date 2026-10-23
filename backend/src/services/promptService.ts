@@ -245,6 +245,41 @@ Preferred: GraphQL, Kubernetes, Terraform, CI/CD, and experience in fast-paced s
         description: 'What to do about figures: how many more are needed, or that there are enough.',
         sampleValue: 'The draft carries enough figures. Do not add more.',
       },
+      {
+        name: 'summaryNote',
+        description: 'Whether the summary has to be split from one sentence into two or three.',
+        sampleValue: 'The summary is two or three sentences. If you rewrite it, it stays two or three - never one.',
+      },
+    ],
+  },
+  {
+    key: 'check-skills',
+    label: 'Check Skills Block',
+    id: 'check-skills',
+    name: 'Check Skills Block',
+    description:
+      'Replaces every entry in the technical skills block that is not a real tool with the tools that '
+      + 'work is done with, and returns the removed concepts so they can be written into bullets.',
+    usage:
+      'Runs after Tailor Resume on every resume, before the coverage check. The concepts it returns are '
+      + 'written into bullets by Revise Resume Coverage. Set RESUME_SKILL_CHECK_OFF to skip it.',
+    responseFormat: 'json',
+    allowedVariables: [
+      {
+        name: 'skillGroupsJson',
+        description: 'The technical skill groups the draft wrote, without the Soft Skills group.',
+        sampleValue: '[{"category":"Monitoring","skills":["Datadog","regression detection"]}]',
+      },
+      {
+        name: 'rolesJson',
+        description: "The draft's roles: title, company, dates and bullets.",
+        sampleValue: '[{"title":"Software Engineer","company":"Acme","startDate":"01/2019","endDate":"Present","achievements":["Built settlement services in Python."]}]',
+      },
+      {
+        name: 'postingToolsJson',
+        description: 'The tools, technologies and protocols the job posting names.',
+        sampleValue: '["Python", "AWS", "Datadog"]',
+      },
     ],
   },
   {

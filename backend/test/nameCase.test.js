@@ -55,7 +55,6 @@ const tailored = {
   summary: 'Engineer of 9 years across payment platforms.',
   experience: profile.experience,
   strengths: [], softSkills: [], skills: [], hardSkills: [],
-  unconfirmedHardSkills: [], unconfirmedSoftSkills: [],
   skillGroups: [{ category: 'Languages', skills: ['Java', 'Python', 'SQL'] }],
   coverLetter: 'x',
 };

@@ -7,7 +7,7 @@
  * The legacy directory is the old `backend/data` folder, which held:
  *   profiles/*.json, groups/*.json, templates/*.json,
  *   prompts/custom-*.json, config/ai-models.json, config/prompt-library.json,
- *   skills/skills.json, bid-assistant/profiles/*.json,
+ *   bid-assistant/profiles/*.json,
  *   bid-assistant/job-applications.db
  *
  * Records that already exist in the database are left untouched.
@@ -22,7 +22,6 @@ import { hasStoredPrompt, readActivePrompts, saveStoredPrompt, writeActivePrompt
 import { getSettingRaw, setSetting } from '../database/settingsRepository';
 import { migrate001 } from '../database/migrations/001_openrouter_to_claude_cli';
 import { APP_SETTINGS_KEY } from '../config/aiModelConfig';
-import { addSkill, isHardSkillCategory } from '../database/skillsDatabase';
 import { buildNewProfile, buildUpdatedProfile } from '../services/profileService';
 import { Profile } from '../types/profile';
 import { Group } from '../types/group';
@@ -166,27 +165,6 @@ function importAppSettings(configDir: string): boolean {
   return true;
 }
 
-function importSkills(skillsFile: string): Counter {
-  const counter: Counter = { imported: 0, skipped: 0 };
-  if (!fs.existsSync(skillsFile)) return counter;
-  const parsed = JSON.parse(fs.readFileSync(skillsFile, 'utf8')) as { hard?: unknown[]; soft?: unknown[] };
-  for (const item of parsed.hard ?? []) {
-    const record = typeof item === 'string' ? { skill: item } : (item as { skill?: string; priority?: number; category?: string });
-    if (!record.skill) continue;
-    const result = addSkill('hard', record.skill, {
-      priority: typeof record.priority === 'number' ? record.priority : undefined,
-      category: isHardSkillCategory(record.category) ? record.category : undefined,
-    });
-    counter[result.added ? 'imported' : 'skipped'] += 1;
-  }
-  for (const item of parsed.soft ?? []) {
-    if (typeof item !== 'string') continue;
-    const result = addSkill('soft', item);
-    counter[result.added ? 'imported' : 'skipped'] += 1;
-  }
-  return counter;
-}
-
 /** Copies the bid-assistant tables from the legacy standalone database. */
 function importBidAssistantDatabase(legacyDbPath: string): Record<string, number> {
   const copied: Record<string, number> = {};
@@ -238,7 +216,6 @@ function main(): void {
   console.log('prompts:', importPrompts(path.join(legacyDir, 'prompts'), path.join(staticDir, 'prompts')));
   console.log('active prompts:', importPromptLibrary(path.join(legacyDir, 'config')) ? 'imported' : 'skipped');
   console.log('app settings:', importAppSettings(path.join(legacyDir, 'config')) ? 'imported' : 'skipped');
-  console.log('skills:', importSkills(path.join(legacyDir, 'skills', 'skills.json')));
   console.log('bid-assistant tables:', importBidAssistantDatabase(path.join(legacyDir, 'bid-assistant', 'job-applications.db')));
   console.log('Done.');
 }

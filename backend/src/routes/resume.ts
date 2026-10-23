@@ -37,7 +37,6 @@ import {
   type RunFailure,
 } from '../services/shutdownAfterRun';
 import { describeFailure, sendAiError } from '../middleware/aiErrors';
-import { confirmSkill, createSkill, deleteSkillHandler, listSkills, updateSkillHandler } from '../controllers/skills';
 import { Profile } from '../types/profile';
 import { getProfile, listProfiles } from '../database/profileRepository';
 import { DEFAULT_ANALYZE_JOB_PROMPT_ID } from '../services/profileService';
@@ -251,22 +250,6 @@ router.get('/models', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to fetch settings' });
   }
 });
-
-// Confirm and persist a new skill
-router.post('/skills/confirm', confirmSkill);
-
-
-// List skills
-router.get('/skills', listSkills);
-
-// Add skill
-router.post('/skills', createSkill);
-
-// Update skill
-router.put('/skills', updateSkillHandler);
-
-// Delete skill
-router.delete('/skills', deleteSkillHandler);
 
 // Analyze job description
 router.post('/analyze', async (req: Request, res: Response) => {
@@ -521,28 +504,6 @@ async function loadAllProfiles(profileIds?: string[]): Promise<Profile[]> {
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
-function collectUnconfirmedSkillMaps(
-  content: TailoredContent | undefined,
-  hardMap: Map<string, string>,
-  softMap: Map<string, string>
-): void {
-  if (!content) return;
-
-  for (const skill of content.unconfirmedHardSkills ?? []) {
-    const key = skill.trim().toLowerCase();
-    if (key && !hardMap.has(key)) {
-      hardMap.set(key, skill.trim());
-    }
-  }
-
-  for (const skill of content.unconfirmedSoftSkills ?? []) {
-    const key = skill.trim().toLowerCase();
-    if (key && !softMap.has(key)) {
-      softMap.set(key, skill.trim());
-    }
-  }
-}
-
 /**
  * How many AI-only batch items one request offers up at once.
  *
@@ -578,13 +539,9 @@ async function tailorResumesForProfiles(
 ): Promise<{
   tailoredByProfileId: Map<string, TailoredContent>;
   failures: Array<{ profileId: string; profileName: string; error: string }>;
-  unconfirmedHardSkills: string[];
-  unconfirmedSoftSkills: string[];
 }> {
   const tailoredByProfileId = new Map<string, TailoredContent>();
   const failures: Array<{ profileId: string; profileName: string; error: string }> = [];
-  const unconfirmedHardMap = new Map<string, string>();
-  const unconfirmedSoftMap = new Map<string, string>();
 
   // Tailoring is pure model work with no shared state, so running profiles in
   // parallel is only a question of how many at once. It used to be one - a
@@ -612,7 +569,6 @@ async function tailorResumesForProfiles(
     const profile = profiles[index];
     if (outcome.ok) {
       tailoredByProfileId.set(profile.id, outcome.value);
-      collectUnconfirmedSkillMaps(outcome.value, unconfirmedHardMap, unconfirmedSoftMap);
       return;
     }
     failures.push({
@@ -625,8 +581,6 @@ async function tailorResumesForProfiles(
   return {
     tailoredByProfileId,
     failures,
-    unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
-    unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
   };
 }
 
@@ -685,8 +639,6 @@ router.post('/generate-all', async (req: Request, res: Response) => {
     const normalizedCompanyName = companyName.trim();
     const results: { profileId: string; profileName: string; pdf?: string; docx?: string; coverLetterPdf?: string; coverLetterDocx?: string }[] = [];
     const failures: Array<{ profileId: string; profileName: string; companyName: string; error: string }> = [];
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
     const formatNorm = (format as string) === 'both' ? 'both' : format === 'docx' ? 'docx' : 'pdf';
     const generateCoverLetterDocx = shouldGenerateCoverLetterDocx(includeCoverLetterDocx);
     const bulkTailoring = analysis
@@ -777,11 +729,6 @@ router.post('/generate-all', async (req: Request, res: Response) => {
     outcomes.forEach((outcome, index) => {
       const profile = buildable[index];
       if (outcome.ok) {
-        collectUnconfirmedSkillMaps(
-          outcome.value.tailoredContent,
-          unconfirmedHardMap,
-          unconfirmedSoftMap
-        );
         results.push(outcome.value.entry);
         return;
       }
@@ -805,8 +752,6 @@ router.post('/generate-all', async (req: Request, res: Response) => {
       failures,
       failedCompanies: failures.length > 0 ? [normalizedCompanyName] : [],
       tailored: !!analysis,
-      unconfirmedHardSkills: bulkTailoring?.unconfirmedHardSkills ?? Array.from(unconfirmedHardMap.values()),
-      unconfirmedSoftSkills: bulkTailoring?.unconfirmedSoftSkills ?? Array.from(unconfirmedSoftMap.values()),
     });
   } catch (error) {
     console.error('Error generating resumes for all profiles:', error);
@@ -911,8 +856,6 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       error: string;
     }> = [];
     const failedCompanies = new Set<string>();
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
 
     /**
      * One unit of work: this profile, for this job.
@@ -1053,11 +996,6 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
     outcomes.forEach((outcome, index) => {
       const { job, profile } = units[index];
       if (outcome.ok) {
-        collectUnconfirmedSkillMaps(
-          outcome.value.tailoredContent,
-          unconfirmedHardMap,
-          unconfirmedSoftMap
-        );
         results.push(outcome.value.entry);
         return;
       }
@@ -1118,8 +1056,6 @@ router.post('/generate-multi-job', async (req: Request, res: Response) => {
       failures,
       failedCompanies: Array.from(failedCompanies),
       tailored: normalizedJobs.some((job) => Boolean(job.analysis)),
-      unconfirmedHardSkills: Array.from(unconfirmedHardMap.values()),
-      unconfirmedSoftSkills: Array.from(unconfirmedSoftMap.values()),
       shutdown,
     });
   } catch (error) {
@@ -1180,8 +1116,6 @@ router.post('/preview-all', async (req: Request, res: Response) => {
       html: string;
       tailoredContent?: TailoredContent;
     }> = [];
-    const unconfirmedHardMap = new Map<string, string>();
-    const unconfirmedSoftMap = new Map<string, string>();
     const bulkTailoring = analysis
       ? await tailorResumesForProfiles(
           profiles,
@@ -1240,15 +1174,12 @@ router.post('/preview-all', async (req: Request, res: Response) => {
         console.error(`Error previewing resume for profile ${profile.id} (${profile.name}):`, outcome.error);
         continue;
       }
-      collectUnconfirmedSkillMaps(outcome.value.tailoredContent, unconfirmedHardMap, unconfirmedSoftMap);
       previews.push(outcome.value.preview);
     }
 
     res.json({
       previews,
       tailored: !!analysis,
-      unconfirmedHardSkills: bulkTailoring?.unconfirmedHardSkills ?? Array.from(unconfirmedHardMap.values()),
-      unconfirmedSoftSkills: bulkTailoring?.unconfirmedSoftSkills ?? Array.from(unconfirmedSoftMap.values()),
     });
   } catch (error) {
     console.error('Error previewing resumes for all profiles:', error);
@@ -1341,8 +1272,6 @@ router.post('/generate', async (req: Request, res: Response) => {
 
     const generateBoth = (format as string) === 'both';
     const generateCoverLetterDocx = shouldGenerateCoverLetterDocx(includeCoverLetterDocx);
-    const unconfirmedHardSkills = tailoredContent?.unconfirmedHardSkills ?? [];
-    const unconfirmedSoftSkills = tailoredContent?.unconfirmedSoftSkills ?? [];
     const buildAfterLlmStartedAt = process.hrtime.bigint();
 
     // Get cover letter body: from tailored content or generate when no job description
@@ -1397,8 +1326,6 @@ router.post('/generate', async (req: Request, res: Response) => {
             : {}),
         },
         tailored: !!tailoredContent,
-        unconfirmedHardSkills,
-        unconfirmedSoftSkills,
       });
     } else {
       const formatNorm = format === 'docx' ? 'docx' : 'pdf';
@@ -1426,8 +1353,6 @@ router.post('/generate', async (req: Request, res: Response) => {
         },
         tailored: !!tailoredContent,
         format: formatNorm,
-        unconfirmedHardSkills,
-        unconfirmedSoftSkills,
       });
     }
   } catch (error) {

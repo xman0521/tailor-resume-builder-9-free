@@ -14,9 +14,6 @@ import {
   Template,
   PromptSummary,
   ProfileSettings,
-  HardSkillOrdering,
-  HardSkillCategory,
-  HARD_SKILL_CATEGORIES,
   SkillCategoryGroup,
   TechnicalSkillsLayout,
   AiPreferences,
@@ -65,7 +62,6 @@ const DEFAULT_PROFILE_SETTINGS: Required<ProfileSettings> = {
   resumeFileNameTemplate: '{{profile name}}',
   coverLetterFileNameTemplate: '{{profile name}}_cover_letter',
   companyFolderNameTemplate: '{{row number}}_{{company name}}',
-  hardSkillOrdering: 'library',
   // Blank means the profile's own Title field is printed, which is what every
   // profile did before this field existed.
   headerTitle: '',
@@ -128,7 +124,7 @@ function readSkillCategoryMap(groups?: SkillCategoryGroup[]): Record<string, str
  *
  * A heading the profile no longer has any skill under is dropped rather than
  * stored empty, and a skill with no heading is simply absent - the renderer
- * infers one for it. Both of those keep the stored shape the same as what an
+ * prints it under a last "Other" heading. Both of those keep the stored shape the same as what an
  * imported file would produce, so a profile edited here and a profile uploaded
  * as JSON are indistinguishable afterwards.
  */
@@ -148,35 +144,15 @@ function buildSkillCategories(
     grouped.get(category)!.push(skill);
   }
 
-  // The library's order first, so a profile reads down the page the way the
-  // rendered resume does; anything the person typed themselves follows.
-  const known = HARD_SKILL_CATEGORIES.filter((category) => grouped.has(category));
-  const extra = order.filter((category) => !known.includes(category as HardSkillCategory));
-  return [...known, ...extra].map((category) => ({
+  // In the order the headings were first used, which is the order they print.
+  return order.map((category) => ({
     category,
     skills: grouped.get(category) ?? [],
   }));
 }
 
-const HARD_SKILL_ORDERING_OPTIONS: Array<{ value: HardSkillOrdering; label: string; description: string }> = [
-  {
-    value: 'library',
-    label: 'Skill library priority',
-    description: 'Order hard skills by the priority stored in the skill library.',
-  },
-  {
-    value: 'job-priority',
-    label: 'Job relevance',
-    description: 'Order hard skills by how strongly the analyzed job description asks for them.',
-  },
-];
-
 const FILE_NAME_TOKENS = '{{profile name}}, {{company name}}, {{row number}}, {{job title}}, {{date}}';
 const FOLDER_NAME_TOKENS = '{{company name}}, {{row number}}';
-
-function normalizeHardSkillOrdering(value?: string): HardSkillOrdering {
-  return value === 'job-priority' ? 'job-priority' : DEFAULT_PROFILE_SETTINGS.hardSkillOrdering;
-}
 
 function normalizeExperienceList(experience?: Experience[]): Experience[] {
   return (experience || []).map((item) => ({
@@ -203,7 +179,6 @@ function getInitialProfileSettings(profile?: Profile): Required<ProfileSettings>
     companyFolderNameTemplate:
       profile?.profileSettings?.companyFolderNameTemplate ||
       DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
-    hardSkillOrdering: normalizeHardSkillOrdering(profile?.profileSettings?.hardSkillOrdering),
     headerTitle: profile?.profileSettings?.headerTitle ?? DEFAULT_PROFILE_SETTINGS.headerTitle,
     // Only an explicit false turns it off, so a profile stored before this
     // existed keeps appending the role, as it always did.
@@ -262,7 +237,6 @@ export default function ProfileForm({
   const [templates, setTemplates] = useState<Template[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [prompts, setPrompts] = useState<PromptSummary[]>([]);
-  const [hardSkillLibrary, setHardSkillLibrary] = useState<string[]>([]);
   const [appSettings, setAppSettings] = useState<PublicAppSettings>(DEFAULT_PUBLIC_APP_SETTINGS);
   const [experienceSkillInputs, setExperienceSkillInputs] = useState<Record<number, string>>({});
 
@@ -276,10 +250,6 @@ export default function ProfileForm({
 
   useEffect(() => {
     promptsApi.getAll().then(setPrompts).catch(() => setPrompts([]));
-  }, []);
-
-  useEffect(() => {
-    resumeApi.listSkills('hard').then((res) => setHardSkillLibrary(res.skills)).catch(() => setHardSkillLibrary([]));
   }, []);
 
   // The model list and the app's own effort/thinking defaults, so the inherit
@@ -355,7 +325,6 @@ export default function ProfileForm({
           companyFolderNameTemplate:
             formData.profileSettings.companyFolderNameTemplate.trim() ||
             DEFAULT_PROFILE_SETTINGS.companyFolderNameTemplate,
-          hardSkillOrdering: normalizeHardSkillOrdering(formData.profileSettings.hardSkillOrdering),
           // Sent even when empty: an empty string is what clears the field
           // back to the Title, and an omitted one would keep the old value.
           headerTitle: formData.profileSettings.headerTitle.trim(),
@@ -410,7 +379,7 @@ export default function ProfileForm({
     });
   };
 
-  const addExperienceSkill = async (index: number) => {
+  const addExperienceSkill = (index: number) => {
     const value = (experienceSkillInputs[index] || '').trim();
     if (!value) return;
 
@@ -421,18 +390,7 @@ export default function ProfileForm({
       return;
     }
 
-    const librarySkill = hardSkillLibrary.find((skill) => skill.toLowerCase() === value.toLowerCase());
-    const skillToAdd = librarySkill || value;
-
-    if (!librarySkill) {
-      try {
-        await resumeApi.addSkill({ type: 'hard', skill: value });
-        setHardSkillLibrary((skills) => [...skills, value].sort((a, b) => a.localeCompare(b)));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to add skill');
-        return;
-      }
-    }
+    const skillToAdd = value;
 
     const updatedExperience = [...formData.experience];
     updatedExperience[index] = {
@@ -506,35 +464,17 @@ export default function ProfileForm({
     });
   };
 
-  // The library's headings, plus any this profile already uses. A profile
-  // imported from a file may carry headings this build has never heard of, and
-  // dropping them from the menu would silently reassign them on the next save.
-  const headingOptions = [
-    ...HARD_SKILL_CATEGORIES,
-    ...Object.values(skillCategoryBySkill)
-      .map((category) => category.trim())
-      .filter(
-        (category) =>
-          category && !HARD_SKILL_CATEGORIES.includes(category as HardSkillCategory)
-      ),
-  ].filter((category, index, all) => all.indexOf(category) === index);
+  // The headings this profile already uses, offered as suggestions. Any other
+  // heading can be typed: there is no fixed list of them.
+  const headingOptions = Object.values(skillCategoryBySkill)
+    .map((category) => category.trim())
+    .filter((category, index, all) => category && all.indexOf(category) === index);
 
-  const addHardSkill = async () => {
+  const addHardSkill = () => {
     const value = hardSkillInput.trim();
     if (!value) return;
 
-    const librarySkill = hardSkillLibrary.find((skill) => skill.toLowerCase() === value.toLowerCase());
-    const skillToAdd = librarySkill || value;
-
-    if (!librarySkill) {
-      try {
-        await resumeApi.addSkill({ type: 'hard', skill: value });
-        setHardSkillLibrary((skills) => [...skills, value].sort((a, b) => a.localeCompare(b)));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to add skill');
-        return;
-      }
-    }
+    const skillToAdd = value;
 
     if (!formData.hardSkills.some((skill) => skill.toLowerCase() === skillToAdd.toLowerCase())) {
       const hardSkills = [...formData.hardSkills, skillToAdd];
@@ -811,25 +751,6 @@ export default function ProfileForm({
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Hard Skill Ordering
-            </label>
-            <select
-              value={formData.profileSettings.hardSkillOrdering}
-              onChange={(e) => updateProfileSetting('hardSkillOrdering', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {HARD_SKILL_ORDERING_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-xs text-gray-500">
-              {HARD_SKILL_ORDERING_OPTIONS.find((option) => option.value === formData.profileSettings.hardSkillOrdering)?.description}
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
               Technical Skills Layout
             </label>
             <select
@@ -1035,7 +956,6 @@ export default function ProfileForm({
               <div className="flex gap-2">
                 <input
                   type="text"
-                  list={`experience-skill-library-${index}`}
                   value={experienceSkillInputs[index] || ''}
                   onChange={(e) =>
                     setExperienceSkillInputs({
@@ -1046,14 +966,9 @@ export default function ProfileForm({
                   onKeyPress={(e) =>
                     e.key === 'Enter' && (e.preventDefault(), addExperienceSkill(index))
                   }
-                  placeholder="Select or add a hard skill"
+                  placeholder="Add a hard skill"
                   className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
                 />
-                <datalist id={`experience-skill-library-${index}`}>
-                  {hardSkillLibrary.map((skill) => (
-                    <option key={skill} value={skill} />
-                  ))}
-                </datalist>
                 <button
                   type="button"
                   onClick={() => addExperienceSkill(index)}
@@ -1116,9 +1031,8 @@ export default function ProfileForm({
         </div>
         {showSkillCategories && (
           <p className="text-sm text-gray-600">
-            A skill left on <span className="font-medium">Work it out</span> is filed by the shared
-            skill library. Set one here when the library would put it somewhere else — it has no way
-            to know that your Vault is infrastructure rather than a library.
+            Type a heading for each skill, or pick one this profile already uses. A skill left
+            without one is printed under a last <span className="font-medium">Other</span> heading.
             {formData.profileSettings.technicalSkillsLayout === 'flat' && (
               <>
                 {' '}
@@ -1132,18 +1046,19 @@ export default function ProfileForm({
         <div className="flex gap-2">
           <input
             type="text"
-            list="profile-hard-skill-library"
             value={hardSkillInput}
             onChange={(e) => setHardSkillInput(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addHardSkill())}
             placeholder="Add a hard skill"
             className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
           />
-          <datalist id="profile-hard-skill-library">
-            {hardSkillLibrary.map((skill) => (
-              <option key={skill} value={skill} />
-            ))}
-          </datalist>
+          {showSkillCategories && (
+            <datalist id="profile-skill-headings">
+              {headingOptions.map((category) => (
+                <option key={category} value={category} />
+              ))}
+            </datalist>
+          )}
           <button
             type="button"
             onClick={addHardSkill}
@@ -1160,21 +1075,17 @@ export default function ProfileForm({
             >
               {skill}
               {showSkillCategories && (
-                <select
+                <input
+                  type="text"
+                  list="profile-skill-headings"
                   value={skillCategoryBySkill[skill] ?? ''}
                   onChange={(e) =>
                     setSkillCategoryBySkill((current) => ({ ...current, [skill]: e.target.value }))
                   }
+                  placeholder="Heading"
                   aria-label={`Heading for ${skill}`}
-                  className="max-w-[12rem] rounded border border-blue-200 bg-white px-1 py-0.5 text-xs text-gray-700"
-                >
-                  <option value="">Work it out</option>
-                  {headingOptions.map((category) => (
-                    <option key={category} value={category}>
-                      {category}
-                    </option>
-                  ))}
-                </select>
+                  className="w-32 rounded border border-blue-200 bg-white px-1 py-0.5 text-xs text-gray-700"
+                />
               )}
               <button
                 type="button"

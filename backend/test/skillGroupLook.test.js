@@ -37,7 +37,6 @@ const profile = {
 const tailored = {
   title: 'Software Engineer (Backend)', summary: 'Engineer of 9 years.',
   experience: profile.experience, strengths: [], softSkills: [], skills: [], hardSkills: [],
-  unconfirmedHardSkills: [], unconfirmedSoftSkills: [],
   // Five to a group, the shape the prompt asks for: these tests are about how
   // a group LOOKS, so the block should look like one a resume would carry.
   skillGroups: [
@@ -133,6 +132,10 @@ test('every look tells a group heading apart from the skills under it', async (t
 
         if (differences.length < 2) {
           weak.push(`${look}/${file}: differ only by ${differences.join('+') || 'nothing'}`);
+        }
+        // ASKED FOR: the group heading a slightly different colour from its skills.
+        if (!differences.includes('tone')) {
+          weak.push(`${look}/${file}: heading and skills print in one colour (${seen.title.colour})`);
         }
       }
     }

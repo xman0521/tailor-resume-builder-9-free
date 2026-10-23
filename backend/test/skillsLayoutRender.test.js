@@ -70,20 +70,16 @@ test('the flat layout does not pad the list with skills the profile never claime
   }
 });
 
-test('the categorized layout is unchanged, and does pad', () => {
+test('categorized with no headings to use prints the skills as claimed, unpadded', () => {
+  // Headings and padding used to come from the built-in skills library. With
+  // no grouping from the model and none from the author, there is nothing but
+  // a list of names to guess from, so nothing is guessed and nothing is added.
   const data = prepareResumeRenderData(categorizedProfile());
-  assert.ok(data.skillCategories.length > 1);
-  assert.equal(data.skillCategories[0].category, 'Languages');
-  assert.match(data.hardSkills[0], /^Languages: /);
+  assert.deepEqual(data.skillCategories, [{ category: '', skills: profile().skills }]);
 });
 
-test("a profile's own grouping beats the library's guess", () => {
-  // The library has no idea that a particular person's Vault is infrastructure
-  // rather than a library. Somebody who says so has to be believed.
-  const inferred = prepareResumeRenderData(categorizedProfile());
-  const guessed = inferred.skillCategories.find((group) => group.skills.includes('Vault'));
-  assert.equal(guessed.category, 'Frameworks and Libraries', 'what the library guesses today');
-
+test("a profile's own grouping is printed under the author's headings", () => {
+  // Somebody who says their Vault is infrastructure has to be believed.
   const authored = prepareResumeRenderData(
     categorizedProfile({
       skillCategories: [
@@ -97,15 +93,19 @@ test("a profile's own grouping beats the library's guess", () => {
 });
 
 test('a skill the author never placed still reaches the resume', () => {
-  // Under the library's heading for it, appended after the author's own order -
-  // dropping it would mean grouping your skills quietly deleted the ones you
-  // had not got round to.
+  // Under one last "Other" heading, after the author's own order - dropping it
+  // would mean grouping your skills quietly deleted the ones you had not got
+  // round to, and filing it under a guessed heading needs a list of names.
   const data = prepareResumeRenderData(
     categorizedProfile({ skillCategories: [{ category: 'Languages', skills: ['C#'] }] })
   );
   const all = data.skillCategories.flatMap((group) => group.skills);
   assert.ok(all.includes('Keras'), 'an unplaced skill must not vanish');
   assert.equal(data.skillCategories[0].category, 'Languages', "the author's order leads");
+  assert.deepEqual(data.skillCategories.at(-1), {
+    category: 'Other',
+    skills: ['Python', 'C', 'Angular', 'Vault', 'Azure', 'Keras'],
+  });
 });
 
 test("the author's headings are not padded to a count they never chose", () => {
@@ -174,8 +174,14 @@ test('every built-in template still renders headings when categorized', async ()
     .filter((file) => file.endsWith('.json'))
     .map((file) => file.replace(/\.json$/, ''));
 
+  const grouped = categorizedProfile({
+    skillCategories: [
+      { category: 'Languages', skills: ['C#', 'Python', 'C'] },
+      { category: 'Cloud and Infrastructure', skills: ['Vault', 'Azure'] },
+    ],
+  });
   for (const id of ids) {
-    const html = await generatePreviewHTML(categorizedProfile(), templateNamed(id));
+    const html = await generatePreviewHTML(grouped, templateNamed(id));
     const body = html.slice(html.indexOf('</style>'));
     assert.ok(body.includes('Languages'), `${id} lost its category headings`);
   }

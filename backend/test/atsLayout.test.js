@@ -61,7 +61,6 @@ const tailored = {
   title: 'Senior Platform Engineer',
   summary: 'Engineer of 9 years across payment platforms, with services clearing 40M transactions a day.',
   experience: profile.experience, strengths: [], softSkills: [], skills: [], hardSkills: [],
-  unconfirmedHardSkills: [], unconfirmedSoftSkills: [],
   skillGroups: [
     { category: 'Languages', skills: ['Java', 'Python', 'SQL'] },
     { category: 'Cloud and Infrastructure', skills: ['AWS', 'Terraform', 'Kubernetes'] },

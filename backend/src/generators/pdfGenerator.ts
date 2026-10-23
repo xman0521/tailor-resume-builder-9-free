@@ -9,19 +9,11 @@ import {
   type TechnicalSkillsLayout,
 } from '../types/profile';
 import { getProfileTechnicalSkillsLayout } from '../services/profileService';
-import { isConceptSkill } from '../services/utils/hardSkillSelection';
 import { TailoredContent, Template } from '../types/template';
 import type { GeneratedPathInfo } from '../utils/generatedPath';
 import { getGeneratedFilePath, getResumeOutputFilename } from '../utils/generatedPath';
 import { withRenderPermit } from './renderConcurrency';
-import { standardDegreeNotation } from '../services/utils/resumeQuality';
-import {
-  HARD_SKILL_CATEGORIES,
-  HardSkillCategory,
-  readHardSkillPriorityMap,
-  readHardSkillRecords,
-  readSkills,
-} from '../database/skillsDatabase';
+import { resumeDocumentDate, stampFileTimes, withDocumentDate } from './pdfDocumentDate';
 const MAX_ROLE_BRIEF_LENGTH = 1200;
 /** CSS absolute length units expressed in px at 96 DPI. */
 const CSS_LENGTH_PX: Record<string, number> = {
@@ -227,175 +219,17 @@ export function resolveTemplatePageBox(template: Template): ResumePageBox {
     usesViewportUnits: /\b\d*\.?\d+(vh|vw|vmin|vmax)\b/i.test(css),
   };
 }
-const LANGUAGE_SKILLS = new Set([
-  'python',
-  'javascript',
-  'typescript',
-  'java',
-  'go',
-  'golang',
-  'rust',
-  'ruby',
-  'php',
-  'c++',
-  'c#',
-  'kotlin',
-  'swift',
-  'scala',
-  'sql',
-  'html',
-  'css',
-  'elixir',
-  'bash',
-]);
-const FRAMEWORK_SKILLS = new Set([
-  'react',
-  'react.js',
-  'reactjs',
-  'next',
-  'next.js',
-  'nextjs',
-  'node',
-  'node.js',
-  'nodejs',
-  'vue',
-  'vue.js',
-  'vuejs',
-  'express',
-  'express.js',
-  'expressjs',
-  'angular',
-  'angular.js',
-  'angularjs',
-  'nest',
-  'nestjs',
-  'nest.js',
-  'nuxt',
-  'nuxt.js',
-  'nuxtjs',
-  'django',
-  'flask',
-  'fastapi',
-  'fastify',
-  'laravel',
-  'rails',
-  'spring',
-  'spring boot',
-  'springboot',
-  'tensorflow',
-  'pytorch',
-  'torch',
-  'keras',
-  'scikit-learn',
-  'sklearn',
-  'pandas',
-  'numpy',
-  'redux',
-  'react router',
-  'tailwind',
-  'tailwindcss',
-  'mui',
-  'material ui',
-  'sass',
-  'scss',
-  'svelte',
-  'svelte.js',
-  'sveltejs',
-  'ember',
-  'ember.js',
-  'emberjs',
-  'jquery',
-  'jquery.js',
-  'jqueryjs',
-  'bootstrap',
-  'graphql',
-  'swr',
-  'flutter',
-  'react native',
-  'reactnative',
-  '.net',
-  'dotnet',
-  'asp.net',
-  'aspnet',
-]);
-const OTHER_TECH_SKILLS = new Set([
-  'docker',
-  'kubernetes',
-  'k8s',
-  'kube',
-  'aws',
-  'gcp',
-  'azure',
-  'git',
-  'nginx',
-  'redis',
-  'celery',
-  'postgres',
-  'postgresql',
-  'psql',
-  'mongo',
-  'mongodb',
-  'mysql',
-  'nosql',
-  'openapi',
-  'restful api',
-  'rest api',
-  'rest',
-  'jwt',
-  'oauth',
-  'jest',
-  'mocha',
-  'chai',
-  'ci/cd',
-  'github actions',
-  'gitlab ci',
-  'vercel',
-  'netlify',
-  'figma',
-  'sketch',
-  'unix/linux',
-  'linux',
-  'rdbms/sql',
-  'rdbms',
-  'webpack',
-  'vite',
-  'gatsby',
-  'eslint',
-  'openai api',
-  'llm',
-  'terraform',
-  'ansible',
-  'jenkins',
-  'kafka',
-  'rabbitmq',
-  'airflow',
-  'dbt',
-  'snowflake',
-  'dynamodb',
-]);
-
-type SkillCategory = HardSkillCategory;
-
 /**
  * One rendered heading and the skills under it.
  *
- * `category` is a plain string, not the library's closed set: a profile may
- * carry headings its author invented, and the flat layout carries the empty
- * string - which is not a missing heading but the statement that there is none.
+ * `category` is a plain string: the model's heading, a profile author's own,
+ * or the empty string of the flat layout - which is not a missing heading but
+ * the statement that there is none.
  */
 type SkillCategoryGroup = {
   category: string;
   skills: string[];
 };
-
-const SKILL_CATEGORY_ORDER: SkillCategory[] = [...HARD_SKILL_CATEGORIES];
-const SKILL_CATEGORY_LANGUAGE_CATEGORY: SkillCategory = 'Languages';
-const SKILL_CATEGORY_MIN_LANGUAGE_SKILLS = 3;
-const SKILL_CATEGORY_MAX_LANGUAGE_SKILLS = 5;
-const SKILL_CATEGORY_MIN_SKILLS_PER_CATEGORY = 5;
-const SKILL_CATEGORY_MAX_SKILLS_PER_CATEGORY = 10;
-const SKILL_CATEGORY_MIN_CATEGORY_COUNT = 5;
-const SKILL_CATEGORY_LANGUAGE_FILL_EXCLUDED_SKILLS = new Set(['bash', 'c#', 'html', 'css']);
 
 function formatDuration(start: bigint, end: bigint): string {
   return `${(Number(end - start) / 1_000_000_000).toFixed(2)}s`;
@@ -452,261 +286,6 @@ async function getSharedPdfBrowser(): Promise<Browser> {
 
   return sharedPdfBrowserLaunch;
 }
-
-const SKILL_CATEGORY_LANGUAGE_SKILLS = new Set([
-  ...LANGUAGE_SKILLS,
-  'dart',
-  'perl',
-  'r',
-  'r language',
-  'matlab',
-  'lua',
-  'groovy',
-  'shell',
-  'powershell',
-  'objective-c',
-  'html5',
-  'css3',
-]);
-
-const SKILL_CATEGORY_FRAMEWORK_SKILLS = new Set([
-  ...FRAMEWORK_SKILLS,
-  'babel',
-  'chakra ui',
-  'cypress',
-  'emotion',
-  'gatsby',
-  'junit',
-  'langchain',
-  'llamaindex',
-  'playwright',
-  'prettier',
-  'pytest',
-  'selenium',
-  'styled-components',
-  'testng',
-  'css modules',
-  'asp.net',
-  'asp.net core',
-  'codeigniter',
-  'django rest framework',
-  'echo',
-  'fastify',
-  'gin',
-  'grpc',
-  'koa',
-  'ktor',
-  'spring framework',
-  'spring mvc',
-  'spring security',
-  'swiftui',
-]);
-
-const SKILL_CATEGORY_INFRASTRUCTURE_SKILLS = new Set([
-  'amazon web services',
-  'ansible',
-  'api gateway',
-  'argocd',
-  'autoscaling',
-  'auto scaling',
-  'aws',
-  'azure',
-  'chef',
-  'cloud',
-  'cloudfront',
-  'cloudwatch',
-  'datadog',
-  'deployment',
-  'docker',
-  'ec2',
-  'ecs',
-  'eks',
-  'elk',
-  'fargate',
-  'flux',
-  'gcp',
-  'google cloud',
-  'grafana',
-  'helm',
-  'iac',
-  'iam',
-  'infrastructure',
-  'istio',
-  'jenkins',
-  'k8s',
-  'kube',
-  'kubernetes',
-  'lambda',
-  'linkerd',
-  'linux',
-  'load balanc',
-  'netlify',
-  'network',
-  'new relic',
-  'nginx',
-  'openshift',
-  'prometheus',
-  'puppet',
-  'route 53',
-  's3',
-  'terraform',
-  'unix/linux',
-  'vpc',
-  'vercel',
-]);
-
-const SKILL_CATEGORY_DATABASE_SKILLS = new Set([
-  'activerecord',
-  'cassandra',
-  'couchdb',
-  'database',
-  'databases',
-  'data lake',
-  'dynamodb',
-  'elasticsearch',
-  'etl',
-  'firestore',
-  'influxdb',
-  'memcached',
-  'mongo',
-  'mongodb',
-  'mongoose',
-  'mysql',
-  'neo4j',
-  'nosql',
-  'oracle',
-  'orm',
-  'postgres',
-  'postgresql',
-  'prisma',
-  'psql',
-  'query',
-  'rdbms',
-  'rdbms/sql',
-  'redis',
-  'replication',
-  'schema',
-  'sequelize',
-  'shard',
-  'snowflake',
-  'solr',
-  'sql server',
-  'sqlalchemy',
-  'timescaledb',
-  'typeorm',
-  'warehouse',
-]);
-
-const SKILL_CATEGORY_TOOL_PRACTICE_SKILLS = new Set([
-  ...OTHER_TECH_SKILLS,
-  'airflow',
-  'api',
-  'ci',
-  'dbt',
-  'eslint',
-  'figma',
-  'git',
-  'github',
-  'github actions',
-  'gitlab',
-  'gitlab ci',
-  'jira',
-  'jwt',
-  'oauth',
-  'openai api',
-  'openapi',
-  'rabbitmq',
-  'kafka',
-  'rest',
-  'rest api',
-  'restful api',
-  'sketch',
-  'tdd',
-]);
-
-const SKILL_CATEGORY_CATEGORY_FALLBACK_SKILLS: Record<SkillCategory, string[]> = {
-  Languages: ['Python', 'Java', 'JavaScript', 'TypeScript', 'Go', 'Ruby', 'PHP', 'SQL', 'Swift', 'Kotlin', 'Rust'],
-  'Frameworks and Libraries': [
-    'React',
-    'Vue',
-    'Django',
-    'Flask',
-    'Spring Boot',
-    'Node.js',
-    'Next.js',
-    'Express',
-    'Redux',
-    'GraphQL',
-  ],
-  'Software Architecture & Design': ['Microservices', 'System Design', 'Distributed Systems', 'Caching', 'Design Patterns'],
-  Security: ['OAuth', 'JWT', 'SAML', 'AWS IAM', 'API Security'],
-  'Cloud and Infrastructure': [
-    'AWS',
-    'Docker',
-    'Kubernetes',
-    'Terraform',
-    'Azure',
-    'GCP',
-    'Linux',
-    'GitHub Actions',
-    'Jenkins',
-  ],
-  'Databases and Storage': ['PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'DynamoDB', 'Elasticsearch', 'Snowflake'],
-  'DevOps and CI/CD': ['GitHub Actions', 'Jenkins', 'CI/CD', 'Docker', 'Kubernetes', 'Terraform', 'ArgoCD'],
-  'Observability and Monitoring': ['Grafana', 'Prometheus', 'Datadog', 'CloudWatch', 'New Relic', 'ELK Stack'],
-  'Testing and Quality': ['Jest', 'Pytest', 'Cypress', 'Playwright', 'Selenium', 'JUnit', 'TestNG'],
-  'APIs and Integration': ['REST API', 'GraphQL', 'OpenAPI', 'OAuth', 'JWT', 'Kafka', 'RabbitMQ'],
-  'Engineering Practices & Methodology': ['Agile', 'Scrum', 'Kanban', 'Technical Documentation', 'Pair Programming'],
-  'Data Engineering & Streaming': ['Kafka', 'RabbitMQ', 'Amazon Kinesis', 'Apache Kafka', 'ETL Pipelines'],
-  'AI/ML & Data Science': ['PyTorch', 'TensorFlow', 'scikit-learn', 'Pandas', 'NumPy'],
-  'Version Control & Collaboration': ['Git', 'GitHub', 'GitLab', 'Bitbucket', 'Code Review'],
-  'Operating Systems & Platforms': ['Linux', 'Unix/Linux', 'Nginx', 'Windows', 'Network Security'],
-  'Frontend & UI/UX Development': ['Tailwind CSS', 'CSS Grid', 'CSS Modules', 'Figma', 'Responsive Design'],
-  'Mobile Development': ['React Native', 'Flutter', 'iOS', 'Android', 'SwiftUI'],
-};
-
-const SKILL_CATEGORY_LANGUAGE_FRAMEWORK_SKILLS: Array<{ languages: string[]; frameworks: string[] }> = [
-  {
-    languages: ['javascript', 'typescript'],
-    frameworks: ['React', 'Node.js', 'Next.js', 'Express', 'Vue.js', 'Angular', 'NestJS', 'Fastify'],
-  },
-  {
-    languages: ['php'],
-    frameworks: ['Laravel', 'Symfony', 'CodeIgniter'],
-  },
-  {
-    languages: ['python'],
-    frameworks: ['Django', 'FastAPI', 'Flask', 'Django REST Framework', 'Pandas', 'NumPy'],
-  },
-  {
-    languages: ['java'],
-    frameworks: ['Spring Boot', 'Spring MVC', 'Spring Security', 'JUnit', 'TestNG'],
-  },
-  {
-    languages: ['go', 'golang'],
-    frameworks: ['Gin', 'Echo', 'gRPC'],
-  },
-  {
-    languages: ['ruby'],
-    frameworks: ['Ruby on Rails', 'Rails'],
-  },
-  {
-    languages: ['c#'],
-    frameworks: ['ASP.NET Core', 'ASP.NET'],
-  },
-  {
-    languages: ['kotlin'],
-    frameworks: ['Ktor', 'Spring Boot'],
-  },
-  {
-    languages: ['swift'],
-    frameworks: ['SwiftUI'],
-  },
-  {
-    languages: ['dart'],
-    frameworks: ['Flutter'],
-  },
-];
 
 // Register Handlebars helpers
 Handlebars.registerHelper('join', function(array: string[], separator: string) {
@@ -784,317 +363,12 @@ function normalizeHardSkillAlias(skill: string): string {
   return skill.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function matchesSkillTerm(normalizedSkill: string, rawTerm: string): boolean {
-  const term = normalizeHardSkillAlias(rawTerm);
-  if (!term) return false;
-  return normalizedSkill === term
-    || normalizedSkill.startsWith(`${term} `)
-    || normalizedSkill.startsWith(`${term}-`)
-    || normalizedSkill.startsWith(`${term}/`)
-    || normalizedSkill.endsWith(` ${term}`)
-    || normalizedSkill.includes(` ${term} `);
-}
-
-function matchesAnySkillTerm(normalizedSkill: string, terms: Iterable<string>): boolean {
-  for (const term of terms) {
-    if (matchesSkillTerm(normalizedSkill, term)) return true;
-  }
-  return false;
-}
-
-function getSkillCategory(skill: string): SkillCategory {
-  const normalized = normalizeHardSkillAlias(skill);
-  if (!normalized) return 'Frameworks and Libraries';
-
-  const libraryRecord = readHardSkillRecords().find((record) => normalizeHardSkillAlias(record.skill) === normalized);
-  if (libraryRecord) return libraryRecord.category;
-
-  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_DATABASE_SKILLS)) {
-    return 'Databases and Storage';
-  }
-  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_INFRASTRUCTURE_SKILLS)) {
-    return 'Cloud and Infrastructure';
-  }
-  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_FRAMEWORK_SKILLS)) {
-    return 'Frameworks and Libraries';
-  }
-  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_LANGUAGE_SKILLS)) {
-    return SKILL_CATEGORY_LANGUAGE_CATEGORY;
-  }
-  if (matchesAnySkillTerm(normalized, SKILL_CATEGORY_TOOL_PRACTICE_SKILLS)) {
-    return 'APIs and Integration';
-  }
-
-  return 'Frameworks and Libraries';
-}
-
-function getLibraryHardSkillRecord(skill: string): ReturnType<typeof readHardSkillRecords>[number] | undefined {
-  const normalized = normalizeHardSkillAlias(skill);
-  if (!normalized) return undefined;
-  return readHardSkillRecords().find((record) => normalizeHardSkillAlias(record.skill) === normalized);
-}
-
-function normalizeLibraryHardSkills(skills: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-
-  for (const skill of normalizeSkills(skills)) {
-    const record = getLibraryHardSkillRecord(skill);
-    if (!record) continue;
-    const key = normalizeHardSkillAlias(record.skill);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    result.push(record.skill);
-  }
-
-  return result;
-}
-
-function getRelatedFrameworkSkillsForLanguages(languageSkills: string[]): string[] {
-  const related: string[] = [];
-  const seen = new Set<string>();
-  const normalizedLanguages = languageSkills.map(normalizeHardSkillAlias);
-
-  for (const language of normalizedLanguages) {
-    const rule = SKILL_CATEGORY_LANGUAGE_FRAMEWORK_SKILLS.find((candidateRule) =>
-      candidateRule.languages.some((candidate) => matchesSkillTerm(language, candidate))
-    );
-    if (!rule) continue;
-
-    for (const framework of rule.frameworks) {
-      const key = normalizeHardSkillAlias(framework);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      related.push(framework);
-    }
-  }
-
-  return related;
-}
-
-function prioritizeRelatedFrameworkCandidates(
-  languageSkills: string[],
-  frameworkCandidates: string[],
-  used: Set<string>
-): string[] {
-  const existingByKey = new Map(
-    frameworkCandidates.map((skill) => [normalizeHardSkillAlias(skill), skill] as const)
-  );
-  const prioritized: string[] = [];
-  const prioritizedKeys = new Set<string>();
-
-  for (const skill of getRelatedFrameworkSkillsForLanguages(languageSkills)) {
-    const key = normalizeHardSkillAlias(skill);
-    if (!key || used.has(key) || prioritizedKeys.has(key)) continue;
-    prioritizedKeys.add(key);
-    prioritized.push(existingByKey.get(key) ?? skill);
-  }
-
-  return [
-    ...prioritized,
-    ...frameworkCandidates.filter((skill) => !prioritizedKeys.has(normalizeHardSkillAlias(skill))),
-  ];
-}
-
-type SkillCategoryBuildOptions = {
-  forceAllCategories?: boolean;
-  relateFrameworksToLanguages?: boolean;
-};
-
-function buildSkillCategories(
-  skills: string[],
-  supplementalSkills: string[] = [],
-  options: SkillCategoryBuildOptions = {}
-): SkillCategoryGroup[] {
-  const grouped = new Map<SkillCategory, string[]>(
-    SKILL_CATEGORY_ORDER.map((category) => [category, []])
-  );
-  const used = new Set<string>();
-
-  for (const skill of normalizeLibraryHardSkills(skills)) {
-    const key = normalizeHardSkillAlias(skill);
-    if (used.has(key)) continue;
-    used.add(key);
-    grouped.get(getSkillCategory(skill))?.push(skill);
-  }
-
-  const candidateByCategory = new Map<SkillCategory, string[]>(
-    SKILL_CATEGORY_ORDER.map((category) => [category, []])
-  );
-  const candidateSeen = new Set<string>();
-
-  const addFillCandidate = (skill: string) => {
-    const record = getLibraryHardSkillRecord(skill);
-    if (!record) return;
-    const key = normalizeHardSkillAlias(record.skill);
-    if (!key || used.has(key) || candidateSeen.has(key)) return;
-    candidateSeen.add(key);
-    candidateByCategory.get(record.category)?.push(record.skill);
-  };
-
-  for (const skill of sortHardSkillsByPriority(supplementalSkills)) {
-    addFillCandidate(skill);
-  }
-
-  for (const category of SKILL_CATEGORY_ORDER) {
-    for (const skill of SKILL_CATEGORY_CATEGORY_FALLBACK_SKILLS[category]) {
-      if (getSkillCategory(skill) === category) {
-        addFillCandidate(skill);
-      }
-    }
-  }
-
-  for (const skill of sortHardSkillsByPriority(readSkills('hard'))) {
-    addFillCandidate(skill);
-  }
-
-  const includedCategories = new Set<SkillCategory>([SKILL_CATEGORY_LANGUAGE_CATEGORY]);
-  for (const category of SKILL_CATEGORY_ORDER) {
-    if (category !== SKILL_CATEGORY_LANGUAGE_CATEGORY && (grouped.get(category)?.length ?? 0) > 0) {
-      includedCategories.add(category);
-    }
-  }
-
-  if (includedCategories.size === 1 && options.forceAllCategories) {
-    includedCategories.add('Frameworks and Libraries');
-    includedCategories.add('Cloud and Infrastructure');
-  }
-
-  if (options.forceAllCategories) {
-    for (const category of SKILL_CATEGORY_ORDER) {
-      if (includedCategories.size >= SKILL_CATEGORY_MIN_CATEGORY_COUNT) break;
-      if (category !== SKILL_CATEGORY_LANGUAGE_CATEGORY) {
-        includedCategories.add(category);
-      }
-    }
-  }
-
-  for (const category of SKILL_CATEGORY_ORDER) {
-    if (!includedCategories.has(category)) continue;
-    const categorySkills = grouped.get(category) ?? [];
-    if (category === SKILL_CATEGORY_LANGUAGE_CATEGORY) {
-      for (const skill of candidateByCategory.get(category) ?? []) {
-        const targetCount = options.forceAllCategories
-          ? SKILL_CATEGORY_MIN_LANGUAGE_SKILLS
-          : SKILL_CATEGORY_MAX_LANGUAGE_SKILLS;
-        if (categorySkills.length >= targetCount) break;
-        const key = normalizeHardSkillAlias(skill);
-        if (SKILL_CATEGORY_LANGUAGE_FILL_EXCLUDED_SKILLS.has(key)) continue;
-        if (used.has(key)) continue;
-        used.add(key);
-        categorySkills.push(skill);
-      }
-
-      if (!options.forceAllCategories) {
-        categorySkills.splice(SKILL_CATEGORY_MAX_LANGUAGE_SKILLS);
-      }
-      if (options.relateFrameworksToLanguages) {
-        candidateByCategory.set(
-          'Frameworks and Libraries',
-          prioritizeRelatedFrameworkCandidates(
-            categorySkills,
-            candidateByCategory.get('Frameworks and Libraries') ?? [],
-            used
-          )
-        );
-      }
-      continue;
-    }
-
-    if (
-      categorySkills.length >= SKILL_CATEGORY_MIN_SKILLS_PER_CATEGORY ||
-      (!options.forceAllCategories && categorySkills.length === 0)
-    ) {
-      continue;
-    }
-
-    for (const skill of candidateByCategory.get(category) ?? []) {
-      if (categorySkills.length >= SKILL_CATEGORY_MIN_SKILLS_PER_CATEGORY) break;
-      const key = normalizeHardSkillAlias(skill);
-      if (used.has(key)) continue;
-      used.add(key);
-      categorySkills.push(skill);
-    }
-  }
-
-  return SKILL_CATEGORY_ORDER
-    .filter((category) => includedCategories.has(category))
-    .map((category) => ({
-      category,
-      skills: grouped.get(category) ?? [],
-    }))
-    .filter((group) => group.skills.length > 0);
-}
-
-function passesPromptHardSkillGate(skill: string): boolean {
-  const normalized = normalizeHardSkillAlias(skill);
-  if (!normalized) return false;
-
-  // Delegated to the shared test rather than kept as a list here. This used to
-  // be fifteen hand-written names, which let everything else the library files
-  // as an idea - "Distributed Systems", "Event-driven architecture", "Test
-  // Automation" - onto the resume as though it were a tool.
-  return !isConceptSkill(normalized);
-}
-
-function enforcePromptSkillCategoryCounts(
-  skills: string[],
-  supplementalSkills: string[] = []
-): SkillCategoryGroup[] {
-  const promptHardSkills = normalizeSkills(skills).filter(passesPromptHardSkillGate);
-  const promptSupplementalSkills = normalizeSkills(supplementalSkills).filter(passesPromptHardSkillGate);
-  const groups = buildSkillCategories(promptHardSkills, promptSupplementalSkills, {
-    forceAllCategories: true,
-    relateFrameworksToLanguages: true,
-  });
-
-  return groups.map((group) => ({
-    ...group,
-    skills: group.skills.slice(
-      0,
-      group.category === SKILL_CATEGORY_LANGUAGE_CATEGORY ? SKILL_CATEGORY_MAX_LANGUAGE_SKILLS : SKILL_CATEGORY_MAX_SKILLS_PER_CATEGORY
-    ),
-  }));
-}
-
-const ALLOWED_TECH_SKILLS = new Set<string>();
-let hardSkillPriorityMap = readHardSkillPriorityMap();
-
-function loadAllowedTechSkills() {
-  ALLOWED_TECH_SKILLS.clear();
-  for (const skill of readSkills('hard')) {
-    ALLOWED_TECH_SKILLS.add(normalizeHardSkillAlias(skill));
-  }
-  hardSkillPriorityMap = readHardSkillPriorityMap();
-}
-
-loadAllowedTechSkills();
-
-export function refreshAllowedTechSkills() {
-  loadAllowedTechSkills();
-}
-
-
-function sortHardSkillsByPriority(skills: string[]): string[] {
-  return [...normalizeSkills(skills)].sort((a, b) => {
-    const aPriority = hardSkillPriorityMap.get(normalizeHardSkillAlias(a)) ?? Number.MAX_SAFE_INTEGER;
-    const bPriority = hardSkillPriorityMap.get(normalizeHardSkillAlias(b)) ?? Number.MAX_SAFE_INTEGER;
-
-    if (aPriority !== bPriority) {
-      return aPriority - bPriority;
-    }
-
-    return a.localeCompare(b, undefined, { sensitivity: 'base' });
-  });
-}
-
 type SkillsData = {
   /** The model's own grouping, printed as given. See `TailoredContent`. */
   aiSkillGroups?: SkillCategoryGroup[];
   hardSkills?: string[];
   softSkills?: string[];
   skills?: string[];
-  skillInventory?: string[];
   /** The author's own grouping, when the profile carries one. */
   skillCategories?: ProfileSkillCategoryGroup[];
   profileSettings?: Profile['profileSettings'];
@@ -1121,11 +395,12 @@ function flattenSkillCategories(skills: string[]): SkillCategoryGroup[] {
  * heading rather than as the finished block - grouping the whole profile would
  * put back every skill the tailoring step deliberately left out.
  *
- * A selected skill the author never placed still has to appear, so it falls
- * back to the library's inference for its heading. That heading joins the
- * author's order at the end if it is new, and merges into theirs if they
- * already have one by that name.
+ * A selected skill the author never placed still has to appear, so it goes in
+ * one last group headed "Other" rather than under a
+ * heading guessed from a list of names.
  */
+const UNPLACED_SKILLS_HEADING = 'Other';
+
 function buildAuthoredSkillCategories(
   selected: string[],
   authored: ProfileSkillCategoryGroup[]
@@ -1166,7 +441,7 @@ function buildAuthoredSkillCategories(
     const key = normalizeHardSkillAlias(skill);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    place(headingBySkill.get(key) ?? getSkillCategory(skill), skill);
+    place(headingBySkill.get(key) ?? UNPLACED_SKILLS_HEADING, skill);
   }
 
   return order
@@ -1205,12 +480,8 @@ function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
   /*
    * The model's grouping wins outright, and nothing below runs.
    *
-   * Every other branch here shapes the block: the flat one filters concepts,
-   * the authored one re-groups, the last two pad each heading to a minimum and
-   * truncate it to a maximum from the library. That was the right behaviour
-   * while code chose the skills. It no longer does - the tailor call returns
-   * the finished block - and reshaping it here would be this file overruling
-   * the answer it asked for.
+   * The tailor call returns the finished block, and reshaping it here would be
+   * this file overruling the answer it asked for.
    */
   const fromModel = (data.aiSkillGroups ?? []).filter(
     (group) => group?.category?.trim() && Array.isArray(group.skills) && group.skills.length > 0
@@ -1236,50 +507,19 @@ function applySkillsLimit<T extends SkillsData>(data: T): SkillsLimitedData<T> {
 
   if (fromModel.length > 0) return finish(fromModel);
 
-  const hasTailoredHardSkills = Array.isArray(data.hardSkills) && data.hardSkills.length > 0;
-  const selected = hasTailoredHardSkills
-    ? normalizeSkills(data.hardSkills ?? [])
-    : sortHardSkillsByPriority(data.skills ?? []);
-
-  // Flat is decided before any of the category machinery runs, and that is the
-  // point of it: the padding rules below exist to make a CATEGORIZED block look
-  // right - five per heading, at least five headings - and a list with no
-  // headings has no such shape to fill. Running them anyway would pad the list
-  // with skills the profile never claimed, to satisfy a layout it is not using.
-  if (layout === 'flat') {
-    return finish(
-      flattenSkillCategories(
-        (hasTailoredHardSkills ? selected : normalizeLibraryHardSkills(selected))
-          // Applied to both branches. A profile rendered without tailoring gets
-          // the same treatment as a tailored one: a concept is not a skill on
-          // either of them.
-          .filter(passesPromptHardSkillGate)
-      )
-    );
-  }
-
-  // The author's grouping replaces the inference, not the selection. It has no
-  // counts to enforce either: the headings are theirs, and padding them to five
-  // apiece would put skills under headings they did not choose for them.
-  if (authored.length > 0) {
-    return finish(
-      buildAuthoredSkillCategories(
-        hasTailoredHardSkills ? selected.filter(passesPromptHardSkillGate) : selected,
-        authored
-      )
-    );
-  }
-
-  if (hasTailoredHardSkills) {
-    return finish(enforcePromptSkillCategoryCounts(selected, data.skillInventory));
-  }
-
-  return finish(
-    buildSkillCategories(selected, data.skillInventory, {
-      forceAllCategories: true,
-      relateFrameworksToLanguages: true,
-    })
+  /*
+   * No grouping from the model: an older answer, or a profile rendered without
+   * tailoring. The skills print as they are - under the author's own headings
+   * if the profile has them, otherwise as one list. Nothing is padded, filtered
+   * or filed under a heading guessed from a list of names.
+   */
+  const selected = normalizeSkills(
+    Array.isArray(data.hardSkills) && data.hardSkills.length > 0 ? data.hardSkills : data.skills ?? []
   );
+  if (layout !== 'flat' && authored.length > 0) {
+    return finish(buildAuthoredSkillCategories(selected, authored));
+  }
+  return finish(flattenSkillCategories(selected));
 }
 
 /**
@@ -1700,14 +940,12 @@ const SKILL_GROUP_LOOKS: Record<string, string> = {
   bar:
     '.skill-category{padding-left:7px;border-left:2px solid currentColor}'
     + '.skill-category-title{font-weight:700;font-size:0.92em;letter-spacing:0.02em;margin:0 0 1px 0}'
-    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0;'
-    + 'color:color-mix(in srgb, currentColor 80%, transparent)}',
+    + '.skill-category-skills{font-weight:400;line-height:1.35;margin:0}',
 
   // Tone rather than weight: the heading at full strength, the skills stepped back.
   muted:
     '.skill-category-title{font-weight:700;font-size:0.95em;margin:0 0 1px 0}'
-    + '.skill-category-skills{font-weight:400;font-size:0.92em;line-height:1.35;margin:0;'
-    + 'color:color-mix(in srgb, currentColor 72%, transparent)}',
+    + '.skill-category-skills{font-weight:400;font-size:0.92em;line-height:1.35;margin:0}',
 
   // The skills hang under the heading, indented.
   hanging:
@@ -1753,6 +991,9 @@ const SKILL_GROUP_LOOKS: Record<string, string> = {
 
 export const SKILL_GROUP_LOOK_NAMES = Object.keys(SKILL_GROUP_LOOKS);
 
+/** How much of the line's colour the skills keep; the heading keeps all of it. */
+const SKILL_GROUP_TONE: Record<string, number> = { bar: 80, muted: 72 };
+
 /**
  * The look this resume gets: the pinned one, or a random one.
  *
@@ -1786,8 +1027,23 @@ function skillGroupCss(look: string): string {
      * twelve lines. Written here rather than in each look, and before them, so
      * a look that wants its own indent - `hanging` - still decides.
      */
-    + '.skill-category-skills{color:color-mix(in srgb, currentColor 82%, transparent);padding-left:10px}'
+    + '.skill-category-skills{padding-left:10px}'
     + rules
+    /*
+     * The tone, last and one step more specific than a class, because nine
+     * templates write `.skill-category-title,.skill-category-skills{color:#...}`
+     * after this stylesheet and would otherwise print the heading and its skills
+     * in one colour. `currentColor` here is the colour inherited from the line,
+     * so the skills are the template's own text colour a shade softer.
+     */
+    + 'html .skill-category-skills{color:color-mix(in srgb, currentColor '
+    + (SKILL_GROUP_TONE[look] ?? 82) + '%, transparent)}'
+    // The <strong> shape: the skills are bare text in the heading's line, so the
+    // whole line is softened and the heading takes back full strength.
+    + 'html .skills-list li:has(>strong:first-child),html .skill-category:has(>strong:first-child){'
+    + 'color:color-mix(in srgb, currentColor ' + (SKILL_GROUP_TONE[look] ?? 82) + '%, transparent)}'
+    + 'html .skills-list li>strong:first-child,html .skill-category>strong:first-child{'
+    + 'color:rgb(from currentColor r g b / 1)}'
     // The other shape the grouped markup takes, where the heading is a <strong>
     // and the skills are the text after a <br> in the same list item. Nothing
     // can style that text on its own, so the heading carries the difference.
@@ -2507,17 +1763,8 @@ export function prepareResumeRenderData(
     companyName: companyName || '',
     role: role || '',
     title: sanitizeTitleForATS(getResumeTitle(profile, tailoredContent)),
-    // "B.S. in Computer Science", from whatever the profile happens to say.
-    // Education is the one section the model never writes, so it reaches the
-    // page exactly as it was typed - and only the unambiguous forms are
-    // rewritten: "Bachelor's degree in X" could be a B.S. or a B.A. and the
-    // profile does not say.
-    education: standardDegreeNotation(profile.education),
-    skillInventory: normalizeSkills([
-      ...(profile.skills ?? []),
-      ...tailoredHardSkills,
-      ...tailoredSkills,
-    ]),
+    // Education is the one section the model never writes: printed as typed.
+    education: profile.education,
     ...(tailoredContent && {
       summary: tailoredContent.summary,
       experience: tailoredContent.experience,
@@ -2886,7 +2133,11 @@ export async function generateResumePDF(
   // and without this every one of those items would open a tab here at the same
   // moment. See renderConcurrency.
   const pageBox = resolveTemplatePageBox(template);
-  return await withRenderPermit(async () => {
+  // The date this resume claims, in its metadata and on the file. See pdfDocumentDate.
+  const documentDate = resumeDocumentDate(profile.id || profile.name);
+  const pdfFilename = getResumeOutputFilename(pathInfo, 'pdf');
+  const filepath = path.join(pathInfo.absoluteDir, pdfFilename);
+  const relativePath = await withRenderPermit(async () => {
   const browser = await timePdfStage('browser ready', () => getSharedPdfBrowser());
   let page: Awaited<ReturnType<Browser['newPage']>> | null = null;
 
@@ -2911,16 +2162,21 @@ export async function generateResumePDF(
     // collapse - and before the export, because it changes the DOM.
     await timePdfStage('preserve wrap spaces', () => preserveWrapSpaces(activePage));
 
-    const pdfFilename = getResumeOutputFilename(pathInfo, 'pdf');
     const relativePath = `${pathInfo.storagePathBase}/${pdfFilename}`;
-    const filepath = path.join(pathInfo.absoluteDir, pdfFilename);
-    const finalPdf = await timePdfStage('export', async () =>
+    const exported = await timePdfStage('export', async () =>
       Buffer.from(await activePage.pdf({
         format: RESUME_PAGE_GEOMETRY.format,
         margin: { ...RESUME_PAGE_GEOMETRY.margin },
         printBackground: true
       }))
     );
+    // The Created and Modified dates: one per profile, a few months back, rather
+    // than the second this file was rendered. See pdfDocumentDate.
+    const dated = withDocumentDate(exported, documentDate);
+    if (dated.rewritten < 2) {
+      console.warn(`[Resume PDF] ${profile.name}: ${dated.rewritten} of 2 document dates rewritten; the rest keep the render time.`);
+    }
+    const finalPdf = dated.pdf;
 
     await timePdfStage('file write', async () => {
       await fs.mkdir(path.dirname(filepath), { recursive: true });
@@ -2935,6 +2191,11 @@ export async function generateResumePDF(
     }
   }
   });
+
+  // Outside the render permit: a child process per file, and the next render
+  // need not wait for it.
+  await timePdfStage('file dates', () => stampFileTimes(filepath, documentDate));
+  return relativePath;
 }
 
 export async function generatePreviewHTML(
@@ -3239,9 +2500,25 @@ const PAGE_BREAK_CSS =
   + '.edu-institution{break-inside:avoid;page-break-inside:avoid}'
   + '</style>';
 
+/**
+ * ASKED FOR: "use standard font for all resumes" - Arial, on every template.
+ *
+ * Set here rather than in 47 template files so that a template uploaded later
+ * gets it too. `!important` because this stylesheet is written BEFORE the
+ * template's own, and because some templates set a font inline on an element;
+ * an important rule wins over both. Helvetica and Liberation Sans are Arial's
+ * metric twins on a Mac and on Linux, so the page breaks in the same places.
+ */
+export const STANDARD_RESUME_FONT = "Arial, Helvetica, 'Liberation Sans', sans-serif";
+const STANDARD_FONT_CSS =
+  '<style id="resume-standard-font">'
+  + 'html,body,body *,body *::before,body *::after{font-family:' + STANDARD_RESUME_FONT + '!important}'
+  + '</style>';
+
 function renderTimeCss(): string {
   return (
     '<style id="resume-no-ligatures">*,*::before,*::after{font-variant-ligatures:none}</style>'
+    + STANDARD_FONT_CSS
     + CONTACT_SEPARATOR_CSS
     + NAME_CASE_CSS
     + RELOCATED_SECTION_CSS

@@ -127,14 +127,8 @@ const SCHEMA = `
     updated_at  TEXT NOT NULL
   );
 
-  CREATE TABLE IF NOT EXISTS skills (
-    type      TEXT NOT NULL,
-    skill_key TEXT NOT NULL,
-    skill     TEXT NOT NULL,
-    priority  INTEGER,
-    category  TEXT,
-    PRIMARY KEY (type, skill_key)
-  );
+  -- The built-in skills library, removed: no resume reads a fixed list of skills.
+  DROP TABLE IF EXISTS skills;
 
   CREATE TABLE IF NOT EXISTS app_settings (
     key        TEXT PRIMARY KEY,

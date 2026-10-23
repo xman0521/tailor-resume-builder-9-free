@@ -1,6 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+// These stubs answer AI calls in order; the skills check has its own tests.
+process.env.RESUME_SKILL_CHECK_OFF = '1';
+
 const { useTempStorage } = require('./helpers');
 
 useTempStorage('header-title');

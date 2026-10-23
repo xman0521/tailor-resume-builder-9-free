@@ -1,5 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+
+// These stubs answer AI calls in order; the skills check has its own tests.
+process.env.RESUME_SKILL_CHECK_OFF = '1';
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -129,10 +132,11 @@ test('the appended override says what the prompt says about the skills block', a
   // prompt's requirement silently does nothing.
   assert.match(override, /The FIRST group is "Languages & Frameworks" and it is required/);
 
-  // No soft skills, which is the rule the override used to contradict.
-  assert.match(override, /NO soft skills anywhere in the block/);
+  // Soft skills only in their own group, last, which the prompt also requires.
+  assert.match(override, /NO soft skills in the technical groups/);
+  assert.match(override, /ONE MORE GROUP, last, headed exactly "Soft Skills"/);
+  assert.match(override, /The Soft Skills group is not counted in any of that/);
   assert.doesNotMatch(override, /soft-skill words spelled as it spells them/);
-  assert.doesNotMatch(override, /the last group headed/);
 
   // And the removals the application performs, so a model writing one of these
   // is told it will be deleted rather than left to wonder where it went.
@@ -171,8 +175,17 @@ test('every removal the prompt promises is one the application performs', () => 
 
   // What the application DOES do, each still claimed in the prompt.
   assert.deepEqual(printed(one('Observability', 'practice')), [], 'a labelled practice leaves');
-  assert.deepEqual(printed(one('Ownership', 'soft')), [], 'a labelled soft skill leaves');
+  assert.deepEqual(
+    tidySkillGroups(one('Ownership', 'soft')).groups,
+    [{ category: 'Soft Skills', skills: ['Ownership'] }],
+    'a labelled soft skill moves to the Soft Skills group'
+  );
   assert.deepEqual(printed(one('Infrastructure', 'category')), [], 'a labelled category word leaves');
+  assert.deepEqual(
+    printed([{ category: 'ML & AI', skills: [{ name: 'RAG', kind: 'technology' }, { name: 'Retrieval-Augmented Generation', kind: 'technology' }] }]),
+    ['RAG'],
+    'an abbreviation beside its expansion collapses to the first written'
+  );
   assert.deepEqual(
     printed([{ category: 'Cloud', skills: [{ name: 'Kinesis', kind: 'platform' }, { name: 'Amazon Kinesis', kind: 'platform' }] }]),
     ['Amazon Kinesis'],

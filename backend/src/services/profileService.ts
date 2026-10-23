@@ -5,7 +5,6 @@ import {
   CreateProfileDTO,
   Education,
   Experience,
-  HardSkillOrdering,
   Profile,
   ProfileSettings,
   SkillCategoryGroup,
@@ -23,7 +22,6 @@ import {
 export const DEFAULT_RESUME_PROMPT_ID = 'tailor-resume';
 export const DEFAULT_ANALYZE_JOB_PROMPT_ID = 'analyze-job-description';
 export const DEFAULT_COVER_LETTER_PROMPT_ID = 'generate-cover-letter';
-export const DEFAULT_HARD_SKILL_ORDERING: HardSkillOrdering = 'library';
 /**
  * One plain list, because that is what a Technical Skills block is for.
  *
@@ -225,16 +223,6 @@ function normalizeCertifications(certifications: CreateProfileDTO['certification
     }));
 }
 
-export function isHardSkillOrdering(value: unknown): value is HardSkillOrdering {
-  return value === 'library' || value === 'job-priority';
-}
-
-/** Returns the hard-skill ordering configured for a profile, falling back to the default. */
-export function getProfileHardSkillOrdering(profile?: Pick<Profile, 'profileSettings'> | null): HardSkillOrdering {
-  const value = profile?.profileSettings?.hardSkillOrdering;
-  return isHardSkillOrdering(value) ? value : DEFAULT_HARD_SKILL_ORDERING;
-}
-
 /**
  * How long a header title may be.
  *
@@ -254,11 +242,6 @@ export function normalizeProfileSettings(
   existing?: ProfileSettings
 ): ProfileSettings {
   const source = input && typeof input === 'object' ? input : undefined;
-  const hardSkillOrdering = isHardSkillOrdering(source?.hardSkillOrdering)
-    ? source.hardSkillOrdering
-    : isHardSkillOrdering(existing?.hardSkillOrdering)
-      ? existing.hardSkillOrdering
-      : DEFAULT_HARD_SKILL_ORDERING;
   const technicalSkillsLayout = isTechnicalSkillsLayout(source?.technicalSkillsLayout)
     ? source.technicalSkillsLayout
     : isTechnicalSkillsLayout(existing?.technicalSkillsLayout)
@@ -298,7 +281,6 @@ export function normalizeProfileSettings(
       typeof source?.appendTargetRole === 'boolean'
         ? source.appendTargetRole
         : (existing?.appendTargetRole ?? true),
-    hardSkillOrdering,
     technicalSkillsLayout,
     // Only values this build understands survive, and an omitted one keeps
     // whatever was stored: a client that predates these fields must not blank

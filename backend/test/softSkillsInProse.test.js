@@ -6,7 +6,6 @@ const {
   parseTailoredResumeContent,
   buildTailorResumePromptValues,
 } = require('../dist/services/resumeService');
-const { plainLanguage } = require('../dist/services/utils/plainLanguage');
 
 /**
  * The posting's soft skills, now that there is no section to put them in.
@@ -64,29 +63,14 @@ test('the prompt says where they go and how they must not be placed', () => {
   const prompt = require('../static/prompts/tailor-resume.json').content;
   assert.match(prompt, /SOFT SKILLS ARE SHOWN, NOT NAMED/);
   /*
-   * The section has been removed after a reviewer found only 12 distinct lists
-   * across 60 resumes. Soft skills now go into the bullets where they are SHOWN
-   * by the work, never listed as traits or bolted onto a finished sentence.
+   * NAMED once, in the Soft Skills group that ends the skills block and is
+   * chosen per posting; SHOWN in the bullets, never bolted onto a sentence.
    */
-  assert.match(prompt, /THERE IS NO SOFT SKILLS SECTION/);
+  assert.match(prompt, /SOFT SKILLS ARE ONE GROUP, THE LAST ONE IN THE SKILLS BLOCK/);
   assert.match(prompt, /THE BANNED SHAPES/);
   assert.match(prompt, /applying X/);
   assert.match(prompt, /demonstrating X/);
   assert.match(prompt, /Practiced X when/);
-});
-
-test('a soft skill that is also a banned word survives when the posting asked for it', () => {
-  // "strategic" is deleted as hype everywhere else. Asked for as a keyword, it
-  // is the posting's word and stays - otherwise the app would ask for a term
-  // and then remove it, which is the bug this rule was written for.
-  assert.equal(
-    plainLanguage('Brought strategic thinking to the roadmap.', ['strategic thinking']),
-    'Brought strategic thinking to the roadmap.'
-  );
-  assert.equal(
-    plainLanguage('Brought strategic thinking to the roadmap.'),
-    'Brought thinking to the roadmap.'
-  );
 });
 
 test('a run that places them, and one that loses them, are told apart', (t) => {

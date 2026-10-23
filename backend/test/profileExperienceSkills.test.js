@@ -3,7 +3,6 @@ const test = require('node:test');
 
 const {
   buildTailorResumePromptValues,
-  enrichProfileExperienceSkillsForJob,
   parseJobAnalysisContent,
   parseTailoredResumeContent,
 } = require('../dist/services/resumeService');
@@ -78,26 +77,6 @@ function makeJobAnalysis() {
   };
 }
 
-test('enrichProfileExperienceSkillsForJob keeps only JD-matched skills and assigns leftovers by experience relevance', () => {
-  const enriched = enrichProfileExperienceSkillsForJob(makeProfile(), makeJobAnalysis());
-
-  assert.deepEqual(enriched.experience[0].skills, ['React', 'TypeScript', 'Django', 'Vue.js', 'Angular']);
-  assert.deepEqual(enriched.experience[1].skills, ['PostgreSQL', 'Redis', 'AWS', 'Caching', 'Ruby', 'MySQL']);
-  assert.deepEqual(enriched.skills, [
-    'React',
-    'TypeScript',
-    'Django',
-    'Vue.js',
-    'Angular',
-    'PostgreSQL',
-    'Redis',
-    'AWS',
-    'Caching',
-    'Ruby',
-    'MySQL',
-  ]);
-});
-
 test('parseTailoredResumeContent prints the skills the model returned', () => {
   /*
    * The reverse of what this test used to assert. Code decided the block from
@@ -106,7 +85,7 @@ test('parseTailoredResumeContent prints the skills the model returned', () => {
    * "Amazon Kinesis" beside "Kinesis" - reached every resume it touched. The
    * model now returns the block, grouped, and nothing here reshapes it.
    */
-  const enriched = enrichProfileExperienceSkillsForJob(makeProfile(), makeJobAnalysis());
+  const enriched = makeProfile();
   // Five to a group, the shape the prompt asks for: this test is about what
   // reaches the page from the model, so the block should look real.
   const groups = [
@@ -282,13 +261,21 @@ test('buildTailorResumePromptValues sends extracted skillsJSON and folds soft sk
   assert.equal(skills.includes('Docker'), true);
   assert.equal(skills.includes('TypeScript'), true);
   assert.equal(skills.includes('REST'), true);
-  assert.equal(skills.includes('CI/CD'), true);
+  // A methodology, which the analyser files apart from the named tools: it is a
+  // checklist term, and the prompt decides whether it is one the block carries.
+  assert.equal(keywords.includes('CI/CD'), true);
   assert.equal(keywords.includes('cross-functional collaboration'), true);
   assert.equal(keywords.includes('written communication'), true);
   assert.equal(keywords.includes('platform engineering'), true);
 });
 
-test('buildTailorResumePromptValues augments prompt lists from skill library and removes broader tech skills', () => {
+test('buildTailorResumePromptValues sends what the analysis named and matches nothing against a list', () => {
+  /*
+   * The tool list used to be topped up by matching a built-in skills library
+   * against the posting's raw text, and the keyword list by matching its soft
+   * skills. Both are gone: what the analyser filed is what is sent, so a term
+   * that sits only in the raw text reaches neither list.
+   */
   const jobAnalysis = parseJobAnalysisContent(
     JSON.stringify({
       jobMeta: {
@@ -298,8 +285,8 @@ test('buildTailorResumePromptValues augments prompt lists from skill library and
         department: 'engineering',
       },
       skills: {
-        technical: ['AWS'],
-        tools: [],
+        technical: [],
+        tools: ['AWS Lambda'],
         soft: [],
       },
       technologies: [],
@@ -322,9 +309,8 @@ test('buildTailorResumePromptValues augments prompt lists from skill library and
   const keywords = JSON.parse(values.keywordsJson);
 
   assert.deepEqual(JSON.parse(values.hardSkillsJson), skills);
-  assert.equal(skills.every((skill) => typeof skill === 'string'), true);
-  assert.equal(skills.includes('AWS Lambda'), true);
-  assert.equal(keywords.includes('Written Communication'), true);
+  assert.deepEqual(skills, ['AWS Lambda']);
+  assert.equal(keywords.some((term) => /written communication/i.test(term)), false);
 });
 
 test('a soft keyword from the posting is not bolted onto the summary', () => {
