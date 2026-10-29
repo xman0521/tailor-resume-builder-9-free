@@ -991,8 +991,16 @@ const SKILL_GROUP_LOOKS: Record<string, string> = {
 
 export const SKILL_GROUP_LOOK_NAMES = Object.keys(SKILL_GROUP_LOOKS);
 
-/** How much of the line's colour the skills keep; the heading keeps all of it. */
-const SKILL_GROUP_TONE: Record<string, number> = { bar: 80, muted: 72 };
+/**
+ * How much of the line's colour the skills keep; the heading keeps all of it.
+ *
+ * REPORTED: "no vivid distinction between a skill group and its content" at
+ * 82% - a shade nobody notices. At 60% black text prints as a clear mid-grey
+ * (#666) beside a black bold heading, and white on a dark sidebar as a light
+ * grey, so the difference reads at first sight on either.
+ */
+const SKILL_GROUP_TONE: Record<string, number> = { bar: 62, muted: 58 };
+const DEFAULT_SKILL_GROUP_TONE = 60;
 
 /**
  * The look this resume gets: the pinned one, or a random one.
@@ -1037,11 +1045,16 @@ function skillGroupCss(look: string): string {
      * so the skills are the template's own text colour a shade softer.
      */
     + 'html .skill-category-skills{color:color-mix(in srgb, currentColor '
-    + (SKILL_GROUP_TONE[look] ?? 82) + '%, transparent)}'
+    + (SKILL_GROUP_TONE[look] ?? DEFAULT_SKILL_GROUP_TONE) + '%, transparent)}'
+    // Weight as well as tone, at the same strength, so a template that sets its
+    // own weights cannot print a bold list under a bold heading.
+    + 'html .skill-category-title,html .skills-list li>strong:first-child,'
+    + 'html .skill-category>strong:first-child{font-weight:700}'
+    + 'html .skill-category-skills{font-weight:400}'
     // The <strong> shape: the skills are bare text in the heading's line, so the
     // whole line is softened and the heading takes back full strength.
     + 'html .skills-list li:has(>strong:first-child),html .skill-category:has(>strong:first-child){'
-    + 'color:color-mix(in srgb, currentColor ' + (SKILL_GROUP_TONE[look] ?? 82) + '%, transparent)}'
+    + 'color:color-mix(in srgb, currentColor ' + (SKILL_GROUP_TONE[look] ?? DEFAULT_SKILL_GROUP_TONE) + '%, transparent)}'
     + 'html .skills-list li>strong:first-child,html .skill-category>strong:first-child{'
     + 'color:rgb(from currentColor r g b / 1)}'
     // The other shape the grouped markup takes, where the heading is a <strong>

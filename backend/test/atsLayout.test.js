@@ -73,7 +73,8 @@ const SECTION_MARKS = {
   summary: /^(?:\d{2}\s*)?(?:PROFESSIONAL\s+)?(?:SUMMARY|PROFILE|ABOUT|OBJECTIVE|OVERVIEW)\b/i,
   education: /^(?:\d{2}\s*)?EDUCATION\b/i,
   skills: /^(?:\d{2}\s*)?(?:TECHNICAL\s+|CORE\s+)?(?:SKILLS|EXPERTISE)\b/i,
-  experience: /^(?:\d{2}\s*)?(?:PROFESSIONAL\s+|WORK\s+)?(?:EXPERIENCE|EMPLOYMENT)\b/i,
+  // "Work History" is as standard a heading as "Work Experience", and a parser reads it as one.
+  experience: /^(?:\d{2}\s*)?(?:(?:PROFESSIONAL\s+|WORK\s+)?(?:EXPERIENCE|EMPLOYMENT)|(?:WORK|EMPLOYMENT)\s+HISTORY)\b/i,
 };
 const ASKED_FOR = ['summary', 'education', 'skills', 'experience'];
 
@@ -463,11 +464,13 @@ test('the template drawn for this order is the only one printing it', () => {
     return /data-section-order/i.test(template.htmlContent || '');
   });
 
-  assert.deepEqual(declaring, ['one-column-banded-serif.json']);
-  const template = JSON.parse(
-    fs.readFileSync(path.join(TEMPLATE_DIR, declaring[0]), 'utf8')
-  );
-  assert.deepEqual(askedFor(template), ['summary', 'skills', 'experience', 'education']);
+  // Two now: the blue centred template was drawn from a reference resume that
+  // reads summary, skills, work history, education.
+  assert.deepEqual(declaring, ['one-column-banded-serif.json', 'one-column-blue-centred.json']);
+  for (const file of declaring) {
+    const template = JSON.parse(fs.readFileSync(path.join(TEMPLATE_DIR, file), 'utf8'));
+    assert.deepEqual(askedFor(template), ['summary', 'skills', 'experience', 'education']);
+  }
 });
 
 test('separating two glued fields never adds a blank line', async (t) => {
